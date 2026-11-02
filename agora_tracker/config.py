@@ -109,7 +109,7 @@ def load_config(path: str | Path) -> Config:
         timeout_s=tg_raw.get("timeout_s", 15.0),
     )
 
-    db_path = raw.get("db_path", "tracker.db")
+    db_path = os.environ.get("TRACKER_DB_PATH") or raw.get("db_path", "tracker.db")
     if not os.path.isabs(db_path):
         db_path = str(base / db_path)
     wl = raw.get("watchlist_file")

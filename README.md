@@ -27,46 +27,62 @@ Elysium RPC ── eth_getLogs(Transfer, from|to ∈ set) ──> per-tx net flo
   wallets into the same token within a window), and leaderboard changes (entered/exited top,
   rank jumps, PnL jumps).
 
-## Setup
+## Deploy on a VPS (Docker Compose)
+
+Needs Docker with the compose plugin. The VPS must reach `www.agoradex.app`, your Elysium
+RPC and `api.telegram.org`.
+
+```bash
+# 1. get the code (private repo: use a deploy key or a fine-grained PAT with read access)
+git clone https://github.com/nhattruong0204/elysium-wallet-tracker.git
+cd elysium-wallet-tracker
+
+# 2. config + secrets (both are git-ignored)
+mkdir -p config
+cp config.example.yaml config/config.yaml
+cp watchlist.example.txt config/watchlist.txt
+cp .env.example .env && nano .env            # TG_BOT_TOKEN, TG_CHAT_ID
+
+# 3. find Agora's leaderboard endpoint; paste the printed block into config/config.yaml
+docker compose build
+docker compose run --rm tracker --discover
+
+# 4. dry run: catch up once and print alerts to the terminal instead of Telegram
+docker compose run --rm tracker --once --dry-run
+
+# 5. run for real
+docker compose up -d
+docker compose logs -f
+```
+
+On start the bot sends a "Tracker started" message to Telegram, so you know the token, chat
+and RPC all work. The container healthcheck marks it `unhealthy` if the main loop stops for
+10 minutes (`docker ps` shows it).
+
+Day to day:
+
+```bash
+docker compose run --rm tracker --status           # cursor, wallets, events, pending alerts
+git pull && docker compose up -d --build           # update to the latest code
+docker compose run --rm tracker --reset-cursor 190000   # replay from a block (safe, deduped)
+```
+
+State (cursor, events, positions, alert outbox) lives in the `tracker-data` volume and
+survives rebuilds. `docker compose down -v` deletes it.
+
+### If `--discover` finds nothing
+
+The endpoint may only be called from server-side code, or behind bot protection. Then use
+your browser once: agoradex.app/traders → DevTools (F12) → Network → Fetch/XHR → reload →
+PnL tab → right-click the request that lists wallets → Copy as cURL. Save it as
+`config/curl.txt` and run `docker compose run --rm tracker --import-curl /config/curl.txt`.
+Without a leaderboard the bot still follows every wallet in `config/watchlist.txt`.
+
+### Without Docker
 
 ```bash
 pip install -r requirements.txt
-cp config.example.yaml config.yaml
-cp watchlist.example.txt watchlist.txt
-export TG_BOT_TOKEN=123:abc TG_CHAT_ID=-100123456
-```
-
-### Point it at Agora's leaderboard endpoint (one time, ~1 minute)
-
-The traders table is filled by a JSON request from the browser:
-
-1. Open agoradex.app/traders → DevTools (F12) → **Network** → filter **Fetch/XHR**.
-2. Reload, click the **PnL** tab, find the request whose response lists the wallets.
-3. Right-click it → **Copy → Copy as cURL (bash)**, save to `curl.txt`.
-4. `python -m agora_tracker --import-curl curl.txt` prints a `leaderboard:` block with
-   `items_path` and `fields` detected. Paste it into `config.yaml`.
-
-If the endpoint takes a `limit`/`pageSize` parameter, set it to 100. If it starts returning
-401/403, the copied headers expired: re-import.
-
-### Run
-
-```bash
-python -m agora_tracker --config config.yaml --dry-run --once   # test: print alerts, exit
-python -m agora_tracker --config config.yaml                    # long-running
-python -m agora_tracker --config config.yaml --status
-python -m agora_tracker --config config.yaml --reset-cursor 190000   # replay from a block
-```
-
-systemd:
-
-```ini
-[Service]
-WorkingDirectory=/opt/agora-tracker
-Environment=TG_BOT_TOKEN=... TG_CHAT_ID=...
-ExecStart=/usr/bin/python3 -m agora_tracker --config config.yaml
-Restart=always
-RestartSec=10
+python -m agora_tracker --config config/config.yaml --once --dry-run
 ```
 
 Tests: `pytest -q` (offline, fake RPC).

@@ -229,3 +229,24 @@ def test_leaderboard_parse_diff_and_curl():
     assert g["fields"] == {"address": "address", "pnl": "realizedPnl", "worth": "totalWorth",
                            "volume": "volumeUsd", "trades": "tradeCount"}
     json.dumps(g)
+
+
+def test_discover_candidates(monkeypatch):
+    from agora_tracker import discover as d
+    pages = {
+        "https://www.agoradex.app/traders":
+            '<script src="/_next/static/chunks/app.js"></script>',
+        "https://www.agoradex.app/_next/static/chunks/app.js":
+            'const B="https://api.agoradex.app/v1";fetch(B+"/traders?sort="+s);'
+            '"static/chunks/lazy.js";"https://x.com/agora_elysium"',
+        "https://www.agoradex.app/_next/static/chunks/lazy.js":
+            'fetch("/api/leaderboard/traders",{})',
+    }
+    monkeypatch.setattr(d, "_fetch", lambda s, url, timeout: pages.get(url))
+    abs_urls, paths = d.collect_candidates("https://www.agoradex.app/traders")
+    assert abs_urls == ["https://api.agoradex.app/v1"]
+    assert set(paths) == {"/traders", "/api/leaderboard/traders"}
+    urls = d.candidate_requests("https://www.agoradex.app/traders", abs_urls, paths)
+    assert "https://api.agoradex.app/v1/traders" in urls
+    assert "https://www.agoradex.app/api/leaderboard/traders" in urls
+    assert "https://www.agoradex.app/traders" not in urls

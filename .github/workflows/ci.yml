@@ -16,3 +16,21 @@ jobs:
           cache: pip
       - run: pip install -r requirements.txt pytest
       - run: python -m pytest -q
+
+  docker:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build -t elysium-wallet-tracker:ci .
+      - name: Smoke test
+        run: |
+          mkdir -p config && cp config.example.yaml config/config.yaml
+          docker run --rm -v "$PWD/config:/config:ro" elysium-wallet-tracker:ci --help
+          docker run --rm -v "$PWD/config:/config:ro" elysium-wallet-tracker:ci --status
+          # no heartbeat yet, so the healthcheck must report unhealthy (exit 1)
+          if docker run --rm -v "$PWD/config:/config:ro" elysium-wallet-tracker:ci --health; then
+            echo "healthcheck should fail without a heartbeat"; exit 1
+          fi
+          docker compose config -q 2>/dev/null || (cp .env.example .env && docker compose config -q)

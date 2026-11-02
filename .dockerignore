@@ -1,0 +1,10 @@
+.git
+.github
+.env
+config/
+data/
+tests/
+*.db*
+__pycache__/
+.pytest_cache/
+curl.txt

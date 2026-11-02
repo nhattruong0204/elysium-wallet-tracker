@@ -1,0 +1,20 @@
+services:
+  tracker:
+    build: .
+    image: elysium-wallet-tracker:latest
+    container_name: elysium-wallet-tracker
+    restart: unless-stopped
+    env_file: .env                 # TG_BOT_TOKEN, TG_CHAT_ID
+    volumes:
+      - ./config:/config:ro        # config.yaml + watchlist.txt
+      - tracker-data:/data         # SQLite state (cursor, events, positions, outbox)
+    stop_grace_period: 30s         # lets the bot flush pending alerts on shutdown
+    mem_limit: 256m
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  tracker-data:

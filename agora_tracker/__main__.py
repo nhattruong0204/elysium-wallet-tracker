@@ -101,6 +101,12 @@ class Tracker:
         self.refresh_leaderboard()
         if not self.tracked:
             log.warning("no wallets tracked: configure leaderboard.url or watchlist_file")
+        if not once:
+            source = "leaderboard + watchlist" if self.leaderboard else "watchlist only"
+            self.store.enqueue_now(
+                f"start:{int(time.time())}",
+                f"▶️ <b>Tracker started</b> · {len(self.tracked)} wallets ({source}) · "
+                f"chain {self.cfg.chain.chain_id} via {self.rpc.url}")
         backoff = 1.0
         while not self._stop:
             try:
@@ -108,6 +114,7 @@ class Tracker:
                     self.refresh_leaderboard()
                 behind = self.scan_step()
                 self.notifier.drain()
+                self.store.set_kv("heartbeat", str(int(time.time())))
                 backoff = 1.0
                 if once and not behind:
                     break
@@ -115,6 +122,10 @@ class Tracker:
                     self._sleep(self.cfg.chain.poll_interval_s)
             except RpcError as e:
                 log.error("RPC error: %s (retry in %.0fs)", e, backoff)
+                self._sleep(backoff)
+                backoff = min(backoff * 2, 120)
+            except Exception:  # keep a long-running bot alive; the healthcheck catches stalls
+                log.exception("unexpected error (retry in %.0fs)", backoff)
                 self._sleep(backoff)
                 backoff = min(backoff * 2, 120)
         self.notifier.drain(200)
@@ -149,6 +160,44 @@ def import_curl(source: str) -> None:
     print(yaml.safe_dump({"leaderboard": section}, sort_keys=False, allow_unicode=True))
 
 
+def run_discover(page_url: str) -> int:
+    from .discover import discover
+    hits, tried = discover(page_url)
+    if not hits:
+        print(f"# no JSON trader list found among {len(tried)} candidates:", file=sys.stderr)
+        for u in tried[:40]:
+            print(f"#   {u}", file=sys.stderr)
+        print("# fall back to: --import-curl (DevTools 'Copy as cURL') or a watchlist",
+              file=sys.stderr)
+        return 1
+    best = hits[0]
+    for h in hits:
+        print(f"# {h['count']:>4} rows  {h['url']}  fields={h['fields']}", file=sys.stderr)
+    section = {"enabled": True, "url": best["url"], "method": "GET", "params": best["params"],
+               "headers": {"accept": "application/json",
+                           "referer": "https://www.agoradex.app/traders"},
+               "body": None, "items_path": best["items_path"], "fields": best["fields"],
+               "sort_by": "pnl" if "pnl" in best["fields"] else "", "top_n": 100,
+               "refresh_s": 300}
+    print(yaml.safe_dump({"leaderboard": section}, sort_keys=False))
+    return 0
+
+
+def health(cfg: Config, max_age_s: int) -> int:
+    """Exit 0 if the main loop wrote a heartbeat recently (for Docker HEALTHCHECK)."""
+    try:
+        hb = Store(cfg.db_path).get_kv("heartbeat")
+    except Exception as e:  # db missing or locked
+        print(f"unhealthy: {e}")
+        return 1
+    age = time.time() - int(hb) if hb else None
+    if age is None or age > max_age_s:
+        print(f"unhealthy: heartbeat age {age}")
+        return 1
+    print(f"ok: heartbeat {age:.0f}s ago")
+    return 0
+
+
 def status(cfg: Config) -> None:
     store = Store(cfg.db_path)
     top = store.top_traders()
@@ -172,6 +221,12 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--import-curl", metavar="FILE",
                     help="build the leaderboard config from a DevTools 'Copy as cURL' ('-' = stdin)")
     ap.add_argument("--status", action="store_true", help="print state summary and exit")
+    ap.add_argument("--discover", nargs="?", const="https://www.agoradex.app/traders",
+                    metavar="PAGE_URL",
+                    help="find the leaderboard API from the site's JS and print a config block")
+    ap.add_argument("--health", action="store_true",
+                    help="exit 0 if the bot loop is alive (Docker healthcheck)")
+    ap.add_argument("--health-max-age", type=int, default=600, metavar="SECONDS")
     ap.add_argument("--reset-cursor", type=int, metavar="BLOCK",
                     help="set the last-processed block (replay is safe: events are deduplicated)")
     ap.add_argument("--log-level", default="INFO")
@@ -182,7 +237,15 @@ def main(argv: list[str] | None = None) -> None:
     if args.import_curl:
         import_curl(args.import_curl)
         return
+    if args.discover:
+        try:
+            sys.exit(run_discover(args.discover))
+        except RuntimeError as e:
+            log.error("discover failed: %s", e)
+            sys.exit(1)
     cfg = load_config(args.config)
+    if args.health:
+        sys.exit(health(cfg, args.health_max_age))
     if args.status:
         status(cfg)
         return
@@ -194,7 +257,12 @@ def main(argv: list[str] | None = None) -> None:
     t = Tracker(cfg, dry_run=args.dry_run)
     signal.signal(signal.SIGINT, t.stop)
     signal.signal(signal.SIGTERM, t.stop)
-    t.run(once=args.once)
+    try:
+        t.run(once=args.once)
+    except RpcError as e:
+        # Startup RPC failure: exit non-zero and let Docker's restart policy retry.
+        log.error("cannot reach Elysium RPC at startup: %s", e)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
