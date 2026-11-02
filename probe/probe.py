@@ -1,61 +1,23 @@
-"""Probe 7: Agora API surface - token lists, candles/history, launches."""
-import json, re, requests
-UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/130.0 Safari/537.36"
-S = requests.Session(); S.headers.update({"user-agent": UA, "accept": "application/json"})
-html = S.get("https://www.agoradex.app/", timeout=20).text
-chunks = sorted(set(re.findall(r'/_next/static/[^"\']+\.js', html)))
-paths = set()
-for c in chunks:
-    try:
-        js = S.get("https://www.agoradex.app" + c, timeout=20).text
-    except Exception:
-        continue
-    for m in re.findall(r'["\'`](/api/[a-zA-Z0-9_\-/${}.?=&]+)', js):
-        paths.add(m)
-    for m in re.findall(r'api\.agoradex\.app(/[a-zA-Z0-9_\-/${}.?=&]+)', js):
-        paths.add(m)
-print("JS chunks:", len(chunks))
-print("API paths in JS:"); [print("  ", p) for p in sorted(paths)]
-# also traders page + token page chunks
-for page in ("/traders", "/token/0x9a9815af521149e8d982791703a31bca2f95f534", "/tokens", "/launches"):
-    h = S.get("https://www.agoradex.app" + page, timeout=20).text
-    for c in sorted(set(re.findall(r'/_next/static/[^"\']+\.js', h)) - set(chunks)):
-        chunks.append(c)
-        try:
-            js = S.get("https://www.agoradex.app" + c, timeout=20).text
-        except Exception:
-            continue
-        for m in re.findall(r'["\'`](/api/[a-zA-Z0-9_\-/${}.?=&]+)', js):
-            if m not in paths: print("  (page", page, ")", m); paths.add(m)
-T = "0x9a9815af521149e8d982791703a31bca2f95f534"
+"""Probe 8: Agora token list item + detail candles/trades formats, ranges, paging."""
+import json, requests, time
+S = requests.Session(); S.headers.update({"user-agent": "Mozilla/5.0", "accept": "application/json"})
 A = "https://api.agoradex.app"
-cands = ["/api/tokens", "/api/tokens?limit=5", "/api/tokens?sort=volume&limit=5", "/api/tokens?range=24h&limit=5",
-         f"/api/tokens/{T}/candles", f"/api/tokens/{T}/candles?interval=1h", f"/api/tokens/{T}/chart",
-         f"/api/tokens/{T}/ohlc", f"/api/tokens/{T}/ohlcv", f"/api/tokens/{T}/history", f"/api/tokens/{T}/trades",
-         f"/api/tokens/{T}/holders", f"/api/candles/{T}", f"/api/chart/{T}", "/api/launches", "/api/trending",
-         "/api/stats", "/api/market", "/api/tokens/trending", "/api/tokens/new"]
-for p in sorted(paths):
-    if "$" not in p and "{" not in p: cands.append(p)
-    else: cands.append(re.sub(r"\$\{[^}]*\}", T, p))
-seen = set()
-for p in cands:
-    if p in seen: continue
-    seen.add(p)
-    try:
-        r = S.get(A + p, timeout=20)
-        body = r.text
-        ct = r.headers.get("content-type", "")
-        print(f"\n{r.status_code} {p} [{ct[:20]}] len={len(body)}")
-        if r.ok and "json" in ct:
-            j = r.json()
-            if isinstance(j, dict):
-                print("  keys:", list(j)[:25])
-                for k, v in j.items():
-                    if isinstance(v, list) and v:
-                        print(f"  {k}[0] ({len(v)} items):", json.dumps(v[0])[:600]); break
-                else:
-                    print("  ", json.dumps(j)[:700])
-            elif isinstance(j, list):
-                print(f"  list({len(j)}):", json.dumps(j[0])[:600] if j else "[]")
-    except Exception as e:
-        print("ERR", p, e)
+T = "0x9a9815af521149e8d982791703a31bca2f95f534"
+j = S.get(A + "/api/tokens?sort=volume&window=24h&launchpad=all&limit=3&offset=0", timeout=20).json()
+it = j["tokens"][1]; it["stats"]["spark"] = f"<{len(it['stats'].get('spark') or [])} pts>"
+print("LIST ITEM:", json.dumps(it, indent=1)[:3000])
+print("totals:", j["totals"], "synced:", j["synced"])
+for q in ("limit=200", "limit=500", "sort=losers&window=1h&limit=3", "sort=gainers&window=6h&limit=3",
+          "sort=gainers&window=7d&limit=3", "sort=volume&window=1h&limit=3", "sort=trades&limit=3", "sort=holders&limit=3",
+          "q=BLOB&limit=5", "launchpad=boxa&limit=3", "only=" + T):
+    r = S.get(A + "/api/tokens?" + q, timeout=30); jj = r.json() if r.ok else r.text[:100]
+    print(f"\n{q}: {r.status_code}", (len(jj.get('tokens', [])), jj.get('total'), [ (t['symbol'], round((t['stats'].get('change') or {}).get('1h') or 0, 3)) for t in jj.get('tokens', [])[:5]]) if isinstance(jj, dict) else jj)
+for rng in ("1h", "6h", "24h", "7d", "30d", "all", "1d", "1w"):
+    t0 = time.time(); r = S.get(f"{A}/api/tokens/{T}?range={rng}", timeout=30)
+    d = r.json() if r.ok else {}
+    c = d.get("candles") or []
+    tr = d.get("trades") or []
+    print(f"\nrange={rng}: {r.status_code} {time.time()-t0:.1f}s candles={len(c)} trades={len(tr)} devTrades={len(d.get('devTrades') or [])}")
+    if c: print("  candle first:", json.dumps(c[0]), "last:", json.dumps(c[-1]))
+    if tr and rng == "24h": print("  trade:", json.dumps(tr[0])[:500])
+    if rng == "24h": print("  stats:", json.dumps({k: v for k, v in d.get("stats", {}).items() if k != "spark"})[:900]); print("  tax:", d.get("tax"), "version:", d.get("version"), "tradable:", d.get("tradable"))
