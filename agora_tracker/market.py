@@ -57,6 +57,9 @@ class TokenInfo:
     trades_24h: int | None = None
     created_at: int | None = None      # unix seconds
     x_url: str | None = None
+    telegram_url: str | None = None
+    website_url: str | None = None
+    image: str | None = None           # Agora image proxy path or URL
 
 
 def _f(v: Any) -> float | None:
@@ -90,7 +93,18 @@ def parse_token(address: str, j: dict) -> TokenInfo:
         last_trade_at=_i(st.get("lastTradeAt")), version=j.get("version"),
         holders=_i(j.get("holders")), buys_24h=_i(st.get("buys24h")),
         trades_24h=_i(st.get("trades24h")), created_at=created,
-        x_url=links.get("x") if isinstance(links.get("x"), str) else None)
+        x_url=_link(links, "x", "twitter"), telegram_url=_link(links, "telegram", "tg"),
+        website_url=_link(links, "website", "web", "site"),
+        image=j.get("image") if isinstance(j.get("image"), str) else None)
+
+
+def _link(links: dict, *keys: str) -> str | None:
+    """First http(s) link under any of `keys` (Agora's `links` object)."""
+    for k in keys:
+        v = links.get(k)
+        if isinstance(v, str) and v.startswith(("https://", "http://")):
+            return v
+    return None
 
 
 class AgoraMarket:

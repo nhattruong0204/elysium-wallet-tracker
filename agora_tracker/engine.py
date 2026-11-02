@@ -63,9 +63,10 @@ class Engine:
                 "rank": row["rank"] if row is not None and row["in_top"] else None,
                 "pnl": row["pnl"] if row is not None else None, "pnl_unit": self.value_unit}
 
-    def _trade_payload(self, ev: TradeEvent, notes: list[str], ts: int | None) -> dict:
+    def _trade_payload(self, ev: TradeEvent, notes: list[str], ts: int | None,
+                       extra: dict | None = None) -> dict:
         sym, dec = self.tokens.get(ev.token)
-        p = {"type": "trade", "kind": ev.kind, "tx": ev.tx, "block": ev.block, "ts": ts,
+        p = {"type": "trade", "v": 2, **(extra or {}), "kind": ev.kind, "tx": ev.tx, "block": ev.block, "ts": ts,
              "token": ev.token, "symbol": sym, "decimals": dec, "qty": str(ev.qty),
              "hype_wei": None if ev.hype_wei is None else str(ev.hype_wei),
              "confidence": ev.confidence, "hype_method": ev.hype_method, "notes": notes,
@@ -164,6 +165,15 @@ class Engine:
         checkpoint in ONE transaction. Returns the number of new trades."""
         min_wei = int(Decimal(str(self.cfg.min_trade_hype)) * WEI)
         new = 0
+        # counterparty of each (tx, token, wallet) transfer leg, for "sent to 0x…" lines
+        counter: dict[tuple[str, str, str], tuple[int, str]] = {}
+        for tr in result.transfers:
+            amt = int(tr.get("amount") or 0)
+            for me, other in ((tr["from_address"], tr["to_address"]),
+                              (tr["to_address"], tr["from_address"])):
+                key = (tr["tx_hash"], tr["token"], me)
+                if amt >= counter.get(key, (-1, ""))[0]:
+                    counter[key] = (amt, other)
         with self.store.tx() as c:
             self.store.insert_evidence(c, result.transactions, result.transfers)
             self.store.record_blocks(c, result.block_times, result.block_hashes)
@@ -174,21 +184,45 @@ class Engine:
                     continue  # this (tx, wallet, token) leg was already processed (replay)
                 new += 1
                 notes: list[str] = []
+                extra: dict = {}
                 if ev.kind in ("BUY", "SELL", "TRANSFER_IN", "TRANSFER_OUT", "MULTI"):
                     p = self.store.get_position(c, ev.wallet, ev.token)
+                    before = p.qty
                     notes, realized = self._apply(p, ev, bts)
                     self.store.put_position(c, ev.wallet, ev.token, p)
                     if realized:
                         self.store.record_realized(c, trade_id, ev.wallet, ev.token, **realized)
+                    extra = self._position_fields(ev, before, p, realized)
+                cp = counter.get((ev.tx, ev.token, ev.wallet))
+                if cp and ev.kind in ("TRANSFER_IN", "TRANSFER_OUT"):
+                    extra["counterparty"] = cp[1]
                 if not self._should_alert(ev, min_wei):
                     continue
-                payload = self._trade_payload(ev, notes, bts)
+                payload = self._trade_payload(ev, notes, bts, extra)
                 text, _ = cards.render_trade(payload, self.links)
                 self.store.enqueue(c, f"ev:{ev.key}", text, payload=payload)
                 if ev.kind == "BUY" and ev.confidence == "high" and bts is not None:
                     self._maybe_cluster(c, ev, bts, min_wei)
             self.store.set_cursor(c, cursor)
         return new
+
+    @staticmethod
+    def _position_fields(ev: TradeEvent, before: int, p: Position, realized: dict | None
+                         ) -> dict:
+        """Structured position outcome for the alert card (holdings, % sold, PnL)."""
+        out: dict = {"pos_qty": str(p.qty), "pos_cost_wei": str(p.cost_wei),
+                     "pos_basis": p.basis, "is_new": ev.kind == "BUY" and before == 0}
+        if before > 0 and p.qty < before:
+            out["sold_pct"] = round((before - p.qty) / before * 100, 2)
+        if realized is not None:
+            out["realized_status"] = realized["status"]
+            if realized["status"] == "unknown":
+                out["realized_reason"] = "before_tracking" if before <= 0 else "unknown_cost"
+            if realized.get("pnl_wei") is not None:
+                out["realized_wei"] = str(realized["pnl_wei"])
+                cb = realized.get("cost_basis_wei")
+                out["realized_pct"] = round(realized["pnl_wei"] / cb * 100, 2) if cb else None
+        return out
 
     def _should_alert(self, ev: TradeEvent, min_wei: int) -> bool:
         if ev.kind in ("BUY", "SELL"):

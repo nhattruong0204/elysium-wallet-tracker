@@ -17,7 +17,7 @@ log = logging.getLogger(__name__)
 
 class Notifier:
     def __init__(self, store: Store, cfg: TelegramConfig, dry_run: bool = False,
-                 renderer: Callable[[dict], tuple[str, dict | None]] | None = None):
+                 renderer: Callable[[dict], tuple] | None = None):
         self.store, self.cfg = store, cfg
         self.renderer = renderer
         self.enabled = bool(cfg.bot_token and cfg.chat_id) and not dry_run
@@ -27,18 +27,21 @@ class Notifier:
         if not self.enabled:
             log.info("Telegram not configured (or --dry-run): alerts print to stdout")
 
-    def _render(self, row: dict) -> tuple[str, dict | None]:
-        """Final text + inline keyboard. A rendering failure falls back to the stored text:
-        an alert is never held back because market data or rendering broke."""
+    def _render(self, row: dict) -> tuple[str, dict | None, str | None]:
+        """Final text, inline keyboard and optional image URL shown above the card. A
+        rendering failure falls back to the stored text: an alert is never held back
+        because market data or rendering broke."""
         if self.renderer is None or not row.get("payload"):
-            return row["text"], None
+            return row["text"], None, None
         try:
-            return self.renderer(row)
+            out = self.renderer(row)
         except Exception:  # noqa: BLE001 - delivery must not depend on enrichment
             log.exception("rendering alert %s failed; sending stored text", row.get("id"))
-            return row["text"], None
+            return row["text"], None, None
+        return (out[0], out[1], out[2] if len(out) > 2 else None)
 
-    def _send(self, text: str, markup: dict | None = None) -> tuple[bool, str, bool]:
+    def _send(self, text: str, markup: dict | None = None,
+              preview: str | None = None) -> tuple[bool, str, bool]:
         """Returns (ok, error, permanent)."""
         if not self.enabled:
             buttons = ""
@@ -52,8 +55,11 @@ class Notifier:
             time.sleep(wait)
         url = f"https://api.telegram.org/bot{self.cfg.bot_token}/sendMessage"
         try:
+            # No link previews, except the token picture when the card provides one.
+            lp = ({"url": preview, "prefer_large_media": True, "show_above_text": True}
+                  if preview else {"is_disabled": True})
             body: dict = {"chat_id": self.cfg.chat_id, "text": text[:4000], "parse_mode": "HTML",
-                          "disable_web_page_preview": True}
+                          "link_preview_options": lp}
             if markup:
                 body["reply_markup"] = markup
             r = self.session.post(url, json=body, timeout=self.cfg.timeout_s)
@@ -99,8 +105,8 @@ class Notifier:
                 row = self.store.claim_due_alert(c)
                 if row is None:
                     break
-                text, markup = self._render(row)
-                ok, err, permanent = self._send(text, markup)
+                text, markup, preview = self._render(row)
+                ok, err, permanent = self._send(text, markup, preview)
                 if ok:
                     self.store.mark_sent(c, row["id"])
                     sent += 1

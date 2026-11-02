@@ -182,9 +182,12 @@ def test_end_to_end_buy_sell_transfer_cluster(store, chain):
 
     texts = [r["text"] for r in store.pending_alerts(100)]
     assert any("CLUSTER BUY" in t and "KLEOS" in t for t in texts)
-    assert any("new position" in t and "whale-1" in t for t in texts)
-    assert any("realized +0.300 HYPE (+60%)" in t for t in texts)
-    assert any("OUT (sell?)" in t and "HYPE leg unknown" in t for t in texts)
+    assert any("🆕🟢 <b>BUY</b>" in t and "whale-1" in t for t in texts)
+    # sell card: % of bag, measured PnL (HYPE here: the stored fallback has no USD rate),
+    # remaining holdings
+    assert any("➖ Sold: 50.0% of bag" in t and "📈 PnL: <b>+0.300 HYPE</b> (+60.0%)" in t
+               and "✊ Holds: <b>500.00</b>" in t for t in texts)
+    assert any("OUT (sell?)" in t and "No HYPE came back" in t for t in texts)
     assert store.get_cursor() == 40
 
 
@@ -285,7 +288,7 @@ def test_quiet_mode_keeps_trade_alerts_and_records_signals_silently(store, chain
     run_all(follower, engine, {W1, W2, W3})
     texts = [r["text"] for r in store.pending_alerts(100)]
     assert not any("CLUSTER BUY" in t for t in texts)
-    assert any("new position" in t for t in texts) and any("OUT (sell?)" in t for t in texts)
+    assert any("🆕🟢" in t for t in texts) and any("OUT (sell?)" in t for t in texts)
     with store.tx() as c:
         assert c.execute(sa.text("SELECT count(*) FROM signals")).scalar() == 1
 

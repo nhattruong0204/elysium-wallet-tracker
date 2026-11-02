@@ -51,6 +51,7 @@ alerts:
   # still recorded and visible in the Telegram menu, just not pushed as alerts.
   leaderboard_alerts: false
   cluster_alerts: false
+  token_image: true            # token picture above each alert card (from Agora)
   rank_change: 10              # alert when a wallet moves >= 10 places
   pnl_change: 50               # HYPE (~$4k): alert when a wallet's PnL moves this much between refreshes
   cluster_window_s: 3600
