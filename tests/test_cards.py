@@ -61,43 +61,94 @@ def test_parse_real_agora_token_response():
     assert round(info.change_24h * 100) == 73 and info.created_at == 1793077114
 
 
-def test_trade_card_links_market_data_and_buttons():
+def test_buy_card_layout_links_and_buttons():
     info = parse_token(TOKEN, FIX)
-    text, kb = cards.render_trade(payload(), L, info, hype_usd=85.9, now=NOW)
+    p = payload(v=2, is_new=True, pos_qty=str(12_400_000 * 10**18), pos_cost_wei=str(32 * 10**17),
+                pos_basis="known", notes=[])
+    text, kb = cards.render_trade(p, L, info, hype_usd=85.9, now=NOW)
     hrefs = parse(text).hrefs
     for url in (f"https://www.agoradex.app/token/{TOKEN}", f"https://www.thekleos.xyz/token/{TOKEN}",
                 f"https://boxa.club/token?address={TOKEN}", f"https://elysp.com/#/token/{TOKEN}",
-                f"https://elyscan.live/token/{TOKEN}", f"https://elyscan.live/tx/{TX}",
-                f"https://elyscan.live/address/{WALLET}", f"https://www.agoradex.app/trader/{WALLET}"):
+                f"https://elyscan.live/tx/{TX}", f"https://elyscan.live/address/{WALLET}",
+                f"https://www.agoradex.app/trader/{WALLET}", FIX["links"]["x"],
+                f"https://x.com/search?q={TOKEN}&f=live"):
         assert url in hrefs, url
-    assert "MC <b>$856.64K</b>" in text and "9.97K HYPE" not in text
-    assert "24h Vol 2.27K HYPE" in text and "24h +73%" in text and "👥 697" in text
-    assert "3.200 HYPE ($274.88) → 12.40M BLOB" in text
-    assert f"<code>{TOKEN}</code>" in text            # full CA, tap to copy
-    assert "2m ago" in text and "PnL 709.12 HYPE" in text
-    row1, row2 = kb["inline_keyboard"]
-    assert [b["text"] for b in row1] == ["🛒 Agora", "Kleos", "BOXA", "ElysPump"]
-    assert [b["text"] for b in row2] == ["🧾 Tx", "👤 Trader"]
+    lines = text.split("\n")
+    assert lines[0].startswith("🆕🟢 <b>BUY</b>") and lines[0].endswith("(ElysPump)")
+    assert "<b>whale-1</b>" in lines[1] and "<b>#3</b>" in lines[1] and "PnL +$60.91K" in lines[1]
+    assert lines[2] == ""                                         # breathing space, like Raybot
+    assert "whale-1 swapped <b>3.20 HYPE ($274.88)</b> for <b>12.40M</b>" in lines[3]
+    assert "@$0.0000222" in lines[3]                               # execution price, no 1e-05
+    assert lines[4].startswith("✊ Holds: <b>12.40M</b> (") and "uPnL: +$" in lines[4]
+    assert any(ln.startswith("📊 24h <b>+73%</b>") and "Vol $195.25K" in ln for ln in lines)
+    bar = next(ln for ln in lines if ln.startswith("🔗 "))
+    assert bar.startswith("🔗 #BLOB ( <a") and "<b>MC</b>: $856.64K" in bar
+    assert "<b>Seen</b>: 6d: " in bar and "9.97K HYPE" not in text
+    assert f"<code>{TOKEN}</code>" in text and "2m ago" in text
+    assert [[b["text"] for b in r] for r in kb["inline_keyboard"]] == [
+        ["🛒 Agora: BLOB", "BOXA: BLOB"], ["Kleos: BLOB", "ElysPump: BLOB"]]
     assert all(b["url"].startswith("https://") for r in kb["inline_keyboard"] for b in r)
+    assert cards.preview_url(L, info) == "https://www.agoradex.app/api/img?src=x"
+
+
+def test_sell_card_shows_sold_share_pnl_in_usd_and_remaining_bag():
+    info = parse_token(TOKEN, FIX)
+    p = payload(v=2, kind="SELL", notes=[], sold_pct=97.5, realized_status="measured",
+                realized_wei=str(-12 * 10**17), realized_pct=-48.48,
+                pos_qty=str(310_000 * 10**18), pos_cost_wei=str(8 * 10**16), pos_basis="known")
+    text, _ = cards.render_trade(p, L, info, hype_usd=85.9, now=NOW)
+    assert text.split("\n")[0].startswith("🔴 <b>SELL</b>")
+    assert "swapped <b>12.40M</b>" in text and "for <b>3.20 HYPE ($274.88)</b>" in text
+    assert "➖ Sold: 97.5% of bag" in text and "📉 PnL: <b>-$103.08</b> (-48.5%)" in text
+    exit_, _ = cards.render_trade({**p, "sold_pct": 100.0, "pos_qty": "0"}, L, info, 85.9)
+    assert "🚪 Sold: 100% (full exit)" in exit_ and "Holds" not in exit_
+    unk, _ = cards.render_trade({**p, "realized_status": "unknown", "realized_wei": None,
+                                 "realized_reason": "before_tracking"}, L, info, 85.9)
+    assert "PnL: <i>unknown (bought before tracking)</i>" in unk
+
+
+def test_transfer_card_names_the_counterparty():
+    other = "0x" + "ee" * 20
+    p = payload(v=2, kind="TRANSFER_OUT", hype_wei=None, notes=[], counterparty=other,
+                sold_pct=20.0, pos_qty=str(10**18), pos_basis="partial_unknown")
+    text, _ = cards.render_trade(p, L, parse_token(TOKEN, FIX), 85.9, now=NOW)
+    assert text.startswith("📤 <b>SENT</b>")
+    assert "sent <b>12.40M</b>" in text and f"https://elyscan.live/address/{other}" in parse(text).hrefs
+    assert "➖ Moved: 20.0% of bag" in text and "uPnL" not in text   # unknown cost: no uPnL
 
 
 def test_card_without_market_data_still_has_all_links():
-    text, kb = cards.render_trade(payload(), L, None, None, now=NOW)
+    text, kb = cards.render_trade(payload(v=2, notes=[]), L, None, None, now=NOW)
     hrefs = parse(text).hrefs
     assert f"https://boxa.club/token?address={TOKEN}" in hrefs
     assert f"https://elyscan.live/tx/{TX}" in hrefs
-    assert "📊" not in text
-    assert [b["text"] for b in kb["inline_keyboard"][0]] == ["🛒 Agora", "Kleos", "BOXA"]
+    assert "📊" not in text and "MC" not in text and "@$" not in text
+    assert [b["text"] for b in kb["inline_keyboard"][0]] == ["🛒 Agora: BLOB", "BOXA: BLOB"]
+    assert kb["inline_keyboard"][1][1]["text"] == "🧾 Tx"
+    assert cards.preview_url(L, None) is None
 
 
 def test_estimated_and_unknown_are_marked_and_html_is_escaped():
     text, _ = cards.render_trade(payload(confidence="estimated", hype_method="tx_value",
                                          symbol="<b>X&Y"), L, None, None)
     parse(text)
-    assert "≈3.200 HYPE" in text and "estimated (tx_value)" in text and "&lt;b&gt;X&amp;Y" in text
+    assert "≈3.20 HYPE" in text and "estimated (tx_value)" in text and "&lt;b&gt;X&amp;Y" in text
+    assert "#bXY" in text                                  # hashtag keeps word chars only
     out, _ = cards.render_trade(payload(kind="TRANSFER_OUT", confidence="unknown", hype_wei=None,
                                         notes=[]), L, None, None)
-    assert "OUT (sell?)" in out
+    assert "🟠 <b>OUT (sell?)</b>" in out
+
+
+def test_legacy_payloads_keep_their_notes():
+    text, _ = cards.render_trade(payload(notes=["🆕 new position", "realized +0.300 HYPE"]), L,
+                                 None, None)
+    assert text.startswith("🆕🟢") and "<i>realized +0.300 HYPE</i>" in text
+
+
+def test_number_formats():
+    assert cards.price_str(0.0000073912) == "$0.00000739" and cards.price_str(1234.5) == "$1,234.50"
+    assert cards.usd(-109.63, signed=True) == "-$109.63" and cards.usd(6960) == "$6.96K"
+    assert cards.hashtag("e/acc") == "#eacc" and cards.hashtag("$$") == ""
 
 
 def test_cluster_card_links_each_wallet():
@@ -107,8 +158,8 @@ def test_cluster_card_links_each_wallet():
     text, kb = cards.render_cluster(p, L, parse_token(TOKEN, FIX), 85.9)
     hrefs = parse(text).hrefs
     assert f"https://elyscan.live/address/0x{'ab' * 20}" in hrefs
-    assert "2 tracked wallets" in text and "MC" in text
-    assert len(kb["inline_keyboard"]) == 1
+    assert "2 tracked wallets" in text and "<b>MC</b>: $856.64K" in text
+    assert len(kb["inline_keyboard"]) == 2
 
 
 class FakeResp:
@@ -134,12 +185,16 @@ def test_market_failure_returns_none_and_is_cached():
 def test_notifier_sends_buttons_and_falls_back_when_rendering_breaks(store):
     sent = []
     n = Notifier(store, TelegramConfig(bot_token="1:x", chat_id="1", min_interval_s=0),
-                 renderer=lambda row: cards.render(row["payload"], L, None, None))
+                 renderer=lambda row: (*cards.render(row["payload"], L, None, None),
+                                       "https://www.agoradex.app/api/img?src=x"))
     n.session.post = lambda url, json, timeout: (sent.append(json), FakeResp(200))[1]
     store.enqueue_now("a", "fallback text", payload=payload())
     assert n.drain() == 1
-    assert sent[0]["reply_markup"]["inline_keyboard"][0][0]["text"] == "🛒 Agora"
+    assert sent[0]["reply_markup"]["inline_keyboard"][0][0]["text"] == "🛒 Agora: BLOB"
     assert sent[0]["parse_mode"] == "HTML"
+    assert sent[0]["link_preview_options"] == {          # token picture above the card
+        "url": "https://www.agoradex.app/api/img?src=x", "prefer_large_media": True,
+        "show_above_text": True}
 
     def broken(row):
         raise RuntimeError("market API changed shape")
@@ -147,6 +202,7 @@ def test_notifier_sends_buttons_and_falls_back_when_rendering_breaks(store):
     store.enqueue_now("b", "fallback text", payload=payload())
     assert n.drain() == 1
     assert sent[1]["text"] == "fallback text" and "reply_markup" not in sent[1]
+    assert sent[1]["link_preview_options"] == {"is_disabled": True}
 
 
 def test_test_card_sends_latest_trade(store, monkeypatch):
@@ -166,14 +222,13 @@ def test_test_card_sends_latest_trade(store, monkeypatch):
         store.insert_trade(c, TradeEvent("BUY", TX, 7, WALLET, TOKEN, 10**18, 2 * 10**18), 1)
     monkeypatch.setattr(cli, "Store", lambda **kw: store)
     sent = []
-    monkeypatch.setattr(cli.Notifier, "_send", lambda self, t, kb=None: (sent.append((t, kb)) or (True, "", False)))
+    monkeypatch.setattr(cli.Notifier, "_send", lambda self, t, kb=None, img=None: (sent.append((t, kb)) or (True, "", False)))
     assert cli.test_card(cfg) == 0
-    assert "test card" in sent[0][0] and sent[0][1]["inline_keyboard"][0][0]["text"] == "🛒 Agora"
+    assert "Test card" in sent[0][0] and sent[0][1]["inline_keyboard"][0][0]["text"].startswith("🛒 Agora")
 
 
 def test_market_cap_falls_back_to_hype_without_a_usd_rate():
-    from agora_tracker.cards import market_line
     from agora_tracker.market import TokenInfo
     info = TokenInfo(address=TOKEN, mcap_hype=9970.0)
-    assert "MC <b>9.97K HYPE</b>" in market_line(info, None)
-    assert "MC <b>$857.42K</b>" in market_line(info, 86.0)
+    assert "<b>MC</b>: 9.97K HYPE" in cards.link_bar(L, TOKEN, "BLOB", info, None)
+    assert "<b>MC</b>: $857.42K" in cards.link_bar(L, TOKEN, "BLOB", info, 86.0)

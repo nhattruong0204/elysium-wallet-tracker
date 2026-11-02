@@ -200,8 +200,8 @@ def test_P1_estimated_buy_books_estimated_pnl_only(store):
     pos = get_pos(store, W1, TOKEN)
     assert pos.realized_wei == 0 and pos.realized_est_wei == E18
     texts = [r["text"] for r in store.pending_alerts(50)]
-    assert any("≈1.000 HYPE" in t and "estimated (tx_value)" in t for t in texts)
-    assert any("realized ≈+1.000 HYPE" in t for t in texts)
+    assert any("≈1.00 HYPE" in t and "estimated (tx_value)" in t for t in texts)
+    assert any("PnL: <b>≈+1.000 HYPE</b>" in t for t in texts)
 
 
 def test_P1_sell_after_unknown_cost_transfer_in_books_no_pnl(store):
@@ -215,7 +215,8 @@ def test_P1_sell_after_unknown_cost_transfer_in_books_no_pnl(store):
     scan_apply(f, e, {W1})
     pos = get_pos(store, W1, TOKEN)
     assert pos.qty == 0 and pos.realized_wei == 0 and pos.realized_est_wei == 0
-    assert any("PnL unknown" in r["text"] for r in store.pending_alerts(50))
+    assert any("PnL: <i>unknown (part of the bag arrived by transfer" in r["text"]
+               for r in store.pending_alerts(50))
 
 
 def test_P4_cluster_ignores_dust_and_estimated_buys(store):

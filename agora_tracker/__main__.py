@@ -52,13 +52,16 @@ class Tracker:
         self._next_heads = 0.0
         self._stop = False
 
-    def render_alert(self, row: dict) -> tuple[str, dict | None]:
+    def render_alert(self, row: dict) -> tuple[str, dict | None, str | None]:
         """Re-render a stored alert with fresh market data (called by the notifier)."""
         payload = row["payload"]
         token = payload.get("token")
         info = self.market.token(token) if token else None
         out = cards.render(payload, self.links, info, self.market.hype_usd())
-        return out if out else (row["text"], None)
+        if not out:
+            return row["text"], None, None
+        img = cards.preview_url(self.links, info) if self.cfg.alerts.token_image else None
+        return out[0], out[1], img
 
     def stop(self, *_):
         log.info("shutdown requested")
@@ -265,10 +268,21 @@ def test_card(cfg: Config) -> int:
                "hype_wei": str(int(r["hype_wei"])), "confidence": r["confidence"],
                "hype_method": r["hype_method"], "notes": ["🧪 test card: latest tracked trade"],
                "wallet": r["wallet"], "label": None, "rank": row.get("rank"),
-               "pnl": row.get("pnl"), "pnl_unit": cfg.leaderboard.value_unit}
+               "pnl": row.get("pnl"), "pnl_unit": cfg.leaderboard.value_unit, "v": 2}
+    with store.engine.connect() as c:
+        pos = c.execute(sa.text(
+            "SELECT qty, cost_wei, basis FROM wallet_positions WHERE chain_id = :c "
+            "AND wallet = :w AND token = :t"), {"c": cfg.chain.chain_id, "w": r["wallet"],
+                                                 "t": r["token"]}).first()
+    if pos is not None:   # current position (the real alert carries the post-trade one)
+        payload.update(pos_qty=str(int(pos[0])), pos_cost_wei=str(int(pos[1])),
+                       pos_basis=pos[2])
     market, links = AgoraMarket(cfg.market), Links(cfg.links)
-    text, kb = cards.render_trade(payload, links, market.token(r["token"]), market.hype_usd())
-    ok, err, _ = Notifier(None, cfg.telegram)._send(text, kb)  # type: ignore[arg-type]
+    info = market.token(r["token"])
+    text, kb = cards.render_trade(payload, links, info, market.hype_usd())
+    text = "🧪 <i>Test card: latest tracked trade, re-rendered now</i>\n\n" + text
+    img = cards.preview_url(links, info) if cfg.alerts.token_image else None
+    ok, err, _ = Notifier(None, cfg.telegram)._send(text, kb, img)  # type: ignore[arg-type]
     print("card sent" if ok else f"card FAILED: {err}")
     return 0 if ok else 1
 

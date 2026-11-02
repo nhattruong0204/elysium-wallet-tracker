@@ -133,7 +133,7 @@ def test_delivered_alerts_are_not_resent(store, tmp_path):
     assert sqlite_import.run_import(str(db), cfg(), store=store) == 0
     sent = []
     n = Notifier(store, TelegramConfig(), dry_run=True)
-    n._send = lambda text, markup=None: (sent.append(text) or (True, "", False))
+    n._send = lambda text, markup=None, preview=None: (sent.append(text) or (True, "", False))
     n.drain(50)
     assert sent == ["y"]  # only the pending one
 
