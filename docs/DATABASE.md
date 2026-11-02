@@ -74,16 +74,16 @@ issue with its migration:
 
 | Entity | Planned in |
 |---|---|
-| `rpc_providers` (health scores, latency) | P2 provider manager |
-| `ingestion_runs`, `ingestion_errors` | P2 reconciliation job |
-| `token_prices` | P4 signal outcomes |
-| `wallet_scores`, `wallet_score_history` | P4 scoring |
-| `wallet_clusters`, `cluster_memberships` | P4 funding-graph clustering |
-| `signal_outcomes` | P4 outcome tracking |
-| `alert_rules` | P4 Telegram commands / per-chat settings |
+| `rpc_providers` (health scores, latency) | #3 provider manager |
+| `ingestion_runs`, `ingestion_errors` | #5 reconciliation job |
+| `token_prices` | #14 signal outcomes |
+| `wallet_scores`, `wallet_score_history` | #11 scoring |
+| `wallet_clusters`, `cluster_memberships` | #12 funding-graph clustering |
+| `signal_outcomes` | #14 outcome tracking |
+| `alert_rules` | #15 Telegram commands / per-chat settings |
 
 `transaction_logs` (all logs, not just Transfer) is deliberately not stored: the indexer only
-requests Transfer logs. Launchpad adapters (P2) will add their own decoded-event tables.
+requests Transfer logs. Launchpad adapters (#7) will add their own decoded-event tables.
 
 ## Concurrency
 
