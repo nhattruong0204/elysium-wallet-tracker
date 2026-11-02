@@ -11,7 +11,31 @@ All commands run from the repository directory on the VPS.
 | `tracker` | Leaderboard collector + indexer + notifier (one process) | always |
 | `backup` | Daily `pg_dump -Fc` into `./backups`, verified, pruned after 14 days | always |
 
-## First deployment
+## Deploying without SSH (GitHub Actions)
+
+The `deploy` workflow connects to the VPS from GitHub's runner, so you can deploy, check
+status and read logs from a phone. Credentials live only in GitHub secrets.
+
+1. Repo → **Settings → Secrets and variables → Actions → New repository secret**:
+   `VPS_HOST`, `VPS_USER`, `VPS_PASSWORD` (or better `VPS_SSH_KEY`), `TG_BOT_TOKEN`,
+   `TG_CHAT_ID`; optional `VPS_PORT`, `VPS_HOST_KEY`.
+2. **Actions → deploy → Run workflow**, choose an action:
+
+| Action | Does |
+|---|---|
+| `deploy` | Upload code, write `.env` (PostgreSQL password generated once on the VPS), install `deploy/config.yaml` + `deploy/watchlist.txt`, build, migrate, send a Telegram test message, start, wait for healthy |
+| `status` / `logs` | `--status`, container states, recent logs |
+| `discover` | Find Agora's leaderboard API; paste the result into `deploy/config.yaml` via PR, then `deploy` |
+| `dry-run` | Catch up once and print alerts instead of sending |
+| `test-telegram` | Send one test message |
+| `restart` / `stop` | As named |
+
+Bot settings are config-as-code: change `deploy/config.yaml` or `deploy/watchlist.txt` in a
+PR and run `deploy`. The first run prints the server's SSH host key fingerprint; save that
+line as `VPS_HOST_KEY` to pin it. Set `install_docker` only if Docker is missing and the SSH
+user is root.
+
+## First deployment (manual, over SSH)
 
 ```bash
 cp .env.example .env            # set POSTGRES_PASSWORD (openssl rand -hex 24), TG_*

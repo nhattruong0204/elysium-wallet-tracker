@@ -1,0 +1,114 @@
+name: deploy
+
+# Manual-only. Connects to the VPS over SSH from GitHub's runner and runs scripts/remote.sh.
+# Repository secrets (Settings > Secrets and variables > Actions):
+#   VPS_HOST          IP or hostname                         (required)
+#   VPS_USER          SSH user, root or a docker-group user  (required)
+#   VPS_PASSWORD      SSH password      } one of the two      (required)
+#   VPS_SSH_KEY       private key (PEM) }  key preferred
+#   VPS_PORT          SSH port, default 22                   (optional)
+#   VPS_HOST_KEY      known_hosts line to pin the server key (optional, recommended)
+#   TG_BOT_TOKEN, TG_CHAT_ID                                 (required for deploy)
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: What to do on the VPS
+        type: choice
+        default: status
+        options: [deploy, status, logs, discover, dry-run, test-telegram, restart, stop]
+      deploy_dir:
+        description: Directory on the VPS (relative to the SSH user's home, or absolute)
+        type: string
+        default: elysium-wallet-tracker
+      install_docker:
+        description: Install Docker if missing (only works when VPS_USER is root)
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vps
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      ACTION: ${{ inputs.action }}
+      DIR: ${{ inputs.deploy_dir }}
+      INSTALL_DOCKER: ${{ inputs.install_docker }}
+      VPS_HOST: ${{ secrets.VPS_HOST }}
+      VPS_USER: ${{ secrets.VPS_USER }}
+      VPS_PORT: ${{ secrets.VPS_PORT }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check inputs and secrets
+        env:
+          HAS_PW: ${{ secrets.VPS_PASSWORD != '' }}
+          HAS_KEY: ${{ secrets.VPS_SSH_KEY != '' }}
+          HAS_TG: ${{ secrets.TG_BOT_TOKEN != '' && secrets.TG_CHAT_ID != '' }}
+        run: |
+          [[ "$DIR" =~ ^[A-Za-z0-9._/~-]+$ ]] || { echo "deploy_dir has unsafe characters"; exit 1; }
+          [ -n "$VPS_HOST" ] && [ -n "$VPS_USER" ] || { echo "missing VPS_HOST / VPS_USER secrets"; exit 1; }
+          [ "$HAS_PW" = true ] || [ "$HAS_KEY" = true ] || { echo "set VPS_SSH_KEY or VPS_PASSWORD"; exit 1; }
+          if [ "$ACTION" = deploy ] && [ "$HAS_TG" != true ]; then echo "deploy needs TG_BOT_TOKEN and TG_CHAT_ID"; exit 1; fi
+          echo "action=$ACTION dir=$DIR auth=$([ "$HAS_KEY" = true ] && echo key || echo password)"
+
+      - name: Prepare SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST_KEY: ${{ secrets.VPS_HOST_KEY }}
+        run: |
+          install -d -m 700 ~/.ssh
+          PORT="${VPS_PORT:-22}"
+          if [ -n "$VPS_HOST_KEY" ]; then
+            echo "$VPS_HOST_KEY" > ~/.ssh/known_hosts
+          else
+            # Trust on first use; pin it later by saving this line as the VPS_HOST_KEY secret.
+            ssh-keyscan -p "$PORT" -T 15 "$VPS_HOST" 2>/dev/null > ~/.ssh/known_hosts
+            [ -s ~/.ssh/known_hosts ] || { echo "could not reach $VPS_HOST:$PORT over SSH"; exit 1; }
+            echo "Host key fingerprints (set VPS_HOST_KEY to pin):"
+            ssh-keygen -lf ~/.ssh/known_hosts
+          fi
+          if [ -n "$VPS_SSH_KEY" ]; then
+            printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/id_deploy && chmod 600 ~/.ssh/id_deploy
+            echo "SSH_OPTS=-i $HOME/.ssh/id_deploy -o BatchMode=yes" >> "$GITHUB_ENV"
+          else
+            sudo apt-get install -y -qq sshpass >/dev/null
+            echo "SSH_OPTS=-o PreferredAuthentications=password -o PubkeyAuthentication=no" >> "$GITHUB_ENV"
+            echo "USE_SSHPASS=1" >> "$GITHUB_ENV"
+          fi
+          echo "SSH_TARGET=$VPS_USER@$VPS_HOST" >> "$GITHUB_ENV"
+          echo "SSH_PORT=$PORT" >> "$GITHUB_ENV"
+
+      - name: Run on VPS
+        env:
+          SSHPASS: ${{ secrets.VPS_PASSWORD }}
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+        run: |
+          ssh_() {
+            if [ -n "${USE_SSHPASS:-}" ]; then
+              sshpass -e ssh -p "$SSH_PORT" -o StrictHostKeyChecking=yes -o ConnectTimeout=20 \
+                -o ServerAliveInterval=30 $SSH_OPTS "$SSH_TARGET" "$@"
+            else
+              ssh -p "$SSH_PORT" -o StrictHostKeyChecking=yes -o ConnectTimeout=20 \
+                -o ServerAliveInterval=30 $SSH_OPTS "$SSH_TARGET" "$@"
+            fi
+          }
+          ssh_ "echo connected to \$(hostname) as \$(id -un); uname -sr"
+          if [ "$ACTION" = deploy ]; then
+            # code bundle (tracked files only; never .env, config/, backups/)
+            git archive --format=tar HEAD | \
+              ssh_ "mkdir -p '$DIR' && cd '$DIR' && rm -rf agora_tracker && tar -xf -"
+            # Telegram secrets, written with 0600; POSTGRES_PASSWORD is generated on the VPS
+            printf 'TG_BOT_TOKEN=%s\nTG_CHAT_ID=%s\n' "$TG_BOT_TOKEN" "$TG_CHAT_ID" | \
+              ssh_ "umask 077 && cat > '$DIR/.env.incoming'"
+          fi
+          ssh_ "bash -s -- '$ACTION' '$DIR' '$INSTALL_DOCKER'" < scripts/remote.sh
