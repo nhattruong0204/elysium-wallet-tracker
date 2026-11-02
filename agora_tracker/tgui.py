@@ -737,3 +737,54 @@ def _addr(p: list[str], i: int) -> str:
     if not ADDR.match(v):
         raise Expired("bad address")
     return v.lower()
+
+
+def smoke(bot: IntelBot, owner: int, *, send: bool = True) -> dict[str, Any]:
+    """End-to-end check against the live database (and Telegram when send=True): render
+    every view, follow the first token / wallet drill-down, build and validate a complete
+    XLSX report and deliver it. Never polls for updates."""
+    from openpyxl import load_workbook
+
+    from .timerange import preset_range
+    results: list[tuple[str, str, int]] = []
+
+    def view(data: str) -> tuple[str, V.Kb] | None:
+        t0 = time.monotonic()
+        try:
+            out = bot.render(owner, owner, data)
+            ok = "ok" if out and len(out[0]) < 4096 else "too long"
+        except Exception as e:  # noqa: BLE001
+            out, ok = None, f"error: {type(e).__name__}: {e}"
+        results.append((data, ok, int((time.monotonic() - t0) * 1000)))
+        return out
+
+    for row in V.MENU:
+        for _, data in row:
+            view(data)
+    for data in ("mo|cmp", "sm|buyers|0", "sm|exits|0", "sm|clusters|0", "tt|realized|0",
+                 "gl|up|volume|0", "gl|up|flow|0", "tr|smart|0"):
+        view(data)
+    sm = bot.reports.smart_money(bot.range_for(bot.sessions.get(owner)), "buyers")
+    if sm["rows"]:
+        tok = sm["rows"][0]["token"]
+        view(f"tk|{tok}")
+        view(f"tb|{tok}|0")
+    tt = bot.reports.top_traders(bot.range_for(bot.sessions.get(owner)), "agora")
+    if tt["rows"]:
+        view(f"w|{tt['rows'][0]['wallet']}")
+    tr = preset_range("6h", bot.now())
+    with tempfile.TemporaryDirectory(prefix="elysium-smoke-") as d:
+        path, name, rows = bot.exporter.write("full", tr, "xlsx", d)
+        sheets = load_workbook(path, read_only=True).sheetnames
+        results.append((f"export {name}", f"ok: {rows} rows, sheets={len(sheets)}", 0))
+        if send:
+            bot.api.send_document(owner, path, name, f"🧪 Smoke test: complete report, "
+                                  f"{V.e(tr.fmt(bot.tz))}, {rows} data rows")
+    failed = [r for r in results if not r[1].startswith("ok")]
+    if send:
+        bot._send(owner, f"🧪 <b>Intelligence Center smoke test</b>: {len(results) - len(failed)}"
+                  f"/{len(results)} checks passed" + ("" if not failed else "\n" + "\n".join(
+                      f"⚠️ {V.e(r[0])}: {V.e(r[1])}" for r in failed)) +
+                  "\nTap a button below or send /menu.", None)
+        bot._show(owner, None, *bot._view(owner, owner, "h"))
+    return {"results": results, "failed": failed}

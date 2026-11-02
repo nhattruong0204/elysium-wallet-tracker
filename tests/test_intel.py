@@ -554,3 +554,12 @@ def test_poll_loop_dispatches_persists_offset_and_heartbeats(bot, seeded):
     assert polls[0]["timeout"] == bot.cfg.ui.poll_timeout_s and polls[1]["offset"] == 78
     assert seeded.get_kv("tg_offset") == "78" and seeded.get_kv("ui_heartbeat")
     assert any("INTELLIGENCE CENTER" in p["text"] for p in bot.api.of("sendMessage"))
+
+
+def test_smoke_check_renders_everything_and_delivers_a_report(bot):
+    from agora_tracker.tgui import smoke
+    out = smoke(bot, OWNER)
+    assert out["failed"] == [], out["failed"]
+    assert len(out["results"]) >= 20
+    assert bot.api.docs and bot.api.docs[0]["name"].startswith("elysium_complete_report_")
+    assert "checks passed" in bot.api.of("sendMessage")[-2]["text"]
