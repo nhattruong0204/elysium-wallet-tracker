@@ -20,3 +20,4 @@ venv/
 # docker deployment
 config/
 data/
+backups/

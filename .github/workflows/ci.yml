@@ -14,35 +14,78 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-      - run: pip install -r requirements.txt ruff mypy types-requests types-PyYAML
-      - run: ruff check agora_tracker tests
+      - run: pip install -r requirements.txt ruff mypy types-requests types-PyYAML pip-audit
+      - run: ruff check .
       - run: mypy agora_tracker
+      - name: Dependency vulnerability scan
+        run: pip-audit -r requirements.txt
 
   test:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: tracker
+          POSTGRES_PASSWORD: tracker
+          POSTGRES_DB: tracker_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U tracker -d tracker_test"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      TEST_DATABASE_URL: postgresql+psycopg://tracker:tracker@localhost:5432/tracker_test
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: pip
+      - name: PostgreSQL 16 client (for the backup/restore test)
+        run: |
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSo /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+            https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list
+          sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client-16
+          echo "/usr/lib/postgresql/16/bin" >> "$GITHUB_PATH"
       - run: pip install -r requirements.txt pytest
-      - run: python -m pytest -q
+      - run: python -m pytest -q -rs
 
   docker:
     runs-on: ubuntu-latest
     needs: test
     steps:
       - uses: actions/checkout@v4
-      - name: Build image
-        run: docker build -t elysium-wallet-tracker:ci .
-      - name: Smoke test
+      - name: Prepare config
         run: |
-          mkdir -p config && cp config.example.yaml config/config.yaml
-          docker run --rm -v "$PWD/config:/config:ro" elysium-wallet-tracker:ci --help
-          docker run --rm -v "$PWD/config:/config:ro" elysium-wallet-tracker:ci --status
-          # no heartbeat yet, so the healthcheck must report unhealthy (exit 1)
-          if docker run --rm -v "$PWD/config:/config:ro" elysium-wallet-tracker:ci --health; then
+          mkdir -p config backups
+          cp config.example.yaml config/config.yaml
+          cp watchlist.example.txt config/watchlist.txt
+          printf 'POSTGRES_PASSWORD=%s\nTG_BOT_TOKEN=\nTG_CHAT_ID=\n' "$(openssl rand -hex 16)" > .env
+          sudo chown 999:999 backups   # postgres image user
+      - run: docker compose config -q
+      - run: docker compose build
+      - name: Compose end-to-end
+        run: |
+          docker compose up -d postgres
+          docker compose run --rm migrate
+          docker compose run --rm tracker --status
+          # migrated but no heartbeat yet: health must report unhealthy (exit 1)
+          if docker compose run --rm tracker --health; then
             echo "healthcheck should fail without a heartbeat"; exit 1
           fi
-          cp .env.example .env && docker compose config -q
+          # backup service writes a verified dump
+          docker compose up -d backup
+          for i in $(seq 1 30); do ls backups/tracker-*.dump >/dev/null 2>&1 && break; sleep 2; done
+          ls -l backups/
+          dump=$(ls backups/tracker-*.dump | head -1)
+          # restore it into the running stack
+          docker compose up -d tracker || true
+          ./scripts/restore.sh "$dump"
+          docker compose run --rm tracker --status
+      - if: always()
+        run: docker compose logs --no-color | tail -100
+      - if: always()
+        run: docker compose down -v

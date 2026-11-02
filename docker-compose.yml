@@ -1,20 +1,85 @@
+# Required in .env: POSTGRES_PASSWORD (URL-safe, e.g. `openssl rand -hex 24`),
+# TG_BOT_TOKEN, TG_CHAT_ID. Nothing here is exposed on the host network.
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+x-db-url: &db-url
+  DATABASE_URL: postgresql+psycopg://tracker:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/tracker
+
 services:
-  tracker:
+  postgres:
+    image: postgres:16-alpine
+    container_name: elysium-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: tracker
+      POSTGRES_USER: tracker
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tracker -d tracker"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    shm_size: 128m
+    mem_limit: 512m
+    logging: *logging
+
+  # One-shot: applies Alembic migrations, then exits. The tracker waits for it.
+  migrate:
     build: .
+    image: elysium-wallet-tracker:latest
+    command: ["--migrate"]
+    environment: *db-url
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    logging: *logging
+
+  tracker:
     image: elysium-wallet-tracker:latest
     container_name: elysium-wallet-tracker
     restart: unless-stopped
     env_file: .env                 # TG_BOT_TOKEN, TG_CHAT_ID
+    environment: *db-url
     volumes:
       - ./config:/config:ro        # config.yaml + watchlist.txt
-      - tracker-data:/data         # SQLite state (cursor, events, positions, outbox)
-    stop_grace_period: 30s         # lets the bot flush pending alerts on shutdown
+      - tracker-data:/data         # v0.1/v0.2 SQLite file lives here (for --import-sqlite)
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    stop_grace_period: 30s
     mem_limit: 256m
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
+    logging: *logging
+
+  # Daily pg_dump (custom format), verified with pg_restore --list, pruned after N days.
+  backup:
+    image: postgres:16-alpine
+    container_name: elysium-backup
+    restart: unless-stopped
+    entrypoint: ["sh", "/scripts/pg-backup-loop.sh"]
+    environment:
+      PGHOST: postgres
+      PGUSER: tracker
+      PGDATABASE: tracker
+      PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      BACKUP_INTERVAL_S: ${BACKUP_INTERVAL_S:-86400}
+      BACKUP_KEEP_DAYS: ${BACKUP_KEEP_DAYS:-14}
+    volumes:
+      - ./backups:/backups
+      - ./scripts:/scripts:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    mem_limit: 128m
+    logging: *logging
 
 volumes:
+  pgdata:
   tracker-data:

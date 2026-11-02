@@ -14,14 +14,15 @@ Elysium RPC ── eth_getLogs(Transfer, from|to ∈ set) ──> per-tx net flo
                                                         v
                          BUY / SELL / SWAP / TRANSFER / MULTI + position & PnL
                                                         v
-                     SQLite (events, positions, cursor) ─> outbox ─> Telegram
+       PostgreSQL (evidence, trades, positions, PnL, checkpoint) ─> outbox ─> Telegram
 ```
 
 - **Leaderboard only picks who to watch.** Trades come straight from the chain, so alerts don't
   wait on Agora's refresh and keep working if Agora changes or goes down.
 - **Protocol-agnostic.** Works for every launchpad and Uniswap pool with no per-protocol ABI code.
-- **Replay-safe.** Events and alerts have unique keys; each block range commits atomically with
-  the cursor. Crash, restart or `--reset-cursor` never double-alerts.
+- **Replay-safe.** Trades and alerts have unique keys; each block range (raw evidence, trades,
+  positions, PnL, alerts, checkpoint) commits in one PostgreSQL transaction. Crash, restart or
+  `--reset-cursor` never double-counts or double-alerts.
 - **Alerts:** each buy/sell (size, price, new position / adding / partial or full exit, realized
   PnL vs that wallet's average cost), wallet-to-wallet token moves, **cluster buys** (N tracked
   wallets into the same token within a window), and leaderboard changes (entered/exited top,
@@ -30,45 +31,38 @@ Elysium RPC ── eth_getLogs(Transfer, from|to ∈ set) ──> per-tx net flo
 ## Deploy on a VPS (Docker Compose)
 
 Needs Docker with the compose plugin. The VPS must reach `www.agoradex.app`, your Elysium
-RPC and `api.telegram.org`.
+RPC and `api.telegram.org`. The stack is PostgreSQL 16, a one-shot migration step, the
+tracker, and a daily verified backup job.
 
 ```bash
-# 1. get the code (private repo: use a deploy key or a fine-grained PAT with read access)
 git clone https://github.com/nhattruong0204/elysium-wallet-tracker.git
 cd elysium-wallet-tracker
-
-# 2. config + secrets (both are git-ignored)
+cp .env.example .env && nano .env      # POSTGRES_PASSWORD (openssl rand -hex 24), TG_BOT_TOKEN, TG_CHAT_ID
 mkdir -p config
 cp config.example.yaml config/config.yaml
 cp watchlist.example.txt config/watchlist.txt
-cp .env.example .env && nano .env            # TG_BOT_TOKEN, TG_CHAT_ID
 
-# 3. find Agora's leaderboard endpoint; paste the printed block into config/config.yaml
 docker compose build
-docker compose run --rm tracker --discover
-
-# 4. dry run: catch up once and print alerts to the terminal instead of Telegram
-docker compose run --rm tracker --once --dry-run
-
-# 5. run for real
+docker compose up -d postgres && docker compose run --rm migrate
+docker compose run --rm tracker --discover            # paste the printed block into config/config.yaml
+docker compose run --rm tracker --once --dry-run      # catch up once, print alerts
 docker compose up -d
-docker compose logs -f
 ```
 
-On start the bot sends a "Tracker started" message to Telegram, so you know the token, chat
-and RPC all work. The container healthcheck marks it `unhealthy` if the main loop stops for
-10 minutes (`docker ps` shows it).
+**Upgrading from the SQLite version?** Follow
+[docs/OPERATIONS.md → Upgrading from the SQLite version](docs/OPERATIONS.md#upgrading-from-the-sqlite-version-v01--v02):
+a validated, all-or-nothing import that keeps your history, cursor and delivered alerts.
 
 Day to day:
 
 ```bash
-docker compose run --rm tracker --status           # cursor, wallets, events, pending alerts
-git pull && docker compose up -d --build           # update to the latest code
-docker compose run --rm tracker --reset-cursor 190000   # replay from a block (safe, deduped)
+docker compose run --rm tracker --status           # cursor, watchlist, trades by confidence, outbox
+git pull && docker compose up -d --build           # update (migrations run automatically)
+./scripts/restore.sh backups/tracker-<UTC>.dump    # restore a backup
 ```
 
-State (cursor, events, positions, alert outbox) lives in the `tracker-data` volume and
-survives rebuilds. `docker compose down -v` deletes it.
+Docs: [operations runbook](docs/OPERATIONS.md) · [database design & ERD](docs/DATABASE.md) ·
+[audit of v0.1](docs/AUDIT.md).
 
 ### If `--discover` finds nothing
 
@@ -78,15 +72,13 @@ PnL tab → right-click the request that lists wallets → Copy as cURL. Save it
 `config/curl.txt` and run `docker compose run --rm tracker --import-curl /config/curl.txt`.
 Without a leaderboard the bot still follows every wallet in `config/watchlist.txt`.
 
-### Without Docker
+### Development
 
 ```bash
-pip install -r requirements.txt
-python -m agora_tracker --config config/config.yaml --once --dry-run
+pip install -r requirements.txt pytest ruff mypy
+export TEST_DATABASE_URL=postgresql+psycopg://tracker:tracker@127.0.0.1/tracker_test   # disposable DB
+pytest -q && ruff check . && mypy agora_tracker
 ```
-
-Tests: `pytest -q` (offline, fake RPC). Lint: `ruff check . && mypy agora_tracker`.
-Audit of v0.1 and the fixes made: [docs/AUDIT.md](docs/AUDIT.md).
 
 ## Limits you should know
 
