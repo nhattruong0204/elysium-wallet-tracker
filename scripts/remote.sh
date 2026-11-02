@@ -9,6 +9,32 @@ ACTION="${1:?action}"
 DIR="${2:?deploy dir}"
 INSTALL_DOCKER="${3:-false}"
 export COMPOSE_PROJECT_NAME=elysium
+
+if [ "$ACTION" = preflight ]; then
+  # Read-only inspection of the VPS; changes nothing.
+  echo "user: $(id -un) (uid $(id -u)), groups: $(id -Gn)"
+  echo "os: $(. /etc/os-release 2>/dev/null && echo "$PRETTY_NAME") / $(uname -m)"
+  echo "cpu: $(nproc) cores; memory: $(free -h | awk '/Mem:/{print $2" total, "$7" available"}')"
+  echo "disk (home): $(df -h "$HOME" | awk 'NR==2{print $4" free of "$2}')"
+  if command -v docker >/dev/null; then
+    echo "docker: $(docker --version 2>&1)"
+    echo "compose: $(docker compose version 2>&1)"
+    docker info >/dev/null 2>&1 && echo "docker daemon: reachable" || echo "docker daemon: NOT reachable by this user"
+  else
+    echo "docker: not installed"
+  fi
+  for u in https://rpc.thekleos.xyz/rpc https://www.agoradex.app/traders https://api.telegram.org \
+           https://registry-1.docker.io/v2/ https://pypi.org/simple/; do
+    code=$(curl -s -o /dev/null -m 10 -w '%{http_code}' "$u" || echo "fail")
+    echo "reach $u -> $code"
+  done
+  chain=$(curl -s -m 10 -H 'content-type: application/json' \
+    -d '{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}' https://rpc.thekleos.xyz/rpc || true)
+  echo "kleos eth_chainId: $chain"
+  [ -d "$DIR" ] && echo "deploy dir: exists" || echo "deploy dir: not created yet"
+  exit 0
+fi
+
 cd "$DIR"
 
 log() { printf '\n=== %s\n' "$*"; }

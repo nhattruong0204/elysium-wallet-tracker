@@ -24,7 +24,7 @@ on:
         description: What to do on the VPS
         type: choice
         default: status
-        options: [deploy, status, logs, discover, dry-run, test-telegram, restart, stop]
+        options: [preflight, deploy, status, logs, discover, dry-run, test-telegram, restart, stop]
       deploy_dir:
         description: Directory on the VPS (relative to the SSH user's home, or absolute)
         type: string
@@ -64,7 +64,7 @@ jobs:
             IN_ACTION="$(get action)"; IN_DIR="$(get deploy_dir)"; IN_INSTALL="$(get install_docker)"
           fi
           case "$IN_ACTION" in
-            deploy|status|logs|discover|dry-run|test-telegram|restart|stop) ;;
+            preflight|deploy|status|logs|discover|dry-run|test-telegram|restart|stop) ;;
             *) echo "invalid action '$IN_ACTION'"; exit 1 ;;
           esac
           [ "$IN_INSTALL" = true ] || IN_INSTALL=false
