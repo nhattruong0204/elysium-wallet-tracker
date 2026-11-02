@@ -102,6 +102,8 @@ status() {
   docker compose ps
   log "tracker --status"
   docker compose run --rm --no-deps tracker --status || true
+  log "leaderboard top 10"
+  docker compose run --rm --no-deps tracker --top 10 || true
   log "recent tracker logs"
   docker compose logs --no-color --tail 60 tracker || true
 }

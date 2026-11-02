@@ -41,6 +41,7 @@ class LeaderboardConfig:
         "volume": "volume", "trades": "trades",
     })
     sort_by: str = "pnl"                # re-sort client side, in case the endpoint doesn't
+    value_unit: str = "USD"             # unit of pnl/worth/volume as the source reports them
     top_n: int = 100
     refresh_s: float = 300.0
     timeout_s: float = 20.0
@@ -52,7 +53,7 @@ class AlertConfig:
     alert_transfers: bool = True        # wallet moving tokens to another address (rotation, OTC)
     leaderboard_alerts: bool = True
     rank_change: int = 10
-    pnl_change_usd: float = 5000.0
+    pnl_change: float = 5000.0          # in leaderboard.value_unit
     cluster_window_s: int = 3600
     cluster_min_wallets: int = 3
     hype_dust: float = 0.0005           # |HYPE delta| below this = no HYPE leg (gas noise)
@@ -99,7 +100,10 @@ def load_config(path: str | Path) -> Config:
         chain.wrapped_native = _norm_addr(chain.wrapped_native)
 
     lb = LeaderboardConfig(**(raw.get("leaderboard") or {}))
-    alerts = AlertConfig(**(raw.get("alerts") or {}))
+    alerts_raw = dict(raw.get("alerts") or {})
+    if "pnl_change_usd" in alerts_raw:  # pre-0.3 key
+        alerts_raw.setdefault("pnl_change", alerts_raw.pop("pnl_change_usd"))
+    alerts = AlertConfig(**alerts_raw)
     alerts.ignore_tokens = [_norm_addr(t) for t in alerts.ignore_tokens]
 
     tg_raw = raw.get("telegram") or {}

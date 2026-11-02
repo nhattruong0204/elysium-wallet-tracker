@@ -32,6 +32,7 @@ leaderboard:
     volume: volume
     trades: trades
   sort_by: pnl
+  value_unit: USD              # unit of pnl/worth/volume in the response (Agora: HYPE)
   top_n: 100
   refresh_s: 300               # be polite: 5 min is enough for a PnL leaderboard
 
@@ -40,7 +41,7 @@ alerts:
   alert_transfers: true        # token moved wallet-to-wallet (rotation to a fresh wallet, OTC)
   leaderboard_alerts: true
   rank_change: 10              # alert when a wallet moves >= 10 places
-  pnl_change_usd: 5000         # alert when PnL moves >= $5k between refreshes
+  pnl_change: 5000             # alert when PnL moves this much (in leaderboard.value_unit)
   cluster_window_s: 3600
   cluster_min_wallets: 3       # >= 3 tracked wallets buying the same token within the window
   hype_dust: 0.0005

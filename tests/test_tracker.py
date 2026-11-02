@@ -228,7 +228,7 @@ def test_leaderboard_parse_diff_and_curl():
     assert [(t.address, t.rank, t.pnl) for t in ts] == [(W2, 1, 900.0), (W1, 2, 100.5)]
 
     prev = {W1: {"rank": 1, "pnl": 100.5}, W3: {"rank": 2, "pnl": 50}}
-    changes = diff_leaderboard(prev, ts, rank_change=1, pnl_change_usd=10)
+    changes = diff_leaderboard(prev, ts, rank_change=1, pnl_change=10)
     kinds = sorted((k, t.address) for k, _, t in changes)
     assert kinds == sorted([("ENTERED", W2), ("RANK", W1), ("EXITED", W3)])
 
