@@ -26,3 +26,13 @@ def test_test_telegram_reports_success_and_failure(monkeypatch, capsys):
 
 def test_test_telegram_without_credentials():
     assert cli.test_telegram(_cfg(None, None)) == 1
+
+
+def test_leaderboard_values_keep_their_unit(tmp_path):
+    from agora_tracker.config import load_config
+    from agora_tracker.engine import fmt_value
+    assert fmt_value(63160.5, "USD") == "$63.16K"
+    assert fmt_value(720.4, "HYPE") == "720.40 HYPE"
+    cfg = tmp_path / "c.yaml"
+    cfg.write_text("chain: {rpc_urls: [x]}\nalerts: {pnl_change_usd: 42}\n")
+    assert load_config(cfg).alerts.pnl_change == 42      # pre-0.3 key still honoured

@@ -208,7 +208,7 @@ def guess_mapping(payload: Any) -> dict[str, Any]:
 
 
 def diff_leaderboard(prev: dict[str, Any], cur: list[Trader], *, rank_change: int,
-                     pnl_change_usd: float) -> list[tuple[str, str, Trader]]:
+                     pnl_change: float, unit: str = "USD") -> list[tuple[str, str, Trader]]:
     """Returns (kind, detail, trader). prev maps address -> row with rank/pnl."""
     out: list[tuple[str, str, Trader]] = []
     if not prev:
@@ -222,8 +222,9 @@ def diff_leaderboard(prev: dict[str, Any], cur: list[Trader], *, rank_change: in
         if old_rank and abs(old_rank - t.rank) >= rank_change:
             arrow = "up" if t.rank < old_rank else "down"
             out.append(("RANK", f"#{old_rank} -> #{t.rank} ({arrow})", t))
-        if old_pnl is not None and t.pnl is not None and abs(t.pnl - old_pnl) >= pnl_change_usd:
-            out.append(("PNL", f"PnL {old_pnl:+,.0f} -> {t.pnl:+,.0f} ({t.pnl - old_pnl:+,.0f})", t))
+        if old_pnl is not None and t.pnl is not None and abs(t.pnl - old_pnl) >= pnl_change:
+            out.append(("PNL", f"PnL {old_pnl:+,.0f} -> {t.pnl:+,.0f} {unit} "
+                               f"({t.pnl - old_pnl:+,.0f})", t))
     cur_set = {t.address for t in cur}
     for addr, p in prev.items():
         if addr not in cur_set:

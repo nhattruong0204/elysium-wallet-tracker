@@ -33,16 +33,22 @@ def human(x: float) -> str:
     return f"{x:.4g}"
 
 
+def fmt_value(v: float, unit: str) -> str:
+    """Leaderboard figures in the unit the source reports (Agora: HYPE)."""
+    return f"${human(v)}" if unit.upper() == "USD" else f"{human(v)} {unit}"
+
+
 def short(addr: str) -> str:
     return f"{addr[:6]}…{addr[-4:]}"
 
 
 class Engine:
     def __init__(self, store: Store, tokens: TokenCache, chain_cfg: ChainConfig,
-                 alert_cfg: AlertConfig, labels: dict[str, str]):
+                 alert_cfg: AlertConfig, labels: dict[str, str], value_unit: str = "USD"):
         self.store, self.tokens = store, tokens
         self.chain_cfg, self.cfg = chain_cfg, alert_cfg
         self.labels = labels
+        self.value_unit = value_unit
 
     # --- formatting -------------------------------------------------------------
     def _link_tx(self, tx: str) -> str:
@@ -62,7 +68,7 @@ class Engine:
                 if a else f"<code>{short(wallet)}</code>")
         bits.append(addr)
         if row is not None and row["pnl"] is not None:
-            bits.append(f"PnL ${human(row['pnl'])}")
+            bits.append(f"PnL {fmt_value(row['pnl'], self.value_unit)}")
         return " · ".join(bits)
 
     def _amt(self, token: str, raw: int) -> str:
@@ -244,5 +250,5 @@ class Engine:
             icon = {"ENTERED": "⭐", "EXITED": "⬇️", "RANK": "📊", "PNL": "💰"}[kind]
             text = f"{icon} <b>LEADERBOARD</b> <code>{short(t.address)}</code> {detail}"
             if t.pnl is not None and kind != "PNL":
-                text += f" · PnL ${human(t.pnl)}"
+                text += f" · PnL {fmt_value(t.pnl, self.value_unit)}"
             self.store.enqueue_now(f"lb:{kind}:{t.address}:{bucket}", text)

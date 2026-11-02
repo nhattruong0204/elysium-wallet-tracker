@@ -35,7 +35,8 @@ class Tracker:
                                       set(cfg.alerts.ignore_tokens))
         self.watchlist = load_watchlist(cfg.watchlist_file)
         self.store.sync_manual_watchlist(self.watchlist)
-        self.engine = Engine(self.store, self.follower.tokens, c, cfg.alerts, self.watchlist)
+        self.engine = Engine(self.store, self.follower.tokens, c, cfg.alerts, self.watchlist,
+                             value_unit=cfg.leaderboard.value_unit)
         self.notifier = Notifier(self.store, cfg.telegram, dry_run)
         lb = cfg.leaderboard
         self.leaderboard = HttpLeaderboard(lb) if lb.enabled and lb.url else None
@@ -82,11 +83,14 @@ class Tracker:
                 self.store.record_snapshot(
                     traders, source="agora", status=status, complete=complete,
                     row_count=len(_rows(raw, self.cfg.leaderboard.items_path)),
-                    request_meta=lb.last_meta, raw_payload=raw)
+                    request_meta={**lb.last_meta,
+                                  "value_unit": self.cfg.leaderboard.value_unit},
+                    raw_payload=raw)
                 if status == "ok":
                     changes = diff_leaderboard(prev, traders,
                                                rank_change=self.cfg.alerts.rank_change,
-                                               pnl_change_usd=self.cfg.alerts.pnl_change_usd)
+                                               pnl_change=self.cfg.alerts.pnl_change,
+                                               unit=self.cfg.leaderboard.value_unit)
                     if self.cfg.alerts.leaderboard_alerts and changes:
                         self.engine.leaderboard_alerts(changes)
                     top = {t.address for t in traders}
@@ -271,6 +275,20 @@ def health(max_age_s: int) -> int:
     return 0
 
 
+def top(cfg: Config, n: int) -> None:
+    """Latest accepted leaderboard snapshot, best first, values in the source's unit."""
+    unit = cfg.leaderboard.value_unit
+    rows = sorted(Store(chain_id=cfg.chain.chain_id).top_traders().items(),
+                  key=lambda kv: kv[1]["rank"])[:n]
+    if not rows:
+        print("no leaderboard snapshot yet")
+        return
+    print(f"{'#':>3}  {'wallet':<42}  {'PnL (' + unit + ')':>14}")
+    for addr, r in rows:
+        pnl = "-" if r["pnl"] is None else f"{r['pnl']:,.2f}"
+        print(f"{r['rank']:>3}  {addr:<42}  {pnl:>14}")
+
+
 def status(cfg: Config) -> None:
     print(json.dumps(Store(chain_id=cfg.chain.chain_id).status(), indent=2, default=str))
 
@@ -310,6 +328,8 @@ def main(argv: list[str] | None = None) -> None:
                     help="one-time import of a v0.1/v0.2 SQLite database into PostgreSQL")
     ap.add_argument("--report", metavar="FILE", help="write the import reconciliation report "
                                                      "as JSON (with --import-sqlite)")
+    ap.add_argument("--top", type=int, nargs="?", const=10, metavar="N",
+                    help="print the top N wallets of the latest leaderboard snapshot")
     ap.add_argument("--test-telegram", action="store_true",
                     help="send one test message to Telegram and exit")
     ap.add_argument("--log-level", default="INFO")
@@ -341,6 +361,9 @@ def main(argv: list[str] | None = None) -> None:
                             report_path=args.report))
     if args.status:
         status(cfg)
+        return
+    if args.top:
+        top(cfg, args.top)
         return
     if args.reset_cursor is not None:
         Store(chain_id=cfg.chain.chain_id).set_cursor(None, args.reset_cursor)
