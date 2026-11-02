@@ -1,57 +1,62 @@
-"""Research probe (runs on a GitHub runner): link formats + Agora token data endpoints."""
-import json, re, sys
-from urllib.parse import urljoin, urlsplit
+"""Probe 2: Agora token API shape + launchpad token-page URL formats."""
+import json, re
+from urllib.parse import urljoin
 import requests
-sys.path.insert(0, ".")
-from agora_tracker.discover import collect_candidates, UA
-
-S = requests.Session(); S.headers.update({"user-agent": UA, "accept": "application/json, text/html"})
+UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36"
+S = requests.Session(); S.headers.update({"user-agent": UA})
 
 def get(url, **kw):
-    try:
-        r = S.get(url, timeout=20, **kw)
-        return r
-    except Exception as e:
-        print(f"  ERR {url}: {e}"); return None
+    try: return S.get(url, timeout=20, **kw)
+    except Exception as e: print("  ERR", url, e); return None
 
-def section(t): print(f"\n######## {t}")
+def sec(t): print(f"\n######## {t}")
 
-section("agora traders sample")
-r = get("https://api.agoradex.app/api/traders", params={"sort": "pnl", "limit": 3})
-tr = r.json()
-print("top keys:", list(tr.keys()) if isinstance(tr, dict) else type(tr))
-first = tr["traders"][0]
-print(json.dumps(first, indent=1)[:2500])
+tr = get("https://api.agoradex.app/api/traders", params={"limit": 3}).json()
+sec("traders.tokens sample + hypeUsd"); print("hypeUsd:", tr.get("hypeUsd"))
+toks = tr.get("tokens")
+print(type(toks).__name__, (list(toks.items())[:2] if isinstance(toks, dict) else toks[:2]))
+token = tr["traders"][0]["top"][0]
 
-section("agora bundles: all absolute hosts + api/token paths")
-abs_urls, paths = collect_candidates("https://www.agoradex.app/traders")
-hosts = sorted({urlsplit(u).netloc for u in abs_urls})
-print("hosts:", hosts)
-r = get("https://www.agoradex.app/traders")
-html = r.text if r else ""
-# grab every quoted string that looks like a path or url from bundles again (broader)
-scripts = list(dict.fromkeys(urljoin("https://www.agoradex.app/", m) for m in re.findall(r'<script[^>]+src="([^"]+\.js[^"]*)"', html)))
-blob = html
-seen = set()
-queue = list(scripts)
-while queue and len(seen) < 150:
-    u = queue.pop(0)
-    if u in seen: continue
-    seen.add(u)
-    rr = get(u)
-    if not rr: continue
-    blob += rr.text
-    for c in re.findall(r'"(static/chunks/[^"]+\.js)"', rr.text):
-        queue.append(urljoin("https://www.agoradex.app/", "/_next/" + c))
-api_paths = sorted(set(re.findall(r'["\'`](/api/[A-Za-z0-9_\-/.${}]+)', blob)))
-print("api paths:", api_paths[:120])
-ext = sorted(set(re.findall(r'https?://[A-Za-z0-9.\-]+(?:/[A-Za-z0-9_\-/.${}?=&]*)?', blob)))
-ext = [u for u in ext if not re.search(r'w3\.org|reactjs|nextjs|mozilla|github|schema\.org|googleapis|gstatic|walletconnect|sentry', u)]
-print("absolute urls (first 150):")
-for u in ext[:150]: print("  ", u)
-routes = sorted(set(re.findall(r'["\'`](/(?:token|tokens|coin|coins|t|c|trade|swap|launch|wallet|address|profile|trader|traders)/?[A-Za-z0-9_\-/${}]*)["\'`]', blob)))
-print("page routes:", routes[:80])
-tmpl = sorted(set(re.findall(r'`[^`]{0,80}\$\{[^}]{1,40}\}[^`]{0,80}`', blob)))
-tmpl = [x for x in tmpl if re.search(r'token|coin|kleos|boxa|explorer|/tx/|address|launch', x, re.I)]
-print("template strings mentioning token/launchpad/explorer:")
-for x in tmpl[:120]: print("  ", x)
+sec(f"/api/tokens/{token}?range=24h")
+r = get(f"https://api.agoradex.app/api/tokens/{token}", params={"range": "24h"})
+print(r.status_code if r else None, r.headers.get("content-type") if r else None)
+try: print(json.dumps(r.json(), indent=1)[:4000])
+except Exception: print((r.text if r else "")[:500])
+
+sec("/api/tokens (list) sample")
+r = get("https://api.agoradex.app/api/tokens", params={"limit": 2})
+try:
+    j = r.json(); print(json.dumps(j, indent=1)[:2500])
+except Exception: print(r.status_code if r else None)
+
+sec(f"/api/traders/{tr['traders'][0]['address']}")
+r = get(f"https://api.agoradex.app/api/traders/{tr['traders'][0]['address']}")
+try: print(json.dumps(r.json(), indent=1)[:1500])
+except Exception: print(r.status_code if r else None)
+
+sec("launchpad sites: bundle route templates")
+for site in ["https://www.thekleos.xyz", "https://boxa.club", "https://elysp.com"]:
+    r = get(site)
+    if r is None: continue
+    print(f"{site} -> {r.status_code}")
+    html = r.text
+    scripts = list(dict.fromkeys(urljoin(site + "/", m) for m in re.findall(r'<script[^>]+src="([^"]+\.js[^"]*)"', html)))
+    blob = html
+    for u in scripts[:60]:
+        rr = get(u)
+        if rr is not None: blob += rr.text
+    tm = sorted(set(re.findall(r'`[^`]{0,60}\$\{[^}]{1,40}\}[^`]{0,40}`', blob)))
+    tm = [x for x in tm if re.search(r'^`/|token|coin|/t/|/c/|explorer|/tx/|/address/', x, re.I)]
+    print("  templates:", tm[:40])
+    rt = sorted(set(re.findall(r'["\'`](/(?:token|tokens|coin|coins|t|c|launch|trade|pair)/[A-Za-z0-9_\-/${}.]*)', blob)))
+    print("  routes:", rt[:30])
+    ex = sorted(set(re.findall(r'https?://[A-Za-z0-9.\-]*(?:scan|explorer|blockscout)[A-Za-z0-9.\-]*[^"\'`\s]{0,40}', blob)))
+    print("  explorers:", ex[:20])
+
+sec("candidate token page URLs")
+for pat in ["https://www.thekleos.xyz/token/{a}", "https://www.thekleos.xyz/coin/{a}", "https://www.thekleos.xyz/{a}",
+            "https://boxa.club/token/{a}", "https://boxa.club/coin/{a}", "https://boxa.club/{a}",
+            "https://www.agoradex.app/token/{a}"]:
+    u = pat.format(a=token); r = get(u, allow_redirects=True)
+    if r is not None:
+        print(f"{r.status_code} len={len(r.text):>7} mentions_addr={token.lower() in r.text.lower()} {u} -> {r.url}")
