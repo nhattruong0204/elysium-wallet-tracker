@@ -21,9 +21,11 @@ class ChainConfig:
     wallet_chunk: int = 50              # addresses per eth_getLogs topic OR-list
     rpc_timeout_s: float = 15.0
     rpc_max_retries: int = 4
-    rpc_batch_size: int = 50
+    rpc_batch_size: int = 50           # upper bound; smaller per-endpoint limits are learned
+    max_head_lag: int = 50              # skip endpoints this many blocks behind the best head
+    head_check_s: float = 60.0          # how often endpoint heads are compared
     wrapped_native: str | None = None   # WHYPE on Elysium; its transfers count as HYPE
-    explorer_tx_url: str | None = None  # e.g. "https://explorer.example/tx/{tx}"
+    explorer_tx_url: str | None = None  # deprecated: links.explorer is used instead
     explorer_address_url: str | None = None
 
 
@@ -70,11 +72,32 @@ class TelegramConfig:
 
 
 @dataclass
+class LinksConfig:
+    """Base URLs used to make every alert detail clickable (formats verified 2026-11-02)."""
+    explorer: str = "https://elyscan.live"          # /tx/<hash>, /address/<a>, /token/<a>
+    agora: str = "https://www.agoradex.app"         # /token/<a>, /trader/<a>
+    kleos: str = "https://www.thekleos.xyz"         # /token/<a>
+    boxa: str = "https://boxa.club"                 # /token?address=<a> (any Elysium token)
+    elyspump: str = "https://elysp.com"             # /#/token/<a>
+
+
+@dataclass
+class MarketConfig:
+    """Token market data shown in alerts, from Agora's public API (values in HYPE)."""
+    enabled: bool = True
+    api: str = "https://api.agoradex.app"
+    cache_s: float = 60.0
+    timeout_s: float = 6.0
+
+
+@dataclass
 class Config:
     chain: ChainConfig
     leaderboard: LeaderboardConfig
     alerts: AlertConfig
     telegram: TelegramConfig
+    links: LinksConfig = field(default_factory=LinksConfig)
+    market: MarketConfig = field(default_factory=MarketConfig)
     db_path: str = "tracker.db"
     watchlist_file: str | None = None
     exclude_contracts: bool = True
@@ -123,8 +146,10 @@ def load_config(path: str | Path) -> Config:
     if wl and not os.path.isabs(wl):
         wl = str(base / wl)
 
-    return Config(chain=chain, leaderboard=lb, alerts=alerts, telegram=tg,
-                  db_path=db_path, watchlist_file=wl,
+    links = LinksConfig(**{k: v.rstrip("/") for k, v in (raw.get("links") or {}).items()})
+    market = MarketConfig(**(raw.get("market") or {}))
+    return Config(chain=chain, leaderboard=lb, alerts=alerts, telegram=tg, links=links,
+                  market=market, db_path=db_path, watchlist_file=wl,
                   exclude_contracts=raw.get("exclude_contracts", True))
 
 

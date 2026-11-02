@@ -1,23 +1,23 @@
-"""Probe 5: do the live Elysium RPCs agree on block hashes? What does getLogs do past head?"""
-import time, requests
-S = requests.Session()
-EPS = ["https://rpc.thekleos.xyz/rpc", "https://rpc-live.boxa.club", "https://rpc-live.elyspump.com",
-       "https://rpc.boxa.club"]
+"""Probe 6: the real RpcClient + ChainFollower against the 3 live Elysium RPCs."""
+import logging, sys, time
+sys.path.insert(0, ".")
+logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+from agora_tracker.rpc import RpcClient
+URLS = ["https://rpc.thekleos.xyz/rpc", "https://rpc-live.boxa.club", "https://rpc-live.elyspump.com",
+        "https://rpc.boxa.club"]
+c = RpcClient(URLS, expected_chain_id=99901, max_head_lag=50)
+print("verify", c.verify_all())
+print("heads", c.refresh_heads()); print("live", c.live_urls)
 T = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
-def call(u, m, p):
-    try: return S.post(u, json={"jsonrpc": "2.0", "id": 1, "method": m, "params": p}, timeout=20).json()
-    except Exception as e: return {"error": repr(e)}
-for rnd in range(3):
-    heads = {u: int(call(u, "eth_blockNumber", [])["result"], 16) for u in EPS}
-    print("heads", {u.split('//')[1]: h for u, h in heads.items()})
-    common = min(heads[u] for u in EPS[:3])
-    for b in (common, common - 10, common - 500, 198000):
-        hs = {u.split('//')[1]: (call(u, "eth_getBlockByNumber", [hex(b), False]).get("result") or {}).get("hash", "null")[:14] for u in EPS}
-        print(f"  block {b}: agree={len(set(hs.values()))==1}", hs)
-    for u in EPS:
-        h = heads[u]
-        r = call(u, "eth_getLogs", [{"fromBlock": hex(h - 5), "toBlock": hex(h + 50), "topics": [T]}])
-        print(f"  {u.split('//')[1]} logs to head+50 ->", (f"{len(r['result'])} logs (silently clamped)" if "result" in r else r["error"]))
-        r = call(u, "eth_getBlockByNumber", [hex(h + 50), False])
-        print(f"  {u.split('//')[1]} block head+50 ->", r.get("result", r.get("error")))
-    time.sleep(20)
+for u in URLS[:3]:
+    c._idx = URLS.index(u) if u in c.live_urls else 0
+    c._idx = c.live_urls.index(u)
+    with c.pinned() as pu:
+        head = c.block_number()
+        logs = c.call("eth_getLogs", [{"fromBlock": hex(head - 400), "toBlock": hex(head), "topics": [T]}])
+        txs = sorted({l["transactionHash"] for l in logs})[:45]
+        t0 = time.time()
+        res = c.batch([("eth_getTransactionReceipt", [h]) for h in txs])
+        bad = sum(isinstance(r, Exception) or r is None for r in res)
+        print(f"{pu}: head {head}, {len(logs)} logs, {len(res)} receipts in {time.time()-t0:.1f}s, bad {bad}, "
+              f"learned batch limit {c._batch_limit.get(pu)}, batch_off {pu in c._batch_off}")

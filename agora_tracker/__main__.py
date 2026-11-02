@@ -13,11 +13,14 @@ import requests
 import sqlalchemy as sa
 import yaml
 
-from .chain import ChainFollower
+from . import cards
+from .cards import Links
+from .chain import ChainFollower, ScanResult
 from .config import Config, load_config, load_watchlist
 from .db import Store
 from .engine import WEI, Engine
 from .leaderboard import HttpLeaderboard, diff_leaderboard, dig, guess_mapping, parse_curl
+from .market import AgoraMarket
 from .notify import Notifier
 from .rpc import RpcClient, RpcError, redact
 
@@ -30,20 +33,31 @@ class Tracker:
         c = cfg.chain
         self.store = Store(chain_id=c.chain_id)
         self.rpc = RpcClient(c.rpc_urls, c.rpc_timeout_s, c.rpc_max_retries, c.rpc_batch_size,
-                             expected_chain_id=c.chain_id)
+                             expected_chain_id=c.chain_id, max_head_lag=c.max_head_lag)
         self.follower = ChainFollower(self.rpc, self.store, c, int(cfg.alerts.hype_dust * WEI),
                                       set(cfg.alerts.ignore_tokens))
         self.watchlist = load_watchlist(cfg.watchlist_file)
         self.store.sync_manual_watchlist(self.watchlist)
+        self.links = Links(cfg.links)
+        self.market = AgoraMarket(cfg.market)
         self.engine = Engine(self.store, self.follower.tokens, c, cfg.alerts, self.watchlist,
-                             value_unit=cfg.leaderboard.value_unit)
-        self.notifier = Notifier(self.store, cfg.telegram, dry_run)
+                             value_unit=cfg.leaderboard.value_unit, links=self.links)
+        self.notifier = Notifier(self.store, cfg.telegram, dry_run, renderer=self.render_alert)
         lb = cfg.leaderboard
         self.leaderboard = HttpLeaderboard(lb) if lb.enabled and lb.url else None
         self.tracked: set[str] = set()
         self._warned_idle = False
         self._next_lb = 0.0
+        self._next_heads = 0.0
         self._stop = False
+
+    def render_alert(self, row: dict) -> tuple[str, dict | None]:
+        """Re-render a stored alert with fresh market data (called by the notifier)."""
+        payload = row["payload"]
+        token = payload.get("token")
+        info = self.market.token(token) if token else None
+        out = cards.render(payload, self.links, info, self.market.hype_usd())
+        return out if out else (row["text"], None)
 
     def stop(self, *_):
         log.info("shutdown requested")
@@ -60,6 +74,18 @@ class Tracker:
                              "refusing to run")
         if not any(r == "ok" for r in results.values()):
             raise RpcError("no RPC endpoint reachable")
+        self.check_heads()
+
+    def check_heads(self) -> None:
+        self._next_heads = time.monotonic() + self.cfg.chain.head_check_s
+        if len(self.rpc.urls) < 2:
+            return
+        heads = self.rpc.refresh_heads()
+        best = max((h for h in heads.values() if h is not None), default=None)
+        log.debug("RPC heads: %s", ", ".join(
+            f"{redact(u)}={h if h is not None else 'down'}"
+            + (f" (-{best - h})" if h is not None and best is not None and best > h else "")
+            for u, h in heads.items()))
 
     def refresh_leaderboard(self) -> None:
         self._next_lb = time.monotonic() + self.cfg.leaderboard.refresh_s
@@ -115,6 +141,18 @@ class Tracker:
 
     def scan_step(self) -> bool:
         """Process one block range. Returns True if still behind head."""
+        # One endpoint for the whole range: head, logs, txs and receipts (see rpc.pinned).
+        with self.rpc.pinned():
+            result = self._scan_range()
+        if result is None:
+            return False
+        scan, frm, to, head = result
+        new = self.engine.apply_range(scan, to)
+        if new:
+            log.info("blocks %d-%d: %d new events", frm, to, new)
+        return to < head
+
+    def _scan_range(self) -> tuple[ScanResult, int, int, int] | None:
         c = self.cfg.chain
         head = self.rpc.block_number() - c.confirmations
         stored = self.store.get_cursor()
@@ -123,21 +161,17 @@ class Tracker:
             self.store.set_cursor(None, cursor)
             log.info("starting at block %d (head %d, backfill %d)", cursor, head, c.backfill_blocks)
         if cursor >= head:
-            return False
+            return None
         if not self.tracked:
             # Scanning with no wallets would advance the cursor and skip these blocks for
             # every wallet tracked later. Hold position until there is something to track.
             if not self._warned_idle:
                 log.warning("no wallets tracked; holding cursor at %d", cursor)
                 self._warned_idle = True
-            return False
+            return None
         self._warned_idle = False
         to = min(head, cursor + c.max_block_range)
-        result = self.follower.scan(cursor + 1, to, self.tracked)
-        new = self.engine.apply_range(result, to)
-        if new:
-            log.info("blocks %d-%d: %d new events", cursor + 1, to, new)
-        return to < head
+        return self.follower.scan(cursor + 1, to, self.tracked), cursor + 1, to, head
 
     def run(self, once: bool = False) -> None:
         if not self.store.acquire_indexer_lock():
@@ -162,6 +196,8 @@ class Tracker:
                     raise SystemExit("lost the indexer lock (database connection dropped)")
                 if time.monotonic() >= self._next_lb:
                     self.refresh_leaderboard()
+                if time.monotonic() >= self._next_heads:
+                    self.check_heads()
                 behind = self.scan_step()
                 self.notifier.drain()
                 self.store.set_kv("heartbeat", str(int(time.time())))
@@ -195,6 +231,33 @@ def test_telegram(cfg: Config) -> int:
     n = Notifier(None, cfg.telegram)  # type: ignore[arg-type]  # _send does not use the store
     ok, err, _ = n._send("✅ <b>Elysium wallet tracker</b>: Telegram delivery works.")
     print("telegram ok" if ok else f"telegram FAILED: {err}")
+    return 0 if ok else 1
+
+
+def test_card(cfg: Config) -> int:
+    """Send the most recent tracked BUY/SELL as a full card with live market data."""
+    store = Store(chain_id=cfg.chain.chain_id)
+    with store.engine.connect() as c:
+        r = c.execute(sa.text(
+            "SELECT * FROM trades WHERE chain_id=:c AND kind IN ('BUY','SELL') "
+            "AND hype_wei IS NOT NULL ORDER BY block_number DESC, id DESC LIMIT 1"),
+            {"c": cfg.chain.chain_id}).mappings().first()
+    if r is None:
+        print("no BUY/SELL recorded yet")
+        return 1
+    sym, dec = store.get_token(r["token"]) or (r["token"][:8], 18)
+    row = store.trader(r["wallet"]) or {}
+    payload = {"type": "trade", "kind": r["kind"], "tx": r["tx_hash"], "block": r["block_number"],
+               "ts": int(r["block_time"].timestamp()) if r["block_time"] else None,
+               "token": r["token"], "symbol": sym, "decimals": dec, "qty": str(int(r["qty"])),
+               "hype_wei": str(int(r["hype_wei"])), "confidence": r["confidence"],
+               "hype_method": r["hype_method"], "notes": ["🧪 test card: latest tracked trade"],
+               "wallet": r["wallet"], "label": None, "rank": row.get("rank"),
+               "pnl": row.get("pnl"), "pnl_unit": cfg.leaderboard.value_unit}
+    market, links = AgoraMarket(cfg.market), Links(cfg.links)
+    text, kb = cards.render_trade(payload, links, market.token(r["token"]), market.hype_usd())
+    ok, err, _ = Notifier(None, cfg.telegram)._send(text, kb)  # type: ignore[arg-type]
+    print("card sent" if ok else f"card FAILED: {err}")
     return 0 if ok else 1
 
 
@@ -330,6 +393,8 @@ def main(argv: list[str] | None = None) -> None:
                                                      "as JSON (with --import-sqlite)")
     ap.add_argument("--top", type=int, nargs="?", const=10, metavar="N",
                     help="print the top N wallets of the latest leaderboard snapshot")
+    ap.add_argument("--test-card", action="store_true",
+                    help="send the latest tracked trade to Telegram as a full card")
     ap.add_argument("--test-telegram", action="store_true",
                     help="send one test message to Telegram and exit")
     ap.add_argument("--log-level", default="INFO")
@@ -355,6 +420,8 @@ def main(argv: list[str] | None = None) -> None:
     cfg = load_config(args.config)
     if args.test_telegram:
         sys.exit(test_telegram(cfg))
+    if args.test_card:
+        sys.exit(test_card(cfg))
     if args.import_sqlite:
         from .sqlite_import import run_import
         sys.exit(run_import(args.import_sqlite, cfg, dry_run=args.dry_run,

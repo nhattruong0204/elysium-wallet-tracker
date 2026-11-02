@@ -11,9 +11,11 @@ import logging
 import time
 from decimal import Decimal
 
+from . import cards
+from .cards import Links
 from .chain import ScanResult, TokenCache
 from .classify import TradeEvent
-from .config import AlertConfig, ChainConfig
+from .config import AlertConfig, ChainConfig, LinksConfig
 from .db import BASIS_ESTIMATED, BASIS_KNOWN, BASIS_PARTIAL, Position, Store
 from .leaderboard import Trader
 
@@ -44,36 +46,35 @@ def short(addr: str) -> str:
 
 class Engine:
     def __init__(self, store: Store, tokens: TokenCache, chain_cfg: ChainConfig,
-                 alert_cfg: AlertConfig, labels: dict[str, str], value_unit: str = "USD"):
+                 alert_cfg: AlertConfig, labels: dict[str, str], value_unit: str = "USD",
+                 links: Links | None = None):
         self.store, self.tokens = store, tokens
         self.chain_cfg, self.cfg = chain_cfg, alert_cfg
         self.labels = labels
         self.value_unit = value_unit
+        self.links = links or Links(LinksConfig())
 
-    # --- formatting -------------------------------------------------------------
-    def _link_tx(self, tx: str) -> str:
-        t = self.chain_cfg.explorer_tx_url
-        return f'<a href="{html.escape(t.format(tx=tx))}">tx</a>' if t else f"<code>{tx[:10]}…</code>"
-
-    def _who(self, wallet: str) -> str:
+    # --- alert payloads -------------------------------------------------------------
+    # Alerts are stored as structured payloads and rendered by cards.py: once here (fallback
+    # text, no market data) and again by the notifier right before sending (fresh data).
+    def _wallet_ctx(self, wallet: str) -> dict:
         row = self.store.trader(wallet)
-        bits = []
-        if row is not None and row["in_top"]:
-            bits.append(f"#{row['rank']}")
-        label = self.labels.get(wallet)
-        if label:
-            bits.append(html.escape(label))
-        a = self.chain_cfg.explorer_address_url
-        addr = (f'<a href="{html.escape(a.format(address=wallet))}">{short(wallet)}</a>'
-                if a else f"<code>{short(wallet)}</code>")
-        bits.append(addr)
-        if row is not None and row["pnl"] is not None:
-            bits.append(f"PnL {fmt_value(row['pnl'], self.value_unit)}")
-        return " · ".join(bits)
+        return {"wallet": wallet, "label": self.labels.get(wallet),
+                "rank": row["rank"] if row is not None and row["in_top"] else None,
+                "pnl": row["pnl"] if row is not None else None, "pnl_unit": self.value_unit}
 
-    def _amt(self, token: str, raw: int) -> str:
-        sym, dec = self.tokens.get(token)
-        return f"{human(raw / 10 ** dec)} ${html.escape(sym)}"
+    def _trade_payload(self, ev: TradeEvent, notes: list[str], ts: int | None) -> dict:
+        sym, dec = self.tokens.get(ev.token)
+        p = {"type": "trade", "kind": ev.kind, "tx": ev.tx, "block": ev.block, "ts": ts,
+             "token": ev.token, "symbol": sym, "decimals": dec, "qty": str(ev.qty),
+             "hype_wei": None if ev.hype_wei is None else str(ev.hype_wei),
+             "confidence": ev.confidence, "hype_method": ev.hype_method, "notes": notes,
+             **self._wallet_ctx(ev.wallet)}
+        if ev.counter_token:
+            csym, cdec = self.tokens.get(ev.counter_token)
+            p.update(counter_token=ev.counter_token, counter_qty=str(ev.counter_qty),
+                     counter_symbol=csym, counter_decimals=cdec)
+        return p
 
     # --- position accounting ------------------------------------------------------
     # Rules (no fabricated precision):
@@ -181,7 +182,9 @@ class Engine:
                         self.store.record_realized(c, trade_id, ev.wallet, ev.token, **realized)
                 if not self._should_alert(ev, min_wei):
                     continue
-                self.store.enqueue(c, f"ev:{ev.key}", self._fmt_event(ev, notes))
+                payload = self._trade_payload(ev, notes, bts)
+                text, _ = cards.render_trade(payload, self.links)
+                self.store.enqueue(c, f"ev:{ev.key}", text, payload=payload)
                 if ev.kind == "BUY" and ev.confidence == "high" and bts is not None:
                     self._maybe_cluster(c, ev, bts, min_wei)
             self.store.set_cursor(c, cursor)
@@ -195,33 +198,6 @@ class Engine:
         if ev.kind in ("TRANSFER_IN", "TRANSFER_OUT"):
             return self.cfg.alert_transfers
         return True  # SWAP / MULTI are rare and usually interesting
-
-    def _fmt_event(self, ev: TradeEvent, notes: list[str]) -> str:
-        kind = ev.kind
-        if kind == "TRANSFER_OUT" and ev.confidence == "unknown":
-            kind = "OUT (sell?)"
-        head = f"{ICON.get(ev.kind, '•')} <b>{kind}</b> {self._who(ev.wallet)}"
-        if ev.kind in ("BUY", "SELL") and ev.hype_wei:
-            _, dec = self.tokens.get(ev.token)
-            hype = ev.hype_wei / WEI
-            px = hype / (ev.qty / 10 ** dec) if ev.qty else 0
-            verb = "for" if ev.kind == "BUY" else "→"
-            a = "" if ev.confidence == "high" else "≈"
-            body = (f"{self._amt(ev.token, ev.qty)} {verb} <b>{a}{hype:.3f} HYPE</b> "
-                    f"(px {a}{px:.3g})")
-        elif ev.kind == "SWAP" and ev.counter_token and ev.counter_qty is not None:
-            body = f"{self._amt(ev.counter_token, ev.counter_qty)} → {self._amt(ev.token, ev.qty)}"
-        else:
-            body = self._amt(ev.token, ev.qty)
-        lines = [head, body]
-        if notes:
-            lines.append(" · ".join(notes))
-        if ev.confidence == "estimated":
-            lines.append(f"<i>HYPE amount estimated ({ev.hype_method})</i>")
-        elif ev.confidence == "unknown" and ev.kind != "TRANSFER_OUT":
-            lines.append("<i>HYPE leg unknown</i>")
-        lines.append(f"<code>{ev.token}</code> · {self._link_tx(ev.tx)} · block {ev.block}")
-        return "\n".join(lines)
 
     def _maybe_cluster(self, c, ev: TradeEvent, bts: int, min_wei: int) -> None:
         window = self.cfg.cluster_window_s
@@ -237,18 +213,20 @@ class Engine:
         if sid is None:
             return
         sym, _ = self.tokens.get(ev.token)
-        who = "\n".join(f"  • {self._who(w)}" for w, _ in buyers[:10])
-        text = (f"🚨 <b>CLUSTER BUY</b> ${html.escape(sym)}: {len(buyers)} tracked wallets "
-                f"bought ≥{self.cfg.min_trade_hype:g} HYPE within {window // 60} min "
-                f"(measured buys only; wallets may share an owner)\n{who}\n"
-                f"<code>{ev.token}</code>")
-        self.store.enqueue(c, f"signal:{sid}", text, severity="high")
+        payload = {"type": "cluster", "token": ev.token, "symbol": sym,
+                   "min_hype": self.cfg.min_trade_hype, "window_min": window // 60,
+                   "buyers": [self._wallet_ctx(w) for w, _ in buyers]}
+        text, _ = cards.render_cluster(payload, self.links)
+        self.store.enqueue(c, f"signal:{sid}", text, severity="high", payload=payload)
 
     def leaderboard_alerts(self, changes: list[tuple[str, str, Trader]]) -> None:
         bucket = int(time.time()) // 60
         for kind, detail, t in changes:
             icon = {"ENTERED": "⭐", "EXITED": "⬇️", "RANK": "📊", "PNL": "💰"}[kind]
-            text = f"{icon} <b>LEADERBOARD</b> <code>{short(t.address)}</code> {detail}"
-            if t.pnl is not None and kind != "PNL":
-                text += f" · PnL {fmt_value(t.pnl, self.value_unit)}"
+            ctx = {"wallet": t.address, "rank": t.rank if kind != "EXITED" else None,
+                   "label": self.labels.get(t.address), "pnl_unit": self.value_unit,
+                   "pnl": t.pnl if kind != "PNL" else None}
+            text = (f"{icon} <b>LEADERBOARD</b> {html.escape(detail)}\n{cards.who(self.links, ctx)}"
+                    f"\n🔗 {cards.a(self.links.agora_trader(t.address), 'Agora profile')} · "
+                    f"{cards.a(self.links.address(t.address), 'Elyscan')}")
             self.store.enqueue_now(f"lb:{kind}:{t.address}:{bucket}", text)

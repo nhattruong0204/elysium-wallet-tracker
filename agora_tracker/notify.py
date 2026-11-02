@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import re
 import time
+from collections.abc import Callable
 
 import requests
 
@@ -15,8 +16,10 @@ log = logging.getLogger(__name__)
 
 
 class Notifier:
-    def __init__(self, store: Store, cfg: TelegramConfig, dry_run: bool = False):
+    def __init__(self, store: Store, cfg: TelegramConfig, dry_run: bool = False,
+                 renderer: Callable[[dict], tuple[str, dict | None]] | None = None):
         self.store, self.cfg = store, cfg
+        self.renderer = renderer
         self.enabled = bool(cfg.bot_token and cfg.chat_id) and not dry_run
         self.session = requests.Session()
         self._last = 0.0
@@ -24,20 +27,36 @@ class Notifier:
         if not self.enabled:
             log.info("Telegram not configured (or --dry-run): alerts print to stdout")
 
-    def _send(self, text: str) -> tuple[bool, str, bool]:
+    def _render(self, row: dict) -> tuple[str, dict | None]:
+        """Final text + inline keyboard. A rendering failure falls back to the stored text:
+        an alert is never held back because market data or rendering broke."""
+        if self.renderer is None or not row.get("payload"):
+            return row["text"], None
+        try:
+            return self.renderer(row)
+        except Exception:  # noqa: BLE001 - delivery must not depend on enrichment
+            log.exception("rendering alert %s failed; sending stored text", row.get("id"))
+            return row["text"], None
+
+    def _send(self, text: str, markup: dict | None = None) -> tuple[bool, str, bool]:
         """Returns (ok, error, permanent)."""
         if not self.enabled:
-            print("-" * 60 + "\n" + re.sub(r"<[^>]+>", "", text), flush=True)
+            buttons = ""
+            if markup:
+                buttons = "\n" + "  ".join(f"[{b['text']}]" for row in markup["inline_keyboard"]
+                                            for b in row)
+            print("-" * 60 + "\n" + re.sub(r"<[^>]+>", "", text) + buttons, flush=True)
             return True, "", False
         wait = self.cfg.min_interval_s - (time.monotonic() - self._last)
         if wait > 0:
             time.sleep(wait)
         url = f"https://api.telegram.org/bot{self.cfg.bot_token}/sendMessage"
         try:
-            r = self.session.post(url, json={"chat_id": self.cfg.chat_id, "text": text[:4000],
-                                             "parse_mode": "HTML",
-                                             "disable_web_page_preview": True},
-                                  timeout=self.cfg.timeout_s)
+            body: dict = {"chat_id": self.cfg.chat_id, "text": text[:4000], "parse_mode": "HTML",
+                          "disable_web_page_preview": True}
+            if markup:
+                body["reply_markup"] = markup
+            r = self.session.post(url, json=body, timeout=self.cfg.timeout_s)
             self._last = time.monotonic()
             if r.status_code == 429:
                 try:
@@ -80,7 +99,8 @@ class Notifier:
                 row = self.store.claim_due_alert(c)
                 if row is None:
                     break
-                ok, err, permanent = self._send(row["text"])
+                text, markup = self._render(row)
+                ok, err, permanent = self._send(text, markup)
                 if ok:
                     self.store.mark_sent(c, row["id"])
                     sent += 1
