@@ -146,7 +146,7 @@ class Sessions:
         s = t.ui_sessions
         vals = {"user_id": user_id, "chat_id": chat_id, **fields}
         stmt = pg_insert(s).values(**vals)
-        upd = {k: stmt.excluded[k] for k in vals if k != "user_id"}
+        upd: dict[str, Any] = {k: stmt.excluded[k] for k in vals if k != "user_id"}
         upd["updated_at"] = sa.func.now()
         with self.store.engine.begin() as c:
             c.execute(stmt.on_conflict_do_update(index_elements=["user_id"], set_=upd))
