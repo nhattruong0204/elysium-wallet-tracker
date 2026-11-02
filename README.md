@@ -122,3 +122,7 @@ pytest -q && ruff check . && mypy agora_tracker
 - Watch for wash-traded volume, wallets that are the deployer of what they "trade", and
   multi-wallet clusters run by one entity (they'll trip the cluster alert on their own).
   `TRANSFER_OUT` to fresh wallets is often the tell.
+
+## Telegram Intelligence Center
+
+Send `/start` to the bot for an interactive menu: market overview, smart-money flows, trending projects, gainers/losers, top traders, wallet/token search and CSV/XLSX exports over any time range. See [docs/TELEGRAM_UI.md](docs/TELEGRAM_UI.md).
