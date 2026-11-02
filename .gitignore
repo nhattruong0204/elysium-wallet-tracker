@@ -1,0 +1,18 @@
+# local config and secrets (copied cURL headers can contain session cookies)
+config.yaml
+watchlist.txt
+curl.txt
+.env
+
+# state
+*.db
+*.db-wal
+*.db-shm
+
+# python
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+*.egg-info/

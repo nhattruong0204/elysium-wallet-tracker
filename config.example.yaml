@@ -1,0 +1,56 @@
+# Copy to config.yaml. Secrets come from env: TG_BOT_TOKEN, TG_CHAT_ID.
+
+chain:
+  # Read-only RPC. Pre-launch the only public node is Kleos's; after Nov 9 add Kinetiq's
+  # official RPC first and keep this as a fallback. Every node you use sees your IP.
+  rpc_urls:
+    - https://rpc.thekleos.xyz/rpc
+  chain_id: 99901              # Elysium mainnet. The tracker refuses to run on a mismatch.
+  poll_interval_s: 5           # pre-launch blocks only move per batch (~3h); 5s is plenty after launch too
+  max_block_range: 2000        # auto-halves if the node rejects a range
+  confirmations: 0             # single sequencer, so reorgs are very unlikely; replays are deduped anyway
+  backfill_blocks: 2000        # first run only
+  wallet_chunk: 50             # addresses per eth_getLogs OR-list
+  rpc_batch_size: 50
+  wrapped_native: null         # set to WHYPE's address on Elysium if routers use it
+  explorer_tx_url: null        # e.g. "https://<explorer>/tx/{tx}"
+  explorer_address_url: null   # e.g. "https://<explorer>/address/{address}"
+
+leaderboard:
+  enabled: true
+  # Fill this section with:  python -m agora_tracker --import-curl curl.txt
+  url: ""                      # the JSON endpoint behind agoradex.app/traders
+  method: GET
+  params: {}
+  headers: {}
+  body: null
+  items_path: ""               # dotted path to the trader list in the response
+  fields:                      # dotted paths inside one trader object
+    address: address
+    pnl: pnl
+    worth: totalWorth
+    volume: volume
+    trades: trades
+  sort_by: pnl
+  top_n: 100
+  refresh_s: 300               # be polite: 5 min is enough for a PnL leaderboard
+
+alerts:
+  min_trade_hype: 0.5          # ignore smaller buys/sells
+  alert_transfers: true        # token moved wallet-to-wallet (rotation to a fresh wallet, OTC)
+  leaderboard_alerts: true
+  rank_change: 10              # alert when a wallet moves >= 10 places
+  pnl_change_usd: 5000         # alert when PnL moves >= $5k between refreshes
+  cluster_window_s: 3600
+  cluster_min_wallets: 3       # >= 3 tracked wallets buying the same token within the window
+  hype_dust: 0.0005
+  ignore_tokens: []            # e.g. stablecoins or $AGORA if you don't care about them
+
+telegram:
+  bot_token_env: TG_BOT_TOKEN
+  chat_id_env: TG_CHAT_ID
+  min_interval_s: 1.1
+
+db_path: tracker.db
+watchlist_file: watchlist.txt  # extra wallets to follow regardless of rank
+exclude_contracts: true

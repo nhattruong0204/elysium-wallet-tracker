@@ -1,0 +1,2 @@
+# One wallet per line, optional label after it. These are followed even if they leave the top 100.
+# 0x0000000000000000000000000000000000000000  my label
