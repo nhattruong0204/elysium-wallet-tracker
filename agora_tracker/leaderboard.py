@@ -87,7 +87,8 @@ def parse_items(payload: Any, cfg: LeaderboardConfig) -> list[Trader]:
             raw=it if isinstance(it, dict) else {}))
     key = cfg.sort_by
     if key and out and getattr(out[0], key, None) is not None:
-        out.sort(key=lambda t: getattr(t, key) or float("-inf"), reverse=True)
+        out.sort(key=lambda t: float("-inf") if getattr(t, key) is None else getattr(t, key),
+                 reverse=True)
     out = out[: cfg.top_n]
     for i, t in enumerate(out, 1):
         t.rank = i

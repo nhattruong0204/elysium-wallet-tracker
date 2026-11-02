@@ -18,7 +18,7 @@ from .db import Store
 from .engine import WEI, Engine
 from .leaderboard import HttpLeaderboard, diff_leaderboard, guess_mapping, parse_curl
 from .notify import Notifier
-from .rpc import RpcClient, RpcError
+from .rpc import RpcClient, RpcError, redact
 
 log = logging.getLogger("agora_tracker")
 
@@ -28,7 +28,8 @@ class Tracker:
         self.cfg = cfg
         self.store = Store(cfg.db_path)
         c = cfg.chain
-        self.rpc = RpcClient(c.rpc_urls, c.rpc_timeout_s, c.rpc_max_retries, c.rpc_batch_size)
+        self.rpc = RpcClient(c.rpc_urls, c.rpc_timeout_s, c.rpc_max_retries, c.rpc_batch_size,
+                             expected_chain_id=c.chain_id)
         self.follower = ChainFollower(self.rpc, self.store, c, int(cfg.alerts.hype_dust * WEI),
                                       set(cfg.alerts.ignore_tokens))
         self.watchlist = load_watchlist(cfg.watchlist_file)
@@ -37,6 +38,7 @@ class Tracker:
         lb = cfg.leaderboard
         self.leaderboard = HttpLeaderboard(lb) if lb.enabled and lb.url else None
         self.tracked: set[str] = set()
+        self._warned_idle = False
         self._next_lb = 0.0
         self._stop = False
 
@@ -45,11 +47,16 @@ class Tracker:
         self._stop = True
 
     def check_chain(self) -> None:
-        cid = self.rpc.chain_id()
-        if cid != self.cfg.chain.chain_id:
-            raise SystemExit(f"RPC chain id {cid} != configured {self.cfg.chain.chain_id}; "
-                             "wrong endpoint or Elysium re-genesis. Refusing to run.")
-        log.info("connected to chain %d via %s", cid, self.rpc.url)
+        """Verify every configured endpoint's chain id; quarantine mismatches. Refuse to run
+        when none is on the expected chain (wrong endpoint or Elysium re-genesis)."""
+        results = self.rpc.verify_all()
+        for url, res in results.items():
+            (log.info if res == "ok" else log.error)("RPC %s: %s", url, res)
+        if not self.rpc.live_urls:
+            raise SystemExit(f"no RPC endpoint is on chain {self.cfg.chain.chain_id}; "
+                             "refusing to run")
+        if not any(r == "ok" for r in results.values()):
+            raise RpcError("no RPC endpoint reachable")
 
     def refresh_leaderboard(self) -> None:
         self._next_lb = time.monotonic() + self.cfg.leaderboard.refresh_s
@@ -58,6 +65,16 @@ class Tracker:
             try:
                 traders = self.leaderboard.fetch()
                 prev = self.store.top_traders()
+                if len(traders) < self.cfg.leaderboard.top_n:
+                    log.warning("leaderboard returned %d rows (< top_n %d): pagination or "
+                                "a changed endpoint?", len(traders), self.cfg.leaderboard.top_n)
+                if prev and len(traders) < len(prev) * 0.5:
+                    # A sudden halving is far more likely a broken/partial response than half
+                    # the top traders vanishing. Keep the old set too and stay quiet.
+                    log.error("leaderboard shrank %d -> %d; treating snapshot as degraded",
+                              len(prev), len(traders))
+                    top |= {t.address for t in traders}
+                    raise ValueError("degraded leaderboard snapshot ignored")
                 changes = diff_leaderboard(prev, traders, rank_change=self.cfg.alerts.rank_change,
                                            pnl_change_usd=self.cfg.alerts.pnl_change_usd)
                 self.store.replace_top(traders)
@@ -89,6 +106,14 @@ class Tracker:
             log.info("starting at block %d (head %d, backfill %d)", cursor, head, c.backfill_blocks)
         if cursor >= head:
             return False
+        if not self.tracked:
+            # Scanning with no wallets would advance the cursor and skip these blocks for
+            # every wallet tracked later. Hold position until there is something to track.
+            if not self._warned_idle:
+                log.warning("no wallets tracked; holding cursor at %d", cursor)
+                self._warned_idle = True
+            return False
+        self._warned_idle = False
         to = min(head, cursor + c.max_block_range)
         events, ts = self.follower.scan(cursor + 1, to, self.tracked)
         new = self.engine.apply_range(events, ts, to)
@@ -106,7 +131,7 @@ class Tracker:
             self.store.enqueue_now(
                 f"start:{int(time.time())}",
                 f"▶️ <b>Tracker started</b> · {len(self.tracked)} wallets ({source}) · "
-                f"chain {self.cfg.chain.chain_id} via {self.rpc.url}")
+                f"chain {self.cfg.chain.chain_id} via {redact(self.rpc.url)}")
         backoff = 1.0
         while not self._stop:
             try:
@@ -205,8 +230,12 @@ def status(cfg: Config) -> None:
         "cursor": store.get_kv("cursor"),
         "top_traders": len(top),
         "watchlist": len(load_watchlist(cfg.watchlist_file)),
-        "pending_alerts": len(store.pending_alerts(1000)),
+        "heartbeat_age_s": (int(time.time()) - int(hb)) if (hb := store.get_kv("heartbeat"))
+        else None,
+        "outbox": store.outbox_counts(),
         "events": store.conn.execute("SELECT COUNT(*) FROM events").fetchone()[0],
+        "events_by_confidence": {r[0]: r[1] for r in store.conn.execute(
+            "SELECT confidence, COUNT(*) FROM events GROUP BY confidence")},
         "open_positions": store.conn.execute(
             "SELECT COUNT(*) FROM positions WHERE qty != '0'").fetchone()[0],
     }, indent=2))

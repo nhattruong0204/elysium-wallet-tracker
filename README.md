@@ -85,7 +85,8 @@ pip install -r requirements.txt
 python -m agora_tracker --config config/config.yaml --once --dry-run
 ```
 
-Tests: `pytest -q` (offline, fake RPC).
+Tests: `pytest -q` (offline, fake RPC). Lint: `ruff check . && mypy agora_tracker`.
+Audit of v0.1 and the fixes made: [docs/AUDIT.md](docs/AUDIT.md).
 
 ## Limits you should know
 
@@ -93,12 +94,30 @@ Tests: `pytest -q` (offline, fake RPC).
   (~every 3 h), so you'll get a wave of alerts per batch, ordered by inbox position. You cannot
   copy at their price; treat alerts as research, not signals. After launch, latency is the
   poll interval plus RPC lag.
-- **HYPE leg is exact only when the wallet has one tx in that block.** Otherwise it falls back to
-  `tx.value` (buys) and is marked approximate; sells paid in native HYPE then show without size.
-  Set `chain.wrapped_native` if routers settle in WHYPE.
+- **Every trade carries a confidence level**, shown in alerts and stored per event:
+
+  | Confidence | Meaning | Shown as |
+  |---|---|---|
+  | `high` | HYPE leg measured: the wallet's balance change across the block, with its nonce proving this was its only tx there; or paid in wrapped HYPE (exact from logs) | plain numbers |
+  | `estimated` | HYPE inferred from `tx.value` because the block was ambiguous | `≈` and "estimated (tx_value)" |
+  | `unknown` | Only the token movement is known | "OUT (sell?)" / "HYPE leg unknown" |
+
+  A tx sent by someone else (airdrop, escrow or limit-order fill) is always a transfer, never
+  a trade. One residual risk remains even at `high`: HYPE *received* from a third party in the
+  same block can't be told apart without trace APIs.
+- **PnL never mixes measured and estimated numbers.** Realized PnL from measured trades on a
+  fully known cost basis is kept separately from PnL that relies on any estimate. Tokens
+  received with unknown cost make later sells "PnL unknown" instead of inventing a profit.
+- **Missing data stops the range, it doesn't skip it.** If the node can't return a tx,
+  receipt or block, the whole block range is retried later and the cursor does not move.
+- **RPC endpoints are checked for chain ID** before first use; an endpoint on another chain
+  is quarantined, so failover can't mix networks. Provider URLs are redacted in logs.
 - **Balance diffs need state for block N-1.** Most Nitro nodes keep recent state; if the RPC
-  prunes it, the approximate path is used.
+  prunes it, trades fall back to `estimated` / `unknown`.
 - **Positions start at tracking time.** Sells of bags bought earlier show "PnL unknown".
+- **Telegram delivery is at-least-once.** Failed sends back off (10 s doubling to 1 h) and are
+  dead-lettered after `max_attempts`, visible in `--status`. A timeout after Telegram accepted
+  a message can cause a rare duplicate; alerts are never silently dropped.
 - **Read-only.** No keys, no signing. Every RPC you use sees your IP and the wallets you query.
 
 ## Reading the leaderboard skeptically
