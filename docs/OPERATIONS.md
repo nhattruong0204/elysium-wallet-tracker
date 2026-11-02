@@ -19,7 +19,8 @@ status and read logs from a phone. Credentials live only in GitHub secrets.
 1. Repo → **Settings → Secrets and variables → Actions → New repository secret**:
    `VPS_HOST`, `VPS_USER`, `VPS_PASSWORD` (or better `VPS_SSH_KEY`), `TG_BOT_TOKEN`,
    `TG_CHAT_ID`; optional `VPS_PORT`, `VPS_HOST_KEY`.
-2. **Actions → deploy → Run workflow**, choose an action:
+2. **Actions → deploy → Run workflow**, choose an action (or push a commit to the `ops`
+   branch whose `deploy/OPS_REQUEST` contains `action=<name>`):
 
 | Action | Does |
 |---|---|

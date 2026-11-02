@@ -10,7 +10,14 @@ name: deploy
 #   VPS_HOST_KEY      known_hosts line to pin the server key (optional, recommended)
 #   TG_BOT_TOKEN, TG_CHAT_ID                                 (required for deploy)
 
+# Two ways to run it:
+#  * Actions tab > deploy > Run workflow (pick an action), or
+#  * push a commit to the `ops` branch whose deploy/OPS_REQUEST file names the action
+#    (lets automation operate the VPS without workflow-dispatch permission).
 on:
+  push:
+    branches: [ops]
+    paths: [deploy/OPS_REQUEST]
   workflow_dispatch:
     inputs:
       action:
@@ -39,14 +46,33 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      ACTION: ${{ inputs.action }}
-      DIR: ${{ inputs.deploy_dir }}
-      INSTALL_DOCKER: ${{ inputs.install_docker }}
       VPS_HOST: ${{ secrets.VPS_HOST }}
       VPS_USER: ${{ secrets.VPS_USER }}
       VPS_PORT: ${{ secrets.VPS_PORT }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Resolve request
+        env:
+          IN_ACTION: ${{ inputs.action }}
+          IN_DIR: ${{ inputs.deploy_dir }}
+          IN_INSTALL: ${{ inputs.install_docker }}
+        run: |
+          if [ "${{ github.event_name }}" = push ]; then
+            # deploy/OPS_REQUEST: lines of key=value (action, deploy_dir, install_docker)
+            get() { grep -E "^$1=" deploy/OPS_REQUEST | head -1 | cut -d= -f2- | tr -d '[:space:]'; }
+            IN_ACTION="$(get action)"; IN_DIR="$(get deploy_dir)"; IN_INSTALL="$(get install_docker)"
+          fi
+          case "$IN_ACTION" in
+            deploy|status|logs|discover|dry-run|test-telegram|restart|stop) ;;
+            *) echo "invalid action '$IN_ACTION'"; exit 1 ;;
+          esac
+          [ "$IN_INSTALL" = true ] || IN_INSTALL=false
+          {
+            echo "ACTION=$IN_ACTION"
+            echo "DIR=${IN_DIR:-elysium-wallet-tracker}"
+            echo "INSTALL_DOCKER=$IN_INSTALL"
+          } >> "$GITHUB_ENV"
 
       - name: Check inputs and secrets
         env:
