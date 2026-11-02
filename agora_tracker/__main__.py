@@ -183,6 +183,17 @@ class Tracker:
             time.sleep(min(0.5, end - time.monotonic()))
 
 
+def test_telegram(cfg: Config) -> int:
+    """Send one message straight to Telegram (bypassing the outbox) to verify credentials."""
+    if not (cfg.telegram.bot_token and cfg.telegram.chat_id):
+        print("TG_BOT_TOKEN / TG_CHAT_ID not set")
+        return 1
+    n = Notifier(None, cfg.telegram)  # type: ignore[arg-type]  # _send does not use the store
+    ok, err, _ = n._send("✅ <b>Elysium wallet tracker</b>: Telegram delivery works.")
+    print("telegram ok" if ok else f"telegram FAILED: {err}")
+    return 0 if ok else 1
+
+
 def import_curl(source: str) -> None:
     text = sys.stdin.read() if source == "-" else open(source).read()
     spec = parse_curl(text.strip())
@@ -299,6 +310,8 @@ def main(argv: list[str] | None = None) -> None:
                     help="one-time import of a v0.1/v0.2 SQLite database into PostgreSQL")
     ap.add_argument("--report", metavar="FILE", help="write the import reconciliation report "
                                                      "as JSON (with --import-sqlite)")
+    ap.add_argument("--test-telegram", action="store_true",
+                    help="send one test message to Telegram and exit")
     ap.add_argument("--log-level", default="INFO")
     args = ap.parse_args(argv)
     logging.basicConfig(level=args.log_level.upper(),
@@ -320,6 +333,8 @@ def main(argv: list[str] | None = None) -> None:
     if args.migrate:
         sys.exit(migrate())
     cfg = load_config(args.config)
+    if args.test_telegram:
+        sys.exit(test_telegram(cfg))
     if args.import_sqlite:
         from .sqlite_import import run_import
         sys.exit(run_import(args.import_sqlite, cfg, dry_run=args.dry_run,
