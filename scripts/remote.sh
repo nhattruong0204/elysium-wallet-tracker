@@ -170,6 +170,9 @@ case "$ACTION" in
   test-card)
     docker compose run --rm --no-deps tracker --test-card
     ;;
+  ui-smoke)
+    docker compose run --rm --no-deps ui --ui-smoke
+    ;;
   restart)
     docker compose restart tracker ui
     wait_healthy || true

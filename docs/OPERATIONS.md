@@ -32,6 +32,7 @@ status and read logs from a phone. Credentials live only in GitHub secrets.
 | `dry-run` | Catch up once and print alerts instead of sending |
 | `test-telegram` | Send one test message |
 | `test-card` | Re-send the latest tracked BUY/SELL as a full alert card with live market data |
+| `ui-smoke` | Render every Intelligence Center view on live data, build a complete XLSX and send both to the owner chat (no polling) |
 | `restart` / `stop` | As named (`restart` restarts tracker and ui) |
 
 Bot settings are config-as-code: change `deploy/config.yaml` or `deploy/watchlist.txt` in a

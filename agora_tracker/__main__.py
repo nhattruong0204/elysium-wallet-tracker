@@ -417,6 +417,30 @@ def run_ui(cfg: Config) -> None:
         engine.dispose()
 
 
+def run_ui_smoke(cfg: Config) -> int:
+    from .db import make_engine
+    from .reports import Reports
+    from .tgui import IntelBot, TelegramApi, smoke
+
+    if not (cfg.telegram.bot_token and cfg.ui.admin_ids):
+        print("TG_BOT_TOKEN and TG_CHAT_ID are required")
+        return 1
+    engine = make_engine(pool_size=2)
+    store = Store(engine, chain_id=cfg.chain.chain_id)
+    market = AgoraMarket(cfg.market)
+    reports = Reports(engine, cfg.chain.chain_id, cfg.ui, value_unit=cfg.leaderboard.value_unit,
+                      market=market, collector_interval_s=cfg.collector.interval_s)
+    bot = IntelBot(cfg, TelegramApi(cfg.telegram.bot_token), store, reports, market)
+    try:
+        out = smoke(bot, cfg.ui.admin_ids[0])
+    finally:
+        bot.shutdown()
+    for data, res, ms in out["results"]:
+        print(f"{'OK ' if res.startswith('ok') else 'BAD'} {ms:>6} ms  {data[:60]}  {res[:120]}")
+    print(f"{len(out['results']) - len(out['failed'])}/{len(out['results'])} checks passed")
+    return 1 if out["failed"] else 0
+
+
 def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(prog="agora_tracker",
                                  description="Follow top Elysium traders and alert on their trades.")
@@ -453,6 +477,9 @@ def main(argv: list[str] | None = None) -> None:
                          "the market snapshot collector")
     ap.add_argument("--health-ui", action="store_true",
                     help="exit 0 if the Telegram UI loop is alive (Docker healthcheck)")
+    ap.add_argument("--ui-smoke", action="store_true",
+                    help="end-to-end check of the Telegram UI on live data; sends the result "
+                         "and a sample XLSX to the owner chat (does not poll updates)")
     ap.add_argument("--collect-once", action="store_true",
                     help="take one market snapshot round and exit")
     ap.add_argument("--log-level", default="INFO")
@@ -485,6 +512,8 @@ def main(argv: list[str] | None = None) -> None:
     if args.ui:
         run_ui(cfg)
         return
+    if args.ui_smoke:
+        sys.exit(run_ui_smoke(cfg))
     if args.collect_once:
         from .collector import Collector
         out = Collector(Store(chain_id=cfg.chain.chain_id), AgoraMarket(cfg.market),
