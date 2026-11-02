@@ -1,0 +1,10 @@
+{"base": "HYPE", "name": "Blob", "image": "/api/img?src=x",
+ "stats": {"ath": 1.3762602407392785e-05, "mcap": 9972.528609338144, "price": 9.972528609338145e-06,
+           "change": {"1h": 0.13155629735141838, "6h": -0.10658688517414627, "7d": 331.4176203112715, "24h": 0.7334862792076646},
+           "volume": {"1h": 32.937213494433294, "6h": 488.2434796133745, "7d": 6165.169315591443, "24h": 2273.010564660518},
+           "buys24h": 569, "trades24h": 901, "lastTradeAt": 1793614273},
+ "symbol": "BLOB", "address": "0x9a9815af521149e8d982791703a31bca2f95f534", "version": "v4",
+ "tradable": true, "createdAt": 1793077114000, "launchpad": "elyspump", "holders": 697,
+ "creator": "0x698f965a2e3d4f0a4887a2036b611f1efa8af853", "description": null,
+ "links": {"x": "https://x.com/Kinetiq_xyz/status/2093246906743017889?s=20"},
+ "venues": [{"label": "ElysPump v4", "pool": "0x2047"}]}

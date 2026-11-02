@@ -13,11 +13,14 @@ import requests
 import sqlalchemy as sa
 import yaml
 
+from . import cards
+from .cards import Links
 from .chain import ChainFollower
 from .config import Config, load_config, load_watchlist
 from .db import Store
 from .engine import WEI, Engine
 from .leaderboard import HttpLeaderboard, diff_leaderboard, dig, guess_mapping, parse_curl
+from .market import AgoraMarket
 from .notify import Notifier
 from .rpc import RpcClient, RpcError, redact
 
@@ -35,15 +38,25 @@ class Tracker:
                                       set(cfg.alerts.ignore_tokens))
         self.watchlist = load_watchlist(cfg.watchlist_file)
         self.store.sync_manual_watchlist(self.watchlist)
+        self.links = Links(cfg.links)
+        self.market = AgoraMarket(cfg.market)
         self.engine = Engine(self.store, self.follower.tokens, c, cfg.alerts, self.watchlist,
-                             value_unit=cfg.leaderboard.value_unit)
-        self.notifier = Notifier(self.store, cfg.telegram, dry_run)
+                             value_unit=cfg.leaderboard.value_unit, links=self.links)
+        self.notifier = Notifier(self.store, cfg.telegram, dry_run, renderer=self.render_alert)
         lb = cfg.leaderboard
         self.leaderboard = HttpLeaderboard(lb) if lb.enabled and lb.url else None
         self.tracked: set[str] = set()
         self._warned_idle = False
         self._next_lb = 0.0
         self._stop = False
+
+    def render_alert(self, row: dict) -> tuple[str, dict | None]:
+        """Re-render a stored alert with fresh market data (called by the notifier)."""
+        payload = row["payload"]
+        token = payload.get("token")
+        info = self.market.token(token) if token else None
+        out = cards.render(payload, self.links, info, self.market.hype_usd())
+        return out if out else (row["text"], None)
 
     def stop(self, *_):
         log.info("shutdown requested")

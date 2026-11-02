@@ -384,13 +384,16 @@ class Store:
         return sid
 
     # --- outbox -----------------------------------------------------------------------
-    def enqueue(self, c: Connection, key: str, text: str, severity: str = "info") -> None:
+    def enqueue(self, c: Connection, key: str, text: str, severity: str = "info",
+                payload: dict | None = None) -> None:
         c.execute(pg_insert(t.notification_outbox).values(
-            dedup_key=key, text=text, severity=severity).on_conflict_do_nothing())
+            dedup_key=key, text=text, severity=severity, payload=payload)
+            .on_conflict_do_nothing())
 
-    def enqueue_now(self, key: str, text: str, severity: str = "info") -> None:
+    def enqueue_now(self, key: str, text: str, severity: str = "info",
+                    payload: dict | None = None) -> None:
         with self.engine.begin() as c:
-            self.enqueue(c, key, text, severity)
+            self.enqueue(c, key, text, severity, payload)
 
     def pending_alerts(self, limit: int = 20) -> list[dict[str, Any]]:
         o = t.notification_outbox
@@ -403,7 +406,7 @@ class Store:
         """Lock the oldest due alert for the duration of the caller's transaction.
         SKIP LOCKED lets concurrent notifiers work without sending the same row."""
         o = t.notification_outbox
-        r = c.execute(sa.select(o.c.id, o.c.text, o.c.attempts).where(
+        r = c.execute(sa.select(o.c.id, o.c.text, o.c.payload, o.c.attempts).where(
             o.c.status == "pending", o.c.next_attempt_at <= sa.func.now())
             .order_by(o.c.id).limit(1).with_for_update(skip_locked=True)).mappings().first()
         return dict(r) if r else None

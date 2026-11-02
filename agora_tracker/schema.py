@@ -276,6 +276,9 @@ notification_outbox = sa.Table(
     sa.Column("chat_id", sa.Text),
     sa.Column("severity", sa.Text, nullable=False, server_default="info"),
     sa.Column("text", sa.Text, nullable=False),
+    # structured alert (cards.py) re-rendered at send time with fresh market data;
+    # NULL for plain-text alerts, which are sent as `text`
+    sa.Column("payload", JSONB),
     sa.Column("status", sa.Text, nullable=False, server_default="pending"),
     sa.Column("attempts", sa.Integer, nullable=False, server_default="0"),
     sa.Column("next_attempt_at", TS, nullable=False, server_default=_now()),

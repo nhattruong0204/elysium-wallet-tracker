@@ -173,7 +173,7 @@ def test_end_to_end_buy_sell_transfer_cluster(store, chain):
     assert pos.basis == "known" and pos.realized_est_wei == 0
 
     texts = [r["text"] for r in store.pending_alerts(100)]
-    assert any("CLUSTER BUY" in t and "$KLEOS" in t for t in texts)
+    assert any("CLUSTER BUY" in t and "KLEOS" in t for t in texts)
     assert any("new position" in t and "whale-1" in t for t in texts)
     assert any("realized +0.300 HYPE (+60%)" in t for t in texts)
     assert any("OUT (sell?)" in t and "HYPE leg unknown" in t for t in texts)
