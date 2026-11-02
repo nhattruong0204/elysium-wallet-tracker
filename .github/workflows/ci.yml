@@ -73,6 +73,12 @@ jobs:
           docker compose up -d postgres
           docker compose run --rm migrate
           docker compose run --rm tracker --status
+          # Telegram UI: migrated but not running -> UI health must fail as well
+          if docker compose run --rm tracker --health-ui; then
+            echo "ui healthcheck should fail without a heartbeat"; exit 1
+          fi
+          # one live market-snapshot round against Agora (non-fatal: third-party API)
+          docker compose run --rm tracker --collect-once || echo "collector round failed (Agora unreachable?)"
           # migrated but no heartbeat yet: health must report unhealthy (exit 1)
           if docker compose run --rm tracker --health; then
             echo "healthcheck should fail without a heartbeat"; exit 1

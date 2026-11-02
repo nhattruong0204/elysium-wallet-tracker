@@ -270,6 +270,38 @@ class Store:
         with self.engine.begin() as c:
             self._sync_watchlist(c, set(labels), "manual", labels)
 
+    # Wallets added from the Telegram bot (source 'telegram'). They are not touched by
+    # sync_manual_watchlist (which only manages source 'manual' from watchlist.txt).
+    def watch_add(self, address: str, *, source: str = "telegram", reason: str | None = None,
+                  label: str | None = None) -> bool:
+        w = t.wallet_watchlist
+        with self.engine.begin() as c:
+            self._ensure_wallets(c, {address})
+            exists = c.execute(sa.select(w.c.id).where(
+                w.c.chain_id == self.chain_id, w.c.address == address, w.c.source == source,
+                w.c.removed_at.is_(None))).first()
+            if exists:
+                return False
+            c.execute(sa.insert(w).values(chain_id=self.chain_id, address=address,
+                                          source=source, label=label, reason=reason))
+        return True
+
+    def watch_remove(self, address: str, *, source: str = "telegram") -> bool:
+        w = t.wallet_watchlist
+        with self.engine.begin() as c:
+            n = c.execute(sa.update(w).where(
+                w.c.chain_id == self.chain_id, w.c.address == address, w.c.source == source,
+                w.c.removed_at.is_(None)).values(removed_at=sa.func.now(), status="inactive",
+                                                 reason="removed via Telegram")).rowcount
+        return bool(n)
+
+    def watchlist_addresses(self, source: str) -> set[str]:
+        w = t.wallet_watchlist
+        with self.engine.connect() as c:
+            return {r[0] for r in c.execute(sa.select(w.c.address).where(
+                w.c.chain_id == self.chain_id, w.c.source == source,
+                w.c.removed_at.is_(None)))}
+
     # --- token metadata ---------------------------------------------------------------
     def get_token(self, address: str) -> tuple[str, int] | None:
         m = t.token_metadata

@@ -9,6 +9,7 @@ All commands run from the repository directory on the VPS.
 | `postgres` | PostgreSQL 16, data in volume `pgdata`, not exposed to the host | always |
 | `migrate` | Applies Alembic migrations, then exits | once per `up` |
 | `tracker` | Leaderboard collector + indexer + notifier (one process) | always |
+| `ui` | Telegram Intelligence Center (menu, reports, exports; the only `getUpdates` consumer) + market snapshot collector. See [TELEGRAM_UI.md](TELEGRAM_UI.md) | always |
 | `backup` | Daily `pg_dump -Fc` into `./backups`, verified, pruned after 14 days | always |
 
 ## Deploying without SSH (GitHub Actions)
@@ -31,7 +32,7 @@ status and read logs from a phone. Credentials live only in GitHub secrets.
 | `dry-run` | Catch up once and print alerts instead of sending |
 | `test-telegram` | Send one test message |
 | `test-card` | Re-send the latest tracked BUY/SELL as a full alert card with live market data |
-| `restart` / `stop` | As named |
+| `restart` / `stop` | As named (`restart` restarts tracker and ui) |
 
 Bot settings are config-as-code: change `deploy/config.yaml` or `deploy/watchlist.txt` in a
 PR and run `deploy`. The first run prints the server's SSH host key fingerprint; save that
@@ -139,6 +140,8 @@ docker compose run --rm tracker --reset-cursor 190000   # replay from a block (s
 | "RPC … N blocks behind; skipping it" | `docker compose logs tracker \| grep RPC` | Expected now and then; the node is used again once it catches up. If a node is always behind, remove it from `chain.rpc_urls`. |
 | "pinned endpoint … failed" | Same | One node failed mid-range; the range is retried on the next node. Only a concern if it repeats for every node. |
 | Many `estimated` / `unknown` trades | `--status` → `trades_by_confidence` | The RPC may not serve historical state (`eth_getBalance` at block N-1). Try another provider. |
+| Menu doesn't respond | `docker compose logs ui` | "409": something else polls the bot (another deployment, a webhook). Only one `ui` may run per bot token. "not authorized": add your user id to `TG_ADMIN_IDS`. |
+| Gainers/Losers say "no snapshots" | `docker compose logs ui \| grep collector` | History builds from the collector's first run; until then only Agora's rolling windows work. |
 | Alerts not arriving | `--status` → `outbox` | `dead` > 0: inspect `SELECT dedup_key, last_error FROM notification_outbox WHERE status='dead'`. Check `TG_*` in `.env`. |
 | Leaderboard "degraded" / "failed" | `SELECT captured_at, status, request_meta FROM leaderboard_snapshots ORDER BY id DESC LIMIT 5` | Endpoint changed or blocked: rerun `--discover` or re-import the cURL. Watchlist tracking continues meanwhile. |
 

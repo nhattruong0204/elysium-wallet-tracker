@@ -9,6 +9,7 @@ name: deploy
 #   VPS_PORT          SSH port, default 22                   (optional)
 #   VPS_HOST_KEY      known_hosts line to pin the server key (optional, recommended)
 #   TG_BOT_TOKEN, TG_CHAT_ID                                 (required for deploy)
+#   TG_ADMIN_IDS        optional: more Telegram user ids allowed to use the menu
 
 # Two ways to run it:
 #  * Actions tab > deploy > Run workflow (pick an action), or
@@ -118,6 +119,7 @@ jobs:
           SSHPASS: ${{ secrets.VPS_PASSWORD }}
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          TG_ADMIN_IDS: ${{ secrets.TG_ADMIN_IDS }}
         run: |
           ssh_() {
             if [ -n "${USE_SSHPASS:-}" ]; then
@@ -133,21 +135,22 @@ jobs:
             # No TG_CHAT_ID secret: take the chat of the most recent message sent to the bot
             # (the user sends /start first). getUpdates only works while no webhook is set.
             TG_CHAT_ID=$(curl -fsS --retry 3 "https://api.telegram.org/bot${TG_BOT_TOKEN}/getUpdates" \
-              | jq -r '[.result[] | (.message // .edited_message // .my_chat_member // .channel_post) | .chat.id | select(. != null)] | last // empty')
-            if [ -z "$TG_CHAT_ID" ]; then
-              echo "No TG_CHAT_ID secret and the bot has received no messages."
-              echo "Open the bot in Telegram, send /start, then run deploy again."
-              exit 1
+              | jq -r '[.result[] | (.message // .edited_message // .my_chat_member // .channel_post) | .chat.id | select(. != null)] | last // empty' || true)
+            if [ -n "$TG_CHAT_ID" ]; then
+              echo "::add-mask::$TG_CHAT_ID"
+              echo "TG_CHAT_ID detected from the latest message sent to the bot"
+            else
+              # Normal once the Telegram UI runs (it consumes updates): the VPS keeps the
+              # value it already has in .env; remote.sh fails if there is none.
+              echo "TG_CHAT_ID not detectable here; keeping the value already on the VPS"
             fi
-            echo "::add-mask::$TG_CHAT_ID"
-            echo "TG_CHAT_ID detected from the latest message sent to the bot"
           fi
           if [ "$ACTION" = deploy ]; then
             # code bundle (tracked files only; never .env, config/, backups/)
             git archive --format=tar HEAD | \
               ssh_ "mkdir -p '$DIR' && cd '$DIR' && rm -rf agora_tracker && tar -xf -"
             # Telegram secrets, written with 0600; POSTGRES_PASSWORD is generated on the VPS
-            printf 'TG_BOT_TOKEN=%s\nTG_CHAT_ID=%s\n' "$TG_BOT_TOKEN" "$TG_CHAT_ID" | \
+            printf 'TG_BOT_TOKEN=%s\nTG_CHAT_ID=%s\nTG_ADMIN_IDS=%s\n' "$TG_BOT_TOKEN" "$TG_CHAT_ID" "$TG_ADMIN_IDS" | \
               ssh_ "umask 077 && cat > '$DIR/.env.incoming'"
           fi
           ssh_ "bash -s -- '$ACTION' '$DIR' '$INSTALL_DOCKER'" < scripts/remote.sh

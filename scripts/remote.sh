@@ -69,7 +69,22 @@ write_env() {
       pg="$(openssl rand -hex 24 2>/dev/null || head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')"
       echo "generated a new POSTGRES_PASSWORD (stored only in $DIR/.env)"
     fi
-    { echo "POSTGRES_PASSWORD=$pg"; cat .env.incoming; } > .env.tmp
+    # Values left empty in .env.incoming keep their current value: the Telegram UI consumes
+    # bot updates, so the deploy workflow can no longer auto-detect the chat id each time.
+    : > .env.tmp
+    echo "POSTGRES_PASSWORD=$pg" >> .env.tmp
+    while IFS= read -r line; do
+      key="${line%%=*}"; val="${line#*=}"
+      if [ -z "$val" ] && [ -f .env ]; then
+        val="$(grep -E "^${key}=" .env | head -1 | cut -d= -f2- || true)"
+      fi
+      echo "${key}=${val}" >> .env.tmp
+    done < .env.incoming
+    if ! grep -qE '^TG_CHAT_ID=.+' .env.tmp; then
+      echo "TG_CHAT_ID is unknown: set the TG_CHAT_ID secret (your Telegram user id)" >&2
+      rm -f .env.tmp .env.incoming
+      exit 1
+    fi
     mv .env.tmp .env
     rm -f .env.incoming
   )
@@ -84,16 +99,18 @@ install_config() {
 }
 
 wait_healthy() {
-  log "waiting for the tracker to report healthy (up to 5 min)"
+  # usage: wait_healthy [container] [label]
+  c="${1:-elysium-wallet-tracker}"; name="${2:-tracker}"
+  log "waiting for the $name to report healthy (up to 5 min)"
   for _ in $(seq 1 60); do
-    state="$(docker inspect -f '{{.State.Health.Status}}' elysium-wallet-tracker 2>/dev/null || echo missing)"
+    state="$(docker inspect -f '{{.State.Health.Status}}' "$c" 2>/dev/null || echo missing)"
     case "$state" in
-      healthy) echo "tracker: healthy"; return 0 ;;
-      unhealthy) echo "tracker: UNHEALTHY"; return 1 ;;
+      healthy) echo "$name: healthy"; return 0 ;;
+      unhealthy) echo "$name: UNHEALTHY"; return 1 ;;
     esac
     sleep 5
   done
-  echo "tracker: still '$state' after 5 min"
+  echo "$name: still '$state' after 5 min"
   return 1
 }
 
@@ -106,6 +123,8 @@ status() {
   docker compose run --rm --no-deps tracker --top 10 || true
   log "recent tracker logs"
   docker compose logs --no-color --tail 60 tracker || true
+  log "recent ui logs"
+  docker compose logs --no-color --tail 30 ui || true
 }
 
 case "$ACTION" in
@@ -123,8 +142,9 @@ case "$ACTION" in
     log "start everything"
     docker compose up -d
     # config/ is a bind mount: recreate so a config-only change is picked up too
-    docker compose up -d --no-deps --force-recreate tracker
+    docker compose up -d --no-deps --force-recreate tracker ui
     wait_healthy || true
+    wait_healthy elysium-ui "telegram ui" || true
     status
     ;;
   status)
@@ -132,6 +152,8 @@ case "$ACTION" in
     ;;
   logs)
     docker compose logs --no-color --tail 300 tracker
+    log "ui"
+    docker compose logs --no-color --tail 150 ui
     ;;
   discover)
     need_docker
@@ -149,7 +171,7 @@ case "$ACTION" in
     docker compose run --rm --no-deps tracker --test-card
     ;;
   restart)
-    docker compose restart tracker
+    docker compose restart tracker ui
     wait_healthy || true
     status
     ;;

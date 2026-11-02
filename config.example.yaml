@@ -75,3 +75,29 @@ telegram:
 # (docker-compose.yml sets it). Nothing to configure here.
 watchlist_file: watchlist.txt  # extra wallets to follow regardless of rank
 exclude_contracts: true
+
+# Telegram Intelligence Center (`ui` service). Authorized users: TG_CHAT_ID + TG_ADMIN_IDS.
+ui:
+  timezone: Asia/Ho_Chi_Minh   # display only; storage and queries are UTC
+  page_size: 5
+  workers: 4                   # concurrent interactive requests
+  report_workers: 1            # concurrent exports (cannot starve the indexer)
+  report_queue: 3
+  report_max_rows: 50000       # per table
+  report_max_bytes: 20000000   # Telegram allows bots up to 50 MB
+  query_timeout_ms: 15000
+  qualified_min_pnl: 0         # "qualified" wallet: Agora PnL above this (leaderboard unit)
+  min_volume_hype: 25          # gainers/losers: ignore tokens below this window volume
+  min_mcap_hype: 100           # ... below this market cap
+  min_age_h: 1                 # ... younger than this
+  min_observations: 2          # snapshot returns need >= this many points
+  candle_fallback_tokens: 30   # custom windows <= 7d: tokens checked via Agora candles
+
+# Market snapshots for historical returns (runs inside the ui service).
+collector:
+  enabled: true
+  interval_s: 600
+  top_n: 150                   # chain-wide, by 24h volume (Agora)
+  tracked_days: 7              # + tokens tracked wallets traded recently
+  max_details_per_round: 20
+  retention_days: 30           # ~22k rows/day; pruned daily

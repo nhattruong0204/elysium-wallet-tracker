@@ -91,6 +91,40 @@ class MarketConfig:
 
 
 @dataclass
+class UiConfig:
+    """Telegram Intelligence Center (the `ui` service). See docs/TELEGRAM_UI.md."""
+    enabled: bool = True
+    timezone: str = "Asia/Ho_Chi_Minh"       # display only; storage and queries are UTC
+    admin_ids_env: str = "TG_ADMIN_IDS"      # extra authorized Telegram user ids, comma separated
+    admin_ids: list[int] = field(default_factory=list)   # resolved: TG_CHAT_ID + admin_ids_env
+    page_size: int = 5
+    poll_timeout_s: int = 25                 # getUpdates long-poll
+    workers: int = 4                         # concurrent interactive handlers
+    report_workers: int = 1                  # concurrent exports (never starves the indexer)
+    report_queue: int = 3                    # exports waiting beyond this are refused
+    report_max_rows: int = 50000             # per sheet / CSV
+    report_max_bytes: int = 20_000_000       # Telegram bots may send up to 50 MB
+    query_timeout_ms: int = 15000            # PostgreSQL statement_timeout for reports
+    qualified_min_pnl: float = 0.0           # Agora PnL above this = "qualified" wallet
+    min_volume_hype: float = 25.0            # gainers/losers: minimum window volume
+    min_mcap_hype: float = 100.0             # gainers/losers/trending: minimum market cap
+    min_age_h: float = 1.0                   # gainers/losers: minimum token age
+    min_observations: int = 2                # snapshot-based returns need this many points
+    candle_fallback_tokens: int = 30         # custom ranges <=7d: tokens checked via candles
+
+
+@dataclass
+class CollectorConfig:
+    """Periodic market snapshots (token_market_snapshots) for historical returns."""
+    enabled: bool = True
+    interval_s: float = 600.0
+    top_n: int = 150                         # by 24h volume, chain-wide (Agora)
+    tracked_days: int = 7                    # plus tokens traded by tracked wallets lately
+    max_details_per_round: int = 20          # per-token requests for tokens outside top_n
+    retention_days: int = 30
+
+
+@dataclass
 class Config:
     chain: ChainConfig
     leaderboard: LeaderboardConfig
@@ -98,6 +132,8 @@ class Config:
     telegram: TelegramConfig
     links: LinksConfig = field(default_factory=LinksConfig)
     market: MarketConfig = field(default_factory=MarketConfig)
+    ui: UiConfig = field(default_factory=UiConfig)
+    collector: CollectorConfig = field(default_factory=CollectorConfig)
     db_path: str = "tracker.db"
     watchlist_file: str | None = None
     exclude_contracts: bool = True
@@ -148,9 +184,23 @@ def load_config(path: str | Path) -> Config:
 
     links = LinksConfig(**{k: v.rstrip("/") for k, v in (raw.get("links") or {}).items()})
     market = MarketConfig(**(raw.get("market") or {}))
+    ui = UiConfig(**{k: v for k, v in (raw.get("ui") or {}).items() if k != "admin_ids"})
+    ui.admin_ids = _admin_ids(tg.chat_id, os.environ.get(ui.admin_ids_env, ""))
+    collector = CollectorConfig(**(raw.get("collector") or {}))
     return Config(chain=chain, leaderboard=lb, alerts=alerts, telegram=tg, links=links,
-                  market=market, db_path=db_path, watchlist_file=wl,
+                  market=market, ui=ui, collector=collector, db_path=db_path, watchlist_file=wl,
                   exclude_contracts=raw.get("exclude_contracts", True))
+
+
+def _admin_ids(chat_id: str | None, extra: str) -> list[int]:
+    """Authorized users: the alert chat (a private chat id is the user's id) plus extras.
+    Group/channel ids (negative) are ignored here: authorization is per user."""
+    out: list[int] = []
+    for part in [chat_id or "", *extra.replace(";", ",").split(",")]:
+        part = part.strip()
+        if part.lstrip("-").isdigit() and int(part) > 0 and int(part) not in out:
+            out.append(int(part))
+    return out
 
 
 def load_watchlist(path: str | None) -> dict[str, str]:

@@ -8,6 +8,7 @@ import logging
 import signal
 import sys
 import time
+from urllib.parse import urlsplit
 
 import requests
 import sqlalchemy as sa
@@ -78,9 +79,15 @@ class Tracker:
 
     def check_heads(self) -> None:
         self._next_heads = time.monotonic() + self.cfg.chain.head_check_s
-        if len(self.rpc.urls) < 2:
-            return
         heads = self.rpc.refresh_heads()
+        try:  # for the Telegram health page; hosts only (URLs may embed API keys)
+            best = max((h for h in heads.values() if h is not None), default=None)
+            self.store.set_kv("rpc_heads", json.dumps({
+                "at": int(time.time()), "best": best,
+                "endpoints": [{"host": urlsplit(u).hostname, "head": h,
+                               "lagging": u in self.rpc._lagging} for u, h in heads.items()]}))
+        except Exception as e:  # noqa: BLE001
+            log.debug("recording RPC heads failed: %s", e)
         best = max((h for h in heads.values() if h is not None), default=None)
         log.debug("RPC heads: %s", ", ".join(
             f"{redact(u)}={h if h is not None else 'down'}"
@@ -133,7 +140,12 @@ class Tracker:
                 top = self.follower.filter_eoas(top)
             except RpcError as e:
                 log.warning("contract filter skipped: %s", e)
-        new_set = top | set(self.watchlist)
+        try:
+            via_bot = self.store.watchlist_addresses("telegram")
+        except Exception as e:  # noqa: BLE001 - never let the bot's list block tracking
+            log.warning("telegram watchlist unavailable: %s", e)
+            via_bot = set()
+        new_set = top | set(self.watchlist) | via_bot
         added, removed = new_set - self.tracked, self.tracked - new_set
         if added or removed:
             log.info("tracking %d wallets (+%d / -%d)", len(new_set), len(added), len(removed))
@@ -313,9 +325,9 @@ def _rows(payload, items_path: str) -> list:
     return rows if isinstance(rows, list) else []
 
 
-def health(max_age_s: int) -> int:
+def health(max_age_s: int, key: str = "heartbeat") -> int:
     """Exit 0 when the database is reachable, migrations are at head and the main loop
-    wrote a heartbeat recently (Docker HEALTHCHECK)."""
+    wrote a heartbeat recently (Docker HEALTHCHECK). key='ui_heartbeat' for the UI."""
     from .db import make_engine
     from .migrate import current_revision, head_revision
     try:
@@ -326,7 +338,7 @@ def health(max_age_s: int) -> int:
             return 1
         with engine.connect() as c:
             hb = c.execute(sa.text(
-                "SELECT value->>'v' FROM service_state WHERE key='heartbeat'")).scalar()
+                "SELECT value->>'v' FROM service_state WHERE key = :k"), {"k": key}).scalar()
     except Exception as e:  # database down, auth, DNS ...
         print(f"unhealthy: database: {type(e).__name__}: {str(e)[:200]}")
         return 1
@@ -366,6 +378,45 @@ def migrate() -> int:
     return 0
 
 
+def run_ui(cfg: Config) -> None:
+    """The Telegram Intelligence Center service: update consumer + market collector."""
+    import threading
+
+    from .collector import Collector
+    from .db import make_engine
+    from .migrate import current_revision, head_revision
+    from .reports import Reports
+    from .tgui import IntelBot, TelegramApi
+
+    if not cfg.telegram.bot_token:
+        raise SystemExit("TG_BOT_TOKEN is not set")
+    engine = make_engine(pool_size=4)
+    rev, head = current_revision(engine), head_revision()
+    if rev != head:
+        raise SystemExit(f"schema at {rev}, code expects {head}: run --migrate first")
+    store = Store(engine, chain_id=cfg.chain.chain_id)
+    market = AgoraMarket(cfg.market)
+    reports = Reports(engine, cfg.chain.chain_id, cfg.ui, value_unit=cfg.leaderboard.value_unit,
+                      market=market, collector_interval_s=cfg.collector.interval_s)
+    bot = IntelBot(cfg, TelegramApi(cfg.telegram.bot_token, cfg.telegram.timeout_s), store,
+                   reports, market)
+    stop = threading.Event()
+
+    def _stop(*_: object) -> None:
+        log.info("shutdown requested")
+        stop.set()
+    signal.signal(signal.SIGINT, _stop)
+    signal.signal(signal.SIGTERM, _stop)
+    if cfg.collector.enabled:
+        coll = Collector(store, AgoraMarket(cfg.market), cfg.collector)
+        threading.Thread(target=coll.loop, args=(stop,), name="collector", daemon=True).start()
+    try:
+        bot.run(stop)
+    finally:
+        bot.shutdown()
+        engine.dispose()
+
+
 def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(prog="agora_tracker",
                                  description="Follow top Elysium traders and alert on their trades.")
@@ -397,6 +448,13 @@ def main(argv: list[str] | None = None) -> None:
                     help="send the latest tracked trade to Telegram as a full card")
     ap.add_argument("--test-telegram", action="store_true",
                     help="send one test message to Telegram and exit")
+    ap.add_argument("--ui", action="store_true",
+                    help="run the Telegram Intelligence Center (menu, reports, exports) and "
+                         "the market snapshot collector")
+    ap.add_argument("--health-ui", action="store_true",
+                    help="exit 0 if the Telegram UI loop is alive (Docker healthcheck)")
+    ap.add_argument("--collect-once", action="store_true",
+                    help="take one market snapshot round and exit")
     ap.add_argument("--log-level", default="INFO")
     args = ap.parse_args(argv)
     logging.basicConfig(level=args.log_level.upper(),
@@ -415,6 +473,8 @@ def main(argv: list[str] | None = None) -> None:
             sys.exit(1)
     if args.health:
         sys.exit(health(args.health_max_age))
+    if args.health_ui:
+        sys.exit(health(min(args.health_max_age, 180), key="ui_heartbeat"))
     if args.migrate:
         sys.exit(migrate())
     cfg = load_config(args.config)
@@ -422,6 +482,15 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(test_telegram(cfg))
     if args.test_card:
         sys.exit(test_card(cfg))
+    if args.ui:
+        run_ui(cfg)
+        return
+    if args.collect_once:
+        from .collector import Collector
+        out = Collector(Store(chain_id=cfg.chain.chain_id), AgoraMarket(cfg.market),
+                        cfg.collector).run_once()
+        print(json.dumps(out))
+        sys.exit(0 if out.get("ok") else 1)
     if args.import_sqlite:
         from .sqlite_import import run_import
         sys.exit(run_import(args.import_sqlite, cfg, dry_run=args.dry_run,
