@@ -15,7 +15,7 @@ import yaml
 
 from . import cards
 from .cards import Links
-from .chain import ChainFollower
+from .chain import ChainFollower, ScanResult
 from .config import Config, load_config, load_watchlist
 from .db import Store
 from .engine import WEI, Engine
@@ -33,7 +33,7 @@ class Tracker:
         c = cfg.chain
         self.store = Store(chain_id=c.chain_id)
         self.rpc = RpcClient(c.rpc_urls, c.rpc_timeout_s, c.rpc_max_retries, c.rpc_batch_size,
-                             expected_chain_id=c.chain_id)
+                             expected_chain_id=c.chain_id, max_head_lag=c.max_head_lag)
         self.follower = ChainFollower(self.rpc, self.store, c, int(cfg.alerts.hype_dust * WEI),
                                       set(cfg.alerts.ignore_tokens))
         self.watchlist = load_watchlist(cfg.watchlist_file)
@@ -48,6 +48,7 @@ class Tracker:
         self.tracked: set[str] = set()
         self._warned_idle = False
         self._next_lb = 0.0
+        self._next_heads = 0.0
         self._stop = False
 
     def render_alert(self, row: dict) -> tuple[str, dict | None]:
@@ -73,6 +74,18 @@ class Tracker:
                              "refusing to run")
         if not any(r == "ok" for r in results.values()):
             raise RpcError("no RPC endpoint reachable")
+        self.check_heads()
+
+    def check_heads(self) -> None:
+        self._next_heads = time.monotonic() + self.cfg.chain.head_check_s
+        if len(self.rpc.urls) < 2:
+            return
+        heads = self.rpc.refresh_heads()
+        best = max((h for h in heads.values() if h is not None), default=None)
+        log.debug("RPC heads: %s", ", ".join(
+            f"{redact(u)}={h if h is not None else 'down'}"
+            + (f" (-{best - h})" if h is not None and best is not None and best > h else "")
+            for u, h in heads.items()))
 
     def refresh_leaderboard(self) -> None:
         self._next_lb = time.monotonic() + self.cfg.leaderboard.refresh_s
@@ -128,6 +141,18 @@ class Tracker:
 
     def scan_step(self) -> bool:
         """Process one block range. Returns True if still behind head."""
+        # One endpoint for the whole range: head, logs, txs and receipts (see rpc.pinned).
+        with self.rpc.pinned():
+            result = self._scan_range()
+        if result is None:
+            return False
+        scan, frm, to, head = result
+        new = self.engine.apply_range(scan, to)
+        if new:
+            log.info("blocks %d-%d: %d new events", frm, to, new)
+        return to < head
+
+    def _scan_range(self) -> tuple[ScanResult, int, int, int] | None:
         c = self.cfg.chain
         head = self.rpc.block_number() - c.confirmations
         stored = self.store.get_cursor()
@@ -136,21 +161,17 @@ class Tracker:
             self.store.set_cursor(None, cursor)
             log.info("starting at block %d (head %d, backfill %d)", cursor, head, c.backfill_blocks)
         if cursor >= head:
-            return False
+            return None
         if not self.tracked:
             # Scanning with no wallets would advance the cursor and skip these blocks for
             # every wallet tracked later. Hold position until there is something to track.
             if not self._warned_idle:
                 log.warning("no wallets tracked; holding cursor at %d", cursor)
                 self._warned_idle = True
-            return False
+            return None
         self._warned_idle = False
         to = min(head, cursor + c.max_block_range)
-        result = self.follower.scan(cursor + 1, to, self.tracked)
-        new = self.engine.apply_range(result, to)
-        if new:
-            log.info("blocks %d-%d: %d new events", cursor + 1, to, new)
-        return to < head
+        return self.follower.scan(cursor + 1, to, self.tracked), cursor + 1, to, head
 
     def run(self, once: bool = False) -> None:
         if not self.store.acquire_indexer_lock():
@@ -175,6 +196,8 @@ class Tracker:
                     raise SystemExit("lost the indexer lock (database connection dropped)")
                 if time.monotonic() >= self._next_lb:
                     self.refresh_leaderboard()
+                if time.monotonic() >= self._next_heads:
+                    self.check_heads()
                 behind = self.scan_step()
                 self.notifier.drain()
                 self.store.set_kv("heartbeat", str(int(time.time())))

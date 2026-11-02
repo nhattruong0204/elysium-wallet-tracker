@@ -390,7 +390,7 @@ def test_batch_matches_ids_not_positions_and_survives_one_bad_response():
 
     c._raw_post = post
     assert c.batch([("x", ["a"]), ("x", ["b"])]) == ["a", "b"]   # sequential fallback once
-    assert c._batch_ok
+    assert not c._batch_off
     assert c.batch([("x", ["c"]), ("x", ["d"])]) == ["c", "d"]   # reversed list, mapped by id
 
 
@@ -468,3 +468,90 @@ def test_N1_bad_request_is_dead_immediately_and_does_not_block_queue(store):
     store.enqueue_now("k2", "good")
     assert n.drain() == 1
     assert store.outbox_counts() == {"dead": 1, "sent": 1}
+
+
+# --- multi-endpoint safety (#30) -------------------------------------------------------
+A, B, C = "https://a.example/rpc", "https://b.example/rpc", "https://c.example/rpc"
+
+
+def test_batch_limit_is_learned_per_endpoint_without_disabling_batching():
+    c = RpcClient([A], batch_size=50, expected_chain_id=None)
+    sizes = []
+
+    def post(url, payload):
+        if isinstance(payload, list):
+            sizes.append(len(payload))
+            if len(payload) > 20:
+                return {"jsonrpc": "2.0", "id": None,
+                        "error": {"code": -32600, "message": "Batch size must be 1 to 20"}}
+            return [{"id": p["id"], "result": p["params"][0]} for p in payload]
+        return {"id": payload["id"], "result": payload["params"][0]}
+
+    c._raw_post = post
+    assert c.batch([("x", [i]) for i in range(45)]) == list(range(45))
+    assert sizes == [45, 20, 20, 5]
+    assert c._batch_limit == {A: 20} and not c._batch_off
+    sizes.clear()
+    c.batch([("x", [i]) for i in range(30)])
+    assert sizes == [20, 10]                        # remembered, no rejected round trip
+
+
+def test_batch_rejection_on_one_endpoint_keeps_batching_on_others():
+    c = RpcClient([A, B], expected_chain_id=None)
+    c._batch_off.add(A)
+    assert not c._batch_ok_for(A) and c._batch_ok_for(B)
+
+
+def test_pinned_range_never_fails_over_mid_range():
+    c = RpcClient([A, B], max_retries=4, expected_chain_id=99901)
+    http = FakeHttp({A: 99901, B: 99901})
+    down = {"on": False}
+
+    def post(url, payload):
+        if url == A and down["on"]:
+            raise rpc_mod.requests.ConnectionError("down")
+        return http(url, payload)
+
+    c._raw_post = post
+    with pytest.raises(RpcError, match="pinned endpoint"), c.pinned() as url:
+        assert url == A
+        c.block_number()
+        down["on"] = True
+        c.call("eth_getLogs", [{}])
+    used = [u for u, m in http.log if m != "eth_chainId"]
+    assert used == [A]                               # B never answered part of that range
+    with c.pinned() as url:                          # the retry of the range moves to B
+        assert url == B
+        c.block_number()
+
+
+def test_lagging_endpoint_is_skipped_until_it_catches_up():
+    heads = {A: 1000, B: 1003, C: 400}               # C: a "batch-confirmed" RPC
+    c = RpcClient([C, A, B], expected_chain_id=None, max_head_lag=50)
+
+    def post(url, payload):
+        return {"id": payload["id"], "result": hex(heads[url])}
+
+    c._raw_post = post
+    c.refresh_heads()
+    assert c.live_urls == [A, B] and c.url in (A, B)
+    heads[C] = 1002
+    c.refresh_heads()
+    assert c.live_urls == [C, A, B]
+
+
+def test_unreachable_endpoint_is_deprioritised_and_all_lagging_still_usable():
+    c = RpcClient([A, B], expected_chain_id=None, max_head_lag=50)
+
+    def post(url, payload):
+        raise rpc_mod.requests.ConnectionError("down")
+
+    c._raw_post = post
+    c.refresh_heads()
+    assert c.live_urls == [A, B]                     # nothing better: keep trying all
+
+
+def test_beyond_head_is_not_split_but_real_range_limits_are():
+    assert not RpcError("eth_getLogs: block range extends beyond current head block").is_range_error
+    assert RpcError("eth_getLogs: Log range is limited to 10,000 blocks").is_range_error
+    assert RpcError("A log search ... may span at most 1,000 blocks; ask in pieces").is_range_error

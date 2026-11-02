@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 
 import pytest
@@ -109,6 +110,12 @@ class FakeChain:
 
     def block_number(self):
         return self.head
+
+    urls = ["fake"]
+
+    @contextlib.contextmanager
+    def pinned(self):
+        yield "fake"
 
 
 @pytest.fixture

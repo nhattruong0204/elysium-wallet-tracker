@@ -1,17 +1,23 @@
 # Production config, shipped to the VPS by the deploy workflow (edit via PR). No secrets here.
 
 chain:
-  # Read-only RPC. Pre-launch the only public node is Kleos's; after Nov 9 add Kinetiq's
-  # official RPC first and keep this as a fallback. Every node you use sees your IP.
+  # Read-only RPCs, tried in order with failover (benchmarked 2026-11-02, see issue #30).
+  # Use "latest state" nodes only. rpc.boxa.club is BOXA's *batch-confirmed* node, hours
+  # behind the live head, and would delay alerts; the head-lag guard would skip it anyway.
+  # After Nov 9 add Kinetiq's official RPC. Every node you use sees your VPS's IP.
   rpc_urls:
-    - https://rpc.thekleos.xyz/rpc
+    - https://rpc.thekleos.xyz/rpc        # Kleos
+    - https://rpc-live.boxa.club          # BOXA (batches capped at 20; learned automatically)
+    - https://rpc-live.elyspump.com       # ElysPump
   chain_id: 99901              # Elysium mainnet. The tracker refuses to run on a mismatch.
-  poll_interval_s: 5           # pre-launch blocks only move per batch (~3h); 5s is plenty after launch too
+  poll_interval_s: 5           # live nodes produce blocks continuously (~1s)
   max_block_range: 2000        # auto-halves if the node rejects a range
   confirmations: 0             # single sequencer, so reorgs are very unlikely; replays are deduped anyway
   backfill_blocks: 2000        # first run only
   wallet_chunk: 50             # addresses per eth_getLogs OR-list
-  rpc_batch_size: 50
+  rpc_batch_size: 50           # upper bound; smaller per-node limits are learned
+  max_head_lag: 50             # skip a node this many blocks behind the best one
+  head_check_s: 60             # how often node heads are compared
   wrapped_native: null         # set to WHYPE's address on Elysium if routers use it
 
 leaderboard:

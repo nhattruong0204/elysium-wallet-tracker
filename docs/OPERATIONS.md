@@ -136,11 +136,27 @@ docker compose run --rm tracker --reset-cursor 190000   # replay from a block (s
 | "another indexer already holds the lock" | Is a second tracker running (`docker ps`)? | Stop the duplicate. Only one indexer per chain is allowed by design. |
 | `unhealthy` in `docker compose ps` | `docker compose exec tracker python -m agora_tracker --health` | "schema at X, code expects Y": run `docker compose run --rm migrate`. "heartbeat age": the loop is stuck or erroring; see logs. |
 | Cursor not moving | `--status` → `cursor` vs chain head; logs | "no wallets tracked; holding cursor": configure leaderboard or watchlist. Pre-launch the chain itself only moves per batch (~3 h). |
+| "RPC … N blocks behind; skipping it" | `docker compose logs tracker \| grep RPC` | Expected now and then; the node is used again once it catches up. If a node is always behind, remove it from `chain.rpc_urls`. |
+| "pinned endpoint … failed" | Same | One node failed mid-range; the range is retried on the next node. Only a concern if it repeats for every node. |
 | Many `estimated` / `unknown` trades | `--status` → `trades_by_confidence` | The RPC may not serve historical state (`eth_getBalance` at block N-1). Try another provider. |
 | Alerts not arriving | `--status` → `outbox` | `dead` > 0: inspect `SELECT dedup_key, last_error FROM notification_outbox WHERE status='dead'`. Check `TG_*` in `.env`. |
 | Leaderboard "degraded" / "failed" | `SELECT captured_at, status, request_meta FROM leaderboard_snapshots ORDER BY id DESC LIMIT 5` | Endpoint changed or blocked: rerun `--discover` or re-import the cURL. Watchlist tracking continues meanwhile. |
 
 Database shell: `docker compose exec postgres psql -U tracker -d tracker`.
+
+## RPC endpoints
+
+`chain.rpc_urls` is an ordered list. The first healthy node is used; on failure the tracker
+moves to the next one and stays there.
+
+* **One node per block range.** The head, logs, transactions and receipts for a range all
+  come from the same node. If that node fails partway through, the whole range is retried
+  on the next node. Nodes can be a few blocks apart, so mixing them inside one range could
+  skip trades.
+* **Head-lag guard.** Every `head_check_s` the tracker compares all nodes' heads and skips
+  any node more than `max_head_lag` blocks behind (or unreachable) until it catches up.
+* **Batch limits** are learned per node; BOXA accepts at most 20 calls per batch.
+* Every node's chain id is checked at startup; a node on another chain is never used.
 
 ## Delivery semantics (Telegram)
 
