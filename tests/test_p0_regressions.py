@@ -240,11 +240,11 @@ def test_crash_mid_range_rolls_back_everything(store, monkeypatch):
     real = store.enqueue
     n = {"i": 0}
 
-    def boom(conn, key, text, severity="info"):
+    def boom(conn, key, text, severity="info", payload=None):
         n["i"] += 1
         if n["i"] == 2:
             raise RuntimeError("process killed")
-        real(conn, key, text, severity)
+        real(conn, key, text, severity, payload)
 
     monkeypatch.setattr(store, "enqueue", boom)
     with pytest.raises(RuntimeError):

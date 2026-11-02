@@ -13,8 +13,6 @@ chain:
   wallet_chunk: 50             # addresses per eth_getLogs OR-list
   rpc_batch_size: 50
   wrapped_native: null         # set to WHYPE's address on Elysium if routers use it
-  explorer_tx_url: null        # e.g. "https://<explorer>/tx/{tx}"
-  explorer_address_url: null   # e.g. "https://<explorer>/address/{address}"
 
 leaderboard:
   # Found by `--discover` from the VPS on 2026-11-02 (100 rows). Values are in HYPE.
@@ -50,6 +48,20 @@ alerts:
   cluster_min_wallets: 3       # >= 3 tracked wallets buying the same token within the window
   hype_dust: 0.0005
   ignore_tokens: []            # e.g. stablecoins or $AGORA if you don't care about them
+
+
+links:                         # every alert detail links here (formats verified 2026-11-02)
+  explorer: https://elyscan.live
+  agora: https://www.agoradex.app
+  kleos: https://www.thekleos.xyz
+  boxa: https://boxa.club
+  elyspump: https://elysp.com
+
+market:                        # token stats in alerts, from Agora's public API (values in HYPE)
+  enabled: true
+  api: https://api.agoradex.app
+  cache_s: 60
+  timeout_s: 6
 
 telegram:
   bot_token_env: TG_BOT_TOKEN
