@@ -70,7 +70,7 @@ def test_trade_card_links_market_data_and_buttons():
                 f"https://elyscan.live/token/{TOKEN}", f"https://elyscan.live/tx/{TX}",
                 f"https://elyscan.live/address/{WALLET}", f"https://www.agoradex.app/trader/{WALLET}"):
         assert url in hrefs, url
-    assert "MC <b>9.97K HYPE</b> ($856.64K)" in text
+    assert "MC <b>$856.64K</b>" in text and "9.97K HYPE" not in text
     assert "24h Vol 2.27K HYPE" in text and "24h +73%" in text and "👥 697" in text
     assert "3.200 HYPE ($274.88) → 12.40M BLOB" in text
     assert f"<code>{TOKEN}</code>" in text            # full CA, tap to copy
@@ -169,3 +169,11 @@ def test_test_card_sends_latest_trade(store, monkeypatch):
     monkeypatch.setattr(cli.Notifier, "_send", lambda self, t, kb=None: (sent.append((t, kb)) or (True, "", False)))
     assert cli.test_card(cfg) == 0
     assert "test card" in sent[0][0] and sent[0][1]["inline_keyboard"][0][0]["text"] == "🛒 Agora"
+
+
+def test_market_cap_falls_back_to_hype_without_a_usd_rate():
+    from agora_tracker.cards import market_line
+    from agora_tracker.market import TokenInfo
+    info = TokenInfo(address=TOKEN, mcap_hype=9970.0)
+    assert "MC <b>9.97K HYPE</b>" in market_line(info, None)
+    assert "MC <b>$857.42K</b>" in market_line(info, 86.0)

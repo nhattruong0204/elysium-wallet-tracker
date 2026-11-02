@@ -6,6 +6,7 @@ import contextlib
 import json
 
 import pytest
+import sqlalchemy as sa
 
 from agora_tracker.chain import TRANSFER_TOPIC, ChainFollower, pad_topic
 from agora_tracker.classify import classify
@@ -274,3 +275,41 @@ def test_discover_candidates(monkeypatch):
     assert "https://api.agoradex.app/v1/traders" in urls
     assert "https://www.agoradex.app/api/leaderboard/traders" in urls
     assert "https://www.agoradex.app/traders" not in urls
+
+
+def test_quiet_mode_keeps_trade_alerts_and_records_signals_silently(store, chain):
+    """cluster_alerts / leaderboard_alerts off: buys, sells and transfers still alert; the
+    cluster signal and leaderboard history are still recorded, but nothing else is sent."""
+    store, follower, engine = build(store, chain)
+    engine.cfg.cluster_alerts = False
+    run_all(follower, engine, {W1, W2, W3})
+    texts = [r["text"] for r in store.pending_alerts(100)]
+    assert not any("CLUSTER BUY" in t for t in texts)
+    assert any("new position" in t for t in texts) and any("OUT (sell?)" in t for t in texts)
+    with store.tx() as c:
+        assert c.execute(sa.text("SELECT count(*) FROM signals")).scalar() == 1
+
+
+def test_leaderboard_changes_recorded_without_alerts(store, monkeypatch):
+    from agora_tracker.leaderboard import Trader
+    from tests.test_p0_regressions import make_tracker
+    t = make_tracker(store, monkeypatch)
+    t.cfg.exclude_contracts = False
+    t.cfg.alerts.leaderboard_alerts = False
+    t.cfg.leaderboard.top_n = 2
+
+    class LB:
+        rows = [Trader(address=W1, rank=1, pnl=100.0), Trader(address=W2, rank=2, pnl=50.0)]
+        last_payload = None
+        last_meta: dict = {}
+
+        def fetch(self):
+            return self.rows
+    t.leaderboard = LB()
+    t.refresh_leaderboard()
+    LB.rows = [Trader(address=W3, rank=1, pnl=900.0), Trader(address=W1, rank=2, pnl=10.0)]
+    t.refresh_leaderboard()
+    assert store.pending_alerts(100) == []
+    with store.tx() as c:
+        assert c.execute(sa.text("SELECT count(*) FROM leaderboard_snapshots")).scalar() == 2
+    assert W3 in t.tracked
