@@ -21,7 +21,9 @@ class ChainConfig:
     wallet_chunk: int = 50              # addresses per eth_getLogs topic OR-list
     rpc_timeout_s: float = 15.0
     rpc_max_retries: int = 4
-    rpc_batch_size: int = 50
+    rpc_batch_size: int = 50           # upper bound; smaller per-endpoint limits are learned
+    max_head_lag: int = 50              # skip endpoints this many blocks behind the best head
+    head_check_s: float = 60.0          # how often endpoint heads are compared
     wrapped_native: str | None = None   # WHYPE on Elysium; its transfers count as HYPE
     explorer_tx_url: str | None = None  # deprecated: links.explorer is used instead
     explorer_address_url: str | None = None
