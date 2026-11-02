@@ -549,7 +549,7 @@ def test_poll_loop_dispatches_persists_offset_and_heartbeats(bot, seeded):
     th.start()
     th.join(timeout=30)
     assert not th.is_alive()
-    bot.pool.submit(lambda: None).result(timeout=30)
+    bot.pool.shutdown(wait=True)             # handlers run on 4 threads: drain them all
     polls = bot.api.of("getUpdates")
     assert polls[0]["timeout"] == bot.cfg.ui.poll_timeout_s and polls[1]["offset"] == 78
     assert seeded.get_kv("tg_offset") == "78" and seeded.get_kv("ui_heartbeat")
