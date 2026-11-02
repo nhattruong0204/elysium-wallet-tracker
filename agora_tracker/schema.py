@@ -95,8 +95,8 @@ wallet_watchlist = sa.Table(
     sa.Column("added_at", TS, nullable=False, server_default=_now()),
     sa.Column("removed_at", TS),
     sa.ForeignKeyConstraint(["chain_id", "address"], ["wallets.chain_id", "wallets.address"]),
-    sa.CheckConstraint("source IN ('leaderboard','manual','reverse_discovery','import')",
-                       name="source"),
+    sa.CheckConstraint("source IN ('leaderboard','manual','reverse_discovery','import',"
+                       "'telegram')", name="source"),
     sa.CheckConstraint("status IN ('active','inactive','excluded')", name="status"),
     sa.Index("ux_wallet_watchlist_current", "chain_id", "address", "source", unique=True,
              postgresql_where=sa.text("removed_at IS NULL")),
@@ -209,6 +209,7 @@ trades = sa.Table(
     _addr_check("wallet"), _addr_check("token"),
     sa.Index("ix_trades_token_kind_time", "chain_id", "token", "kind", "block_time"),
     sa.Index("ix_trades_wallet_block", "chain_id", "wallet", "block_number"),
+    sa.Index("ix_trades_chain_time", "chain_id", "block_time"),
 )
 
 wallet_positions = sa.Table(
@@ -299,4 +300,85 @@ notification_deliveries = sa.Table(
     sa.Column("ok", sa.Boolean, nullable=False),
     sa.Column("error", sa.Text),
     sa.Index("ix_notification_deliveries_outbox", "outbox_id"),
+)
+
+
+# --- Intelligence Center (migration 0003) ------------------------------------------------
+# Token identity as reported by Agora (name, launchpad, launch time). Kept apart from
+# token_metadata, whose symbol/decimals come from the chain and drive quantity math.
+token_profiles = sa.Table(
+    "token_profiles", metadata,
+    sa.Column("chain_id", sa.BigInteger, sa.ForeignKey("chains.chain_id"), primary_key=True),
+    sa.Column("address", ADDR, primary_key=True),
+    sa.Column("symbol", sa.Text),
+    sa.Column("name", sa.Text),
+    sa.Column("launchpad", sa.Text),
+    sa.Column("version", sa.Text),
+    sa.Column("launched_at", TS),
+    sa.Column("source", sa.Text, nullable=False, server_default="agora"),
+    sa.Column("first_seen_at", TS, nullable=False, server_default=_now()),
+    sa.Column("updated_at", TS, nullable=False, server_default=_now()),
+    _addr_check("address"),
+    sa.Index("ix_token_profiles_symbol", "chain_id", sa.text("lower(symbol)")),
+)
+
+# Timestamped market observations (Agora's last-trade price etc.), the basis for returns
+# over arbitrary past windows. Prices are tiny (1e-8 HYPE), so NUMERIC without a fixed
+# scale: the value Agora reported, as reported. These are indicative, not executable.
+token_market_snapshots = sa.Table(
+    "token_market_snapshots", metadata,
+    sa.Column("id", sa.BigInteger, sa.Identity(), primary_key=True),
+    sa.Column("chain_id", sa.BigInteger, sa.ForeignKey("chains.chain_id"), nullable=False),
+    sa.Column("token", ADDR, nullable=False),
+    sa.Column("captured_at", TS, nullable=False),
+    sa.Column("source", sa.Text, nullable=False),
+    sa.Column("source_synced_at", TS),
+    sa.Column("source_head", sa.BigInteger),
+    sa.Column("price_hype", sa.Numeric),
+    sa.Column("mcap_hype", sa.Numeric),
+    sa.Column("vol_1h_hype", sa.Numeric),
+    sa.Column("vol_24h_hype", sa.Numeric),
+    sa.Column("change_1h", sa.Numeric),
+    sa.Column("change_24h", sa.Numeric),
+    sa.Column("buys_24h", sa.Integer),
+    sa.Column("trades_24h", sa.Integer),
+    sa.Column("last_trade_at", TS),
+    _addr_check("token"),
+    sa.UniqueConstraint("chain_id", "token", "captured_at", name="uq_token_market_snapshots_obs"),
+    sa.Index("ix_token_market_snapshots_time", "chain_id", "captured_at"),
+)
+
+# Telegram UI state per user: selected period, pending conversational input. Survives
+# restarts, so a half-finished custom-range or export flow resumes where it was.
+ui_sessions = sa.Table(
+    "ui_sessions", metadata,
+    sa.Column("user_id", sa.BigInteger, primary_key=True, autoincrement=False),
+    sa.Column("chat_id", sa.BigInteger, nullable=False),
+    sa.Column("range_preset", sa.Text),
+    sa.Column("range_start", TS),
+    sa.Column("range_end", TS),
+    sa.Column("state", sa.Text),
+    sa.Column("state_data", JSONB, nullable=False, server_default=sa.text("'{}'::jsonb")),
+    sa.Column("updated_at", TS, nullable=False, server_default=_now()),
+)
+
+# Export job metadata only; files are sent to Telegram and deleted, never stored here.
+report_jobs = sa.Table(
+    "report_jobs", metadata,
+    sa.Column("id", sa.BigInteger, sa.Identity(), primary_key=True),
+    sa.Column("user_id", sa.BigInteger, nullable=False),
+    sa.Column("kind", sa.Text, nullable=False),
+    sa.Column("fmt", sa.Text, nullable=False),
+    sa.Column("range_start", TS, nullable=False),
+    sa.Column("range_end", TS, nullable=False),
+    sa.Column("status", sa.Text, nullable=False),
+    sa.Column("rows", sa.Integer),
+    sa.Column("bytes", sa.Integer),
+    sa.Column("file_name", sa.Text),
+    sa.Column("error", sa.Text),
+    sa.Column("created_at", TS, nullable=False, server_default=_now()),
+    sa.Column("finished_at", TS),
+    sa.CheckConstraint("status IN ('running','done','failed')", name="status"),
+    sa.CheckConstraint("fmt IN ('csv','xlsx')", name="fmt"),
+    sa.Index("ix_report_jobs_user_created", "user_id", "created_at"),
 )
