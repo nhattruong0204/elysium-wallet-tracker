@@ -78,12 +78,12 @@ jobs:
         env:
           HAS_PW: ${{ secrets.VPS_PASSWORD != '' }}
           HAS_KEY: ${{ secrets.VPS_SSH_KEY != '' }}
-          HAS_TG: ${{ secrets.TG_BOT_TOKEN != '' && secrets.TG_CHAT_ID != '' }}
+          HAS_TG: ${{ secrets.TG_BOT_TOKEN != '' }}
         run: |
           [[ "$DIR" =~ ^[A-Za-z0-9._/~-]+$ ]] || { echo "deploy_dir has unsafe characters"; exit 1; }
           [ -n "$VPS_HOST" ] && [ -n "$VPS_USER" ] || { echo "missing VPS_HOST / VPS_USER secrets"; exit 1; }
           [ "$HAS_PW" = true ] || [ "$HAS_KEY" = true ] || { echo "set VPS_SSH_KEY or VPS_PASSWORD"; exit 1; }
-          if [ "$ACTION" = deploy ] && [ "$HAS_TG" != true ]; then echo "deploy needs TG_BOT_TOKEN and TG_CHAT_ID"; exit 1; fi
+          if [ "$ACTION" = deploy ] && [ "$HAS_TG" != true ]; then echo "deploy needs the TG_BOT_TOKEN secret"; exit 1; fi
           echo "action=$ACTION dir=$DIR auth=$([ "$HAS_KEY" = true ] && echo key || echo password)"
 
       - name: Prepare SSH
@@ -129,6 +129,19 @@ jobs:
             fi
           }
           ssh_ "echo connected to \$(hostname) as \$(id -un); uname -sr"
+          if [ "$ACTION" = deploy ] && [ -z "$TG_CHAT_ID" ]; then
+            # No TG_CHAT_ID secret: take the chat of the most recent message sent to the bot
+            # (the user sends /start first). getUpdates only works while no webhook is set.
+            TG_CHAT_ID=$(curl -fsS --retry 3 "https://api.telegram.org/bot${TG_BOT_TOKEN}/getUpdates" \
+              | jq -r '[.result[] | (.message // .edited_message // .my_chat_member // .channel_post) | .chat.id | select(. != null)] | last // empty')
+            if [ -z "$TG_CHAT_ID" ]; then
+              echo "No TG_CHAT_ID secret and the bot has received no messages."
+              echo "Open the bot in Telegram, send /start, then run deploy again."
+              exit 1
+            fi
+            echo "::add-mask::$TG_CHAT_ID"
+            echo "TG_CHAT_ID detected from the latest message sent to the bot"
+          fi
           if [ "$ACTION" = deploy ]; then
             # code bundle (tracked files only; never .env, config/, backups/)
             git archive --format=tar HEAD | \

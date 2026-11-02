@@ -17,8 +17,9 @@ The `deploy` workflow connects to the VPS from GitHub's runner, so you can deplo
 status and read logs from a phone. Credentials live only in GitHub secrets.
 
 1. Repo → **Settings → Secrets and variables → Actions → New repository secret**:
-   `VPS_HOST`, `VPS_USER`, `VPS_PASSWORD` (or better `VPS_SSH_KEY`), `TG_BOT_TOKEN`,
-   `TG_CHAT_ID`; optional `VPS_PORT`, `VPS_HOST_KEY`.
+   `VPS_HOST`, `VPS_USER`, `VPS_PASSWORD` (or better `VPS_SSH_KEY`), `TG_BOT_TOKEN`;
+   optional `TG_CHAT_ID` (if unset, deploy uses the chat of the latest message sent to the
+   bot, so send it `/start` first), `VPS_PORT`, `VPS_HOST_KEY`.
 2. **Actions → deploy → Run workflow**, choose an action (or push a commit to the `ops`
    branch whose `deploy/OPS_REQUEST` contains `action=<name>`):
 
