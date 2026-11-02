@@ -63,22 +63,30 @@ class Notifier:
             return False, err, False
 
     def drain(self, max_items: int = 20) -> int:
-        """Send due alerts in order. On a transient failure the alert is rescheduled with
-        exponential backoff and the drain stops (Telegram is probably down or limiting).
+        """Send due alerts oldest first. Each alert is claimed with FOR UPDATE SKIP LOCKED
+        inside its own transaction, so concurrent notifiers never send the same row.
 
-        Delivery is at-least-once: if Telegram accepted a message but the response was
-        lost (timeout), it will be sent again. Duplicates are therefore possible but
-        rare; losses are not."""
+        Delivery is at-least-once: Telegram has no transaction shared with PostgreSQL. If
+        Telegram accepts a message but the response is lost (timeout) or the process dies
+        before COMMIT, the alert is sent again later. Duplicates are therefore possible
+        but rare; losses are not. Every attempt is recorded in notification_deliveries.
+        On a transient failure the alert backs off and the drain stops (Telegram is
+        probably down or limiting); a permanent failure dead-letters only that alert."""
         if time.monotonic() < self._blocked_until:
             return 0
         sent = 0
-        for row in self.store.pending_alerts(max_items):
-            ok, err, permanent = self._send(row["text"])
-            if ok:
-                self.store.mark_sent(row["id"])
-                sent += 1
-                continue
-            status = self.store.mark_failed(row["id"], err, self.cfg.max_attempts, permanent)
+        for _ in range(max_items):
+            with self.store.tx() as c:
+                row = self.store.claim_due_alert(c)
+                if row is None:
+                    break
+                ok, err, permanent = self._send(row["text"])
+                if ok:
+                    self.store.mark_sent(c, row["id"])
+                    sent += 1
+                    continue
+                status = self.store.mark_failed(c, row["id"], row["attempts"], err,
+                                                self.cfg.max_attempts, permanent)
             log.warning("alert %s not delivered (%s) -> %s", row["id"], err, status)
             if not permanent:
                 break

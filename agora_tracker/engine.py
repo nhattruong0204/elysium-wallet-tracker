@@ -11,7 +11,7 @@ import logging
 import time
 from decimal import Decimal
 
-from .chain import TokenCache
+from .chain import ScanResult, TokenCache
 from .classify import TradeEvent
 from .config import AlertConfig, ChainConfig
 from .db import BASIS_ESTIMATED, BASIS_KNOWN, BASIS_PARTIAL, Position, Store
@@ -82,8 +82,11 @@ class Engine:
             p.qty, p.cost_wei, p.basis = 0, 0, BASIS_KNOWN
 
     @staticmethod
-    def _apply(p: Position, ev: TradeEvent, ts: int | None) -> list[str]:
+    def _apply(p: Position, ev: TradeEvent, ts: int | None) -> tuple[list[str], dict | None]:
+        """Mutates the position; returns alert notes and, for sells against an existing
+        position, the realized-PnL audit record."""
         notes: list[str] = []
+        realized: dict | None = None
         inbound = ev.kind in ("BUY", "TRANSFER_IN") or (ev.kind == "MULTI" and ev.inbound)
         if ev.kind == "BUY" and ev.hype_wei is not None:
             if p.qty == 0:
@@ -99,15 +102,21 @@ class Engine:
         elif ev.kind == "SELL" and ev.hype_wei is not None:
             if p.qty <= 0:
                 notes.append("bought before tracking: PnL unknown")
-                return notes
+                return notes, {"qty_sold": ev.qty, "proceeds_wei": ev.hype_wei,
+                               "cost_basis_wei": None, "pnl_wei": None, "status": "unknown"}
             sold = min(ev.qty, p.qty)
             basis_cost = p.cost_wei * sold // p.qty
             proceeds = ev.hype_wei * sold // ev.qty
             if p.basis == BASIS_PARTIAL:
                 notes.append("PnL unknown (part of the bag has unknown cost)")
+                realized = {"qty_sold": sold, "proceeds_wei": proceeds, "cost_basis_wei": None,
+                            "pnl_wei": None, "status": "unknown"}
             else:
                 pnl = proceeds - basis_cost
                 exact = p.basis == BASIS_KNOWN and ev.confidence == "high"
+                realized = {"qty_sold": sold, "proceeds_wei": proceeds,
+                            "cost_basis_wei": basis_cost, "pnl_wei": pnl,
+                            "status": "measured" if exact else "estimated"}
                 if exact:
                     p.realized_wei += pnl
                 else:
@@ -131,7 +140,7 @@ class Engine:
             notes.append("received with unknown cost")
         elif ev.kind in ("TRANSFER_OUT", "MULTI") and not inbound:
             if p.qty <= 0:
-                return notes
+                return notes, None
             moved = min(ev.qty, p.qty)
             p.cost_wei -= p.cost_wei * moved // p.qty
             p.qty -= moved
@@ -140,30 +149,36 @@ class Engine:
                     else "moved to another address")
             notes.append(f"{pct:.0f}% of bag {what}")
             Engine._reset_if_closed(p)
-        return notes
+        return notes, realized
 
     # --- main entry ---------------------------------------------------------------
-    def apply_range(self, events: list[TradeEvent], ts: dict[int, int], cursor: int) -> int:
-        """Persist events + alerts + cursor atomically. Returns number of new events."""
+    def apply_range(self, result: ScanResult, cursor: int) -> int:
+        """Persist evidence, trades, positions, PnL records, signals, alerts and the
+        checkpoint in ONE transaction. Returns the number of new trades."""
         min_wei = int(Decimal(str(self.cfg.min_trade_hype)) * WEI)
         new = 0
         with self.store.tx() as c:
-            for ev in events:
-                bts = ts.get(ev.block)
-                if not Store.insert_event(c, ev, bts):
+            self.store.insert_evidence(c, result.transactions, result.transfers)
+            self.store.record_blocks(c, result.block_times, result.block_hashes)
+            for ev in result.events:
+                bts = result.block_times.get(ev.block)
+                trade_id = self.store.insert_trade(c, ev, bts)
+                if trade_id is None:
                     continue  # this (tx, wallet, token) leg was already processed (replay)
                 new += 1
                 notes: list[str] = []
                 if ev.kind in ("BUY", "SELL", "TRANSFER_IN", "TRANSFER_OUT", "MULTI"):
-                    p = Store.get_position(c, ev.wallet, ev.token)
-                    notes = self._apply(p, ev, bts)
-                    Store.put_position(c, ev.wallet, ev.token, p)
+                    p = self.store.get_position(c, ev.wallet, ev.token)
+                    notes, realized = self._apply(p, ev, bts)
+                    self.store.put_position(c, ev.wallet, ev.token, p)
+                    if realized:
+                        self.store.record_realized(c, trade_id, ev.wallet, ev.token, **realized)
                 if not self._should_alert(ev, min_wei):
                     continue
-                Store.enqueue(c, f"ev:{ev.key}", self._fmt_event(ev, notes))
+                self.store.enqueue(c, f"ev:{ev.key}", self._fmt_event(ev, notes))
                 if ev.kind == "BUY" and ev.confidence == "high" and bts is not None:
                     self._maybe_cluster(c, ev, bts, min_wei)
-            self.store.set_kv("cursor", str(cursor))
+            self.store.set_cursor(c, cursor)
         return new
 
     def _should_alert(self, ev: TradeEvent, min_wei: int) -> bool:
@@ -204,18 +219,24 @@ class Engine:
 
     def _maybe_cluster(self, c, ev: TradeEvent, bts: int, min_wei: int) -> None:
         window = self.cfg.cluster_window_s
-        buyers = Store.recent_buyers(c, ev.token, bts - window, min_wei)
+        buyers = self.store.recent_buyers(c, ev.token, bts - window, min_wei)
         if len(buyers) < self.cfg.cluster_min_wallets:
             return
-        if not Store.cluster_due(c, ev.token, bts, window):
+        sid = self.store.record_signal(
+            c, kind="cluster_buy", token=ev.token, dedup_key=f"cluster:{ev.token}:{bts // window}",
+            window_start=bts - window, window_end=bts,
+            details={"wallets": [w for w, _ in buyers], "min_hype_wei": str(min_wei),
+                     "window_s": window},
+            trade_ids=[tid for _, tid in buyers], cooldown_s=window)
+        if sid is None:
             return
         sym, _ = self.tokens.get(ev.token)
-        who = "\n".join(f"  • {self._who(w)}" for w in buyers[:10])
+        who = "\n".join(f"  • {self._who(w)}" for w, _ in buyers[:10])
         text = (f"🚨 <b>CLUSTER BUY</b> ${html.escape(sym)}: {len(buyers)} tracked wallets "
                 f"bought ≥{self.cfg.min_trade_hype:g} HYPE within {window // 60} min "
                 f"(measured buys only; wallets may share an owner)\n{who}\n"
                 f"<code>{ev.token}</code>")
-        Store.enqueue(c, f"cluster:{ev.token}:{bts // window}", text)
+        self.store.enqueue(c, f"signal:{sid}", text, severity="high")
 
     def leaderboard_alerts(self, changes: list[tuple[str, str, Trader]]) -> None:
         bucket = int(time.time()) // 60

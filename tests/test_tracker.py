@@ -9,7 +9,6 @@ import pytest
 from agora_tracker.chain import TRANSFER_TOPIC, ChainFollower, pad_topic
 from agora_tracker.classify import classify
 from agora_tracker.config import AlertConfig, ChainConfig, LeaderboardConfig
-from agora_tracker.db import Store
 from agora_tracker.engine import WEI, Engine
 from agora_tracker.leaderboard import diff_leaderboard, guess_mapping, parse_curl, parse_items
 from agora_tracker.rpc import RpcError
@@ -135,8 +134,7 @@ def chain():
     return c
 
 
-def build(tmp_path, chain):
-    store = Store(str(tmp_path / "t.db"))
+def build(store, chain):
     ccfg = ChainConfig(rpc_urls=["fake"], wallet_chunk=2)
     acfg = AlertConfig(min_trade_hype=0.1, cluster_min_wallets=3, cluster_window_s=3600)
     follower = ChainFollower(chain, store, ccfg, int(acfg.hype_dust * WEI), set())
@@ -144,14 +142,20 @@ def build(tmp_path, chain):
     return store, follower, engine
 
 
+def get_pos(store, wallet, token):
+    with store.tx() as c:
+        return store.get_position(c, wallet, token)
+
+
 def run_all(follower, engine, wallets, frm=1, to=40):
-    events, ts = follower.scan(frm, to, wallets)
-    engine.apply_range(events, ts, to)
+    res = follower.scan(frm, to, wallets)
+    engine.apply_range(res, to)
+    events = res.events
     return events
 
 
-def test_end_to_end_buy_sell_transfer_cluster(tmp_path, chain):
-    store, follower, engine = build(tmp_path, chain)
+def test_end_to_end_buy_sell_transfer_cluster(store, chain):
+    store, follower, engine = build(store, chain)
     events = run_all(follower, engine, {W1, W2, W3})
     kinds = [(e.wallet, e.kind) for e in events]
     assert kinds == [(W1, "BUY"), (W2, "BUY"), (W3, "BUY"), (W1, "SELL"), (W1, "TRANSFER_OUT")]
@@ -161,7 +165,7 @@ def test_end_to_end_buy_sell_transfer_cluster(tmp_path, chain):
     sell = events[3]
     assert sell.hype_wei == 8 * E18 // 10
 
-    pos = Store.get_position(store.conn, W1, TOKEN)
+    pos = get_pos(store, W1, TOKEN)
     # bought 1000 for 1.0, sold 500 for 0.8, then moved 100 out (cost leaves with it)
     assert pos.qty == 400 * E18
     assert pos.cost_wei == 4 * E18 // 10
@@ -173,30 +177,30 @@ def test_end_to_end_buy_sell_transfer_cluster(tmp_path, chain):
     assert any("new position" in t and "whale-1" in t for t in texts)
     assert any("realized +0.300 HYPE (+60%)" in t for t in texts)
     assert any("OUT (sell?)" in t and "HYPE leg unknown" in t for t in texts)
-    assert store.get_kv("cursor") == "40"
+    assert store.get_cursor() == 40
 
 
-def test_replay_is_idempotent(tmp_path, chain):
-    store, follower, engine = build(tmp_path, chain)
+def test_replay_is_idempotent(store, chain):
+    store, follower, engine = build(store, chain)
     run_all(follower, engine, {W1, W2, W3})
     n_alerts = len(store.pending_alerts(100))
-    pos_before = Store.get_position(store.conn, W1, TOKEN)
+    pos_before = get_pos(store, W1, TOKEN)
     run_all(follower, engine, {W1, W2, W3})          # same range again
     assert len(store.pending_alerts(100)) == n_alerts
-    assert Store.get_position(store.conn, W1, TOKEN) == pos_before
+    assert get_pos(store, W1, TOKEN) == pos_before
 
 
-def test_getlogs_range_split_and_wallet_chunks(tmp_path, chain):
+def test_getlogs_range_split_and_wallet_chunks(store, chain):
     # range 1-40 exceeds fake node limit (15) and 3 wallets exceed chunk size (2)
-    _, follower, _ = build(tmp_path, chain)
+    _, follower, _ = build(store, chain)
     logs = follower.fetch_logs(1, 40, sorted({W1, W2, W3}))
     assert len(logs) == 5
 
 
-def test_untracked_ignored_and_contract_filter(tmp_path, chain):
-    store, follower, engine = build(tmp_path, chain)
+def test_untracked_ignored_and_contract_filter(store, chain):
+    store, follower, engine = build(store, chain)
     assert run_all(follower, engine, {W2}) and all(
-        e.wallet == W2 for e in follower.scan(1, 40, {W2})[0])
+        e.wallet == W2 for e in follower.scan(1, 40, {W2}).events)
     assert follower.filter_eoas({W1, POOL}) == {W1}
 
 

@@ -111,7 +111,8 @@ def load_config(path: str | Path) -> Config:
         max_attempts=tg_raw.get("max_attempts", 12),
     )
 
-    db_path = os.environ.get("TRACKER_DB_PATH") or raw.get("db_path", "tracker.db")
+    # PostgreSQL comes from DATABASE_URL. db_path only names a legacy SQLite file to import.
+    db_path = raw.get("db_path", "tracker.db")
     if not os.path.isabs(db_path):
         db_path = str(base / db_path)
     wl = raw.get("watchlist_file")
