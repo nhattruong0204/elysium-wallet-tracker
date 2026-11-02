@@ -313,10 +313,13 @@ class FakeApi:
         self.docs: list[dict] = []
         self.fail_edit = False
         self.lock = threading.Lock()
+        self.updates: list[list[dict]] = []
 
-    def call(self, method, timeout=None, **p):
+    def call(self, method, http_timeout=None, **p):
         with self.lock:
             self.calls.append((method, p))
+        if method == "getUpdates":
+            return self.updates.pop(0) if self.updates else []
         if method == "editMessageText" and self.fail_edit:
             raise TgError(400, "Bad Request: message to edit not found")
         if method == "sendMessage":
@@ -521,3 +524,33 @@ def test_tracker_follows_wallets_added_from_telegram(store, monkeypatch):
     store.watch_add(U1, source="telegram")
     tr.refresh_leaderboard()
     assert U1 in tr.tracked
+
+
+def test_poll_loop_dispatches_persists_offset_and_heartbeats(bot, seeded):
+    """The real run() loop with the real TelegramApi signature: getUpdates' long-poll
+    `timeout` is a Bot API parameter, separate from the HTTP timeout."""
+    import inspect
+
+    from agora_tracker.tgui import TelegramApi
+    assert "timeout" not in inspect.signature(TelegramApi.call).parameters
+    upd = msg("/menu")
+    upd["update_id"] = 77
+    bot.api.updates = [[upd]]
+    stop = threading.Event()
+    real_call = bot.api.call
+
+    def call(method, http_timeout=None, **p):
+        out = real_call(method, http_timeout=http_timeout, **p)
+        if method == "getUpdates" and not bot.api.updates and len(bot.api.of("getUpdates")) > 1:
+            stop.set()
+        return out
+    bot.api.call = call
+    th = threading.Thread(target=bot.run, args=(stop,))
+    th.start()
+    th.join(timeout=30)
+    assert not th.is_alive()
+    bot.pool.shutdown(wait=True)             # handlers run on 4 threads: drain them all
+    polls = bot.api.of("getUpdates")
+    assert polls[0]["timeout"] == bot.cfg.ui.poll_timeout_s and polls[1]["offset"] == 78
+    assert seeded.get_kv("tg_offset") == "78" and seeded.get_kv("ui_heartbeat")
+    assert any("INTELLIGENCE CENTER" in p["text"] for p in bot.api.of("sendMessage"))

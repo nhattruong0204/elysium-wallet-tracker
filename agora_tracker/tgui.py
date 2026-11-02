@@ -93,10 +93,12 @@ class TelegramApi:
         self.timeout = timeout
         self.session = session or requests.Session()
 
-    def call(self, method: str, timeout: float | None = None, **params: Any) -> Any:
+    def call(self, method: str, http_timeout: float | None = None, **params: Any) -> Any:
+        """`params` are Bot API parameters (getUpdates has its own `timeout`, the long-poll
+        duration); `http_timeout` is the HTTP request timeout."""
         try:
             r = self.session.post(f"{self._base}/{method}", json=params,
-                                  timeout=timeout or self.timeout)
+                                  timeout=http_timeout or self.timeout)
         except requests.RequestException as e:
             raise TgError(None, type(e).__name__) from None
         return self._result(r)
@@ -217,7 +219,8 @@ class IntelBot:
                                           "allowed_updates": ["message", "callback_query"]}
                 if offset:
                     params["offset"] = offset
-                updates = self.api.call("getUpdates", timeout=self.cfg.ui.poll_timeout_s + 10,
+                updates = self.api.call("getUpdates",
+                                        http_timeout=self.cfg.ui.poll_timeout_s + 10,
                                         **params) or []
                 backoff = 1.0
             except TgError as e:
