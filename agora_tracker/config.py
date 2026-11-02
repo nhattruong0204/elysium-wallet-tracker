@@ -53,7 +53,8 @@ class LeaderboardConfig:
 class AlertConfig:
     min_trade_hype: float = 0.5
     alert_transfers: bool = True        # wallet moving tokens to another address (rotation, OTC)
-    leaderboard_alerts: bool = True
+    leaderboard_alerts: bool = True     # rank/PnL change alerts (snapshots are always recorded)
+    cluster_alerts: bool = True         # cluster-buy alerts (signals are always recorded)
     rank_change: int = 10
     pnl_change: float = 5000.0          # in leaderboard.value_unit
     cluster_window_s: int = 3600

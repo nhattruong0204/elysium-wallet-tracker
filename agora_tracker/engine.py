@@ -210,8 +210,8 @@ class Engine:
             details={"wallets": [w for w, _ in buyers], "min_hype_wei": str(min_wei),
                      "window_s": window},
             trade_ids=[tid for _, tid in buyers], cooldown_s=window)
-        if sid is None:
-            return
+        if sid is None or not self.cfg.cluster_alerts:
+            return  # the signal stays in the database (Smart Money > Clusters)
         sym, _ = self.tokens.get(ev.token)
         payload = {"type": "cluster", "token": ev.token, "symbol": sym,
                    "min_hype": self.cfg.min_trade_hype, "window_min": window // 60,

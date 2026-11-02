@@ -6,7 +6,7 @@ Layout (Raybot/Maestro-style):
     👤 #3 whale-1 · 0x7df2…9158              <- rank -> Agora trader, address -> Elyscan
     💰 3.200 HYPE ($274) → 12.40M BLOB
     🆕 new position
-    📊 MC 9.97K HYPE ($857K) · 24h Vol 2.27K HYPE · 24h +73% · 👥 697 · ⏱ 6d · ElysPump
+    📊 MC $857K · 24h Vol 2.27K HYPE · 24h +73% · 👥 697 · ⏱ 6d · ElysPump
     🔗 Agora · Kleos · BOXA · ElysPump · Elyscan
     0x9a98…f534 (full address, tap to copy)
     🧾 Tx · block 199694 · 2m ago
@@ -118,8 +118,9 @@ def market_line(info: TokenInfo | None, hype_usd: float | None) -> str | None:
         return None
     parts = []
     if info.mcap_hype is not None:
-        usd = f" (${human(info.mcap_hype * hype_usd)})" if hype_usd else ""
-        parts.append(f"MC <b>{human(info.mcap_hype)} HYPE</b>{usd}")
+        # USD only; HYPE is the fallback when Agora's HYPE/USD rate is unavailable
+        parts.append(f"MC <b>${human(info.mcap_hype * hype_usd)}</b>" if hype_usd
+                     else f"MC <b>{human(info.mcap_hype)} HYPE</b>")
     if info.vol_24h_hype is not None:
         parts.append(f"24h Vol {human(info.vol_24h_hype)} HYPE")
     if (p := _pct(info.change_24h)) is not None:

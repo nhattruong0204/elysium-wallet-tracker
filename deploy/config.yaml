@@ -47,7 +47,10 @@ leaderboard:
 alerts:
   min_trade_hype: 0.5          # ignore smaller buys/sells
   alert_transfers: true        # token moved wallet-to-wallet (rotation to a fresh wallet, OTC)
-  leaderboard_alerts: true
+  # Alerts are buys / sells / transfers only. Leaderboard changes and cluster buys are
+  # still recorded and visible in the Telegram menu, just not pushed as alerts.
+  leaderboard_alerts: false
+  cluster_alerts: false
   rank_change: 10              # alert when a wallet moves >= 10 places
   pnl_change: 50               # HYPE (~$4k): alert when a wallet's PnL moves this much between refreshes
   cluster_window_s: 3600
