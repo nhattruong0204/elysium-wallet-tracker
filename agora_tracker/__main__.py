@@ -211,6 +211,33 @@ def test_telegram(cfg: Config) -> int:
     return 0 if ok else 1
 
 
+def test_card(cfg: Config) -> int:
+    """Send the most recent tracked BUY/SELL as a full card with live market data."""
+    store = Store(chain_id=cfg.chain.chain_id)
+    with store.engine.connect() as c:
+        r = c.execute(sa.text(
+            "SELECT * FROM trades WHERE chain_id=:c AND kind IN ('BUY','SELL') "
+            "AND hype_wei IS NOT NULL ORDER BY block_number DESC, id DESC LIMIT 1"),
+            {"c": cfg.chain.chain_id}).mappings().first()
+    if r is None:
+        print("no BUY/SELL recorded yet")
+        return 1
+    sym, dec = store.get_token(r["token"]) or (r["token"][:8], 18)
+    row = store.trader(r["wallet"]) or {}
+    payload = {"type": "trade", "kind": r["kind"], "tx": r["tx_hash"], "block": r["block_number"],
+               "ts": int(r["block_time"].timestamp()) if r["block_time"] else None,
+               "token": r["token"], "symbol": sym, "decimals": dec, "qty": str(int(r["qty"])),
+               "hype_wei": str(int(r["hype_wei"])), "confidence": r["confidence"],
+               "hype_method": r["hype_method"], "notes": ["🧪 test card: latest tracked trade"],
+               "wallet": r["wallet"], "label": None, "rank": row.get("rank"),
+               "pnl": row.get("pnl"), "pnl_unit": cfg.leaderboard.value_unit}
+    market, links = AgoraMarket(cfg.market), Links(cfg.links)
+    text, kb = cards.render_trade(payload, links, market.token(r["token"]), market.hype_usd())
+    ok, err, _ = Notifier(None, cfg.telegram)._send(text, kb)  # type: ignore[arg-type]
+    print("card sent" if ok else f"card FAILED: {err}")
+    return 0 if ok else 1
+
+
 def import_curl(source: str) -> None:
     text = sys.stdin.read() if source == "-" else open(source).read()
     spec = parse_curl(text.strip())
@@ -343,6 +370,8 @@ def main(argv: list[str] | None = None) -> None:
                                                      "as JSON (with --import-sqlite)")
     ap.add_argument("--top", type=int, nargs="?", const=10, metavar="N",
                     help="print the top N wallets of the latest leaderboard snapshot")
+    ap.add_argument("--test-card", action="store_true",
+                    help="send the latest tracked trade to Telegram as a full card")
     ap.add_argument("--test-telegram", action="store_true",
                     help="send one test message to Telegram and exit")
     ap.add_argument("--log-level", default="INFO")
@@ -368,6 +397,8 @@ def main(argv: list[str] | None = None) -> None:
     cfg = load_config(args.config)
     if args.test_telegram:
         sys.exit(test_telegram(cfg))
+    if args.test_card:
+        sys.exit(test_card(cfg))
     if args.import_sqlite:
         from .sqlite_import import run_import
         sys.exit(run_import(args.import_sqlite, cfg, dry_run=args.dry_run,
