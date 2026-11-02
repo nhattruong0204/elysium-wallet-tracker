@@ -1,0 +1,2 @@
+# Wallets followed regardless of rank, one per line, optional label after the address.
+# Shipped to the VPS by the deploy workflow; edit via PR.
