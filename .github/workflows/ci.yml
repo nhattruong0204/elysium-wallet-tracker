@@ -6,6 +6,18 @@ on:
   pull_request:
 
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt ruff mypy types-requests types-PyYAML
+      - run: ruff check agora_tracker tests
+      - run: mypy agora_tracker
+
   test:
     runs-on: ubuntu-latest
     steps:
@@ -33,4 +45,4 @@ jobs:
           if docker run --rm -v "$PWD/config:/config:ro" elysium-wallet-tracker:ci --health; then
             echo "healthcheck should fail without a heartbeat"; exit 1
           fi
-          docker compose config -q 2>/dev/null || (cp .env.example .env && docker compose config -q)
+          cp .env.example .env && docker compose config -q

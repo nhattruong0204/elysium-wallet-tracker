@@ -11,8 +11,7 @@ from agora_tracker.classify import classify
 from agora_tracker.config import AlertConfig, ChainConfig, LeaderboardConfig
 from agora_tracker.db import Store
 from agora_tracker.engine import WEI, Engine
-from agora_tracker.leaderboard import (diff_leaderboard, guess_mapping, parse_curl,
-                                       parse_items)
+from agora_tracker.leaderboard import diff_leaderboard, guess_mapping, parse_curl, parse_items
 from agora_tracker.rpc import RpcError
 
 W1 = "0x" + "a1" * 20
@@ -37,7 +36,13 @@ class FakeChain:
     def __init__(self):
         self.head = 40
         self.logs, self.txs, self.balances = [], {}, {}
+        self.plain_sends: list[tuple[str, int]] = []   # (sender, block) txs without token logs
+        self.nonce_unavailable = False
         self.calls = 0
+
+    def nonce_at(self, addr, block):
+        own = sum(1 for t in self.txs.values() if t["from"] == addr and t["block"] <= block)
+        return own + sum(1 for s, b in self.plain_sends if s == addr and b <= block)
 
     def add_tx(self, h, block, sender, value=0, transfers=(), bal=None):
         self.txs[h] = {"hash": h, "from": sender, "value": hex(value), "block": block}
@@ -81,6 +86,10 @@ class FakeChain:
             if key not in self.balances:
                 raise RpcError("missing trie node")
             return hex(self.balances[key])
+        if method == "eth_getTransactionCount":
+            if self.nonce_unavailable:
+                raise RpcError("missing trie node")
+            return hex(self.nonce_at(params[0], int(params[1], 16)))
         if method == "eth_getBlockByNumber":
             return {"timestamp": hex(1_800_000_000 + int(params[0], 16) * 60)}
         if method == "eth_call":
@@ -153,15 +162,17 @@ def test_end_to_end_buy_sell_transfer_cluster(tmp_path, chain):
     assert sell.hype_wei == 8 * E18 // 10
 
     pos = Store.get_position(store.conn, W1, TOKEN)
-    assert pos.qty == 500 * E18
-    assert pos.cost_wei == E18 // 2
+    # bought 1000 for 1.0, sold 500 for 0.8, then moved 100 out (cost leaves with it)
+    assert pos.qty == 400 * E18
+    assert pos.cost_wei == 4 * E18 // 10
     assert pos.realized_wei == 3 * E18 // 10        # 0.8 received - 0.5 cost basis
+    assert pos.basis == "known" and pos.realized_est_wei == 0
 
     texts = [r["text"] for r in store.pending_alerts(100)]
     assert any("CLUSTER BUY" in t and "$KLEOS" in t for t in texts)
     assert any("new position" in t and "whale-1" in t for t in texts)
     assert any("realized +0.300 HYPE (+60%)" in t for t in texts)
-    assert any("TRANSFER_OUT" in t for t in texts)
+    assert any("OUT (sell?)" in t and "HYPE leg unknown" in t for t in texts)
     assert store.get_kv("cursor") == "40"
 
 
@@ -191,10 +202,12 @@ def test_untracked_ignored_and_contract_filter(tmp_path, chain):
 
 def test_classify_edge_cases():
     kw = dict(tx="0x1", block=1, wallet=W1, dust_wei=10 ** 14)
-    assert classify(token_deltas={TOKEN: 5}, trade_hype_wei=-10 ** 13, **kw)[0].kind == "TRANSFER_IN"
+    dust = classify(token_deltas={TOKEN: 5}, trade_hype_wei=-10 ** 13, **kw)
+    assert dust[0].kind == "TRANSFER_IN"
     sw = classify(token_deltas={TOKEN: 5, POOL: -7}, trade_hype_wei=0, **kw)[0]
     assert (sw.kind, sw.counter_token, sw.counter_qty) == ("SWAP", POOL, 7)
-    assert {e.kind for e in classify(token_deltas={TOKEN: 5, POOL: 3}, trade_hype_wei=-E18, **kw)} == {"MULTI"}
+    multi = classify(token_deltas={TOKEN: 5, POOL: 3}, trade_hype_wei=-E18, **kw)
+    assert {e.kind for e in multi} == {"MULTI"}
     assert classify(token_deltas={TOKEN: 0}, trade_hype_wei=-E18, **kw) == []
 
 

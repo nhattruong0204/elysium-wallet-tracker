@@ -50,6 +50,7 @@ telegram:
   bot_token_env: TG_BOT_TOKEN
   chat_id_env: TG_CHAT_ID
   min_interval_s: 1.1
+  max_attempts: 12             # transient failures back off 10s, 20s, 40s ... 1h; then dead-lettered
 
 db_path: tracker.db
 watchlist_file: watchlist.txt  # extra wallets to follow regardless of rank

@@ -65,6 +65,7 @@ class TelegramConfig:
     chat_id: str | None = None
     min_interval_s: float = 1.1         # Telegram limit is ~1 msg/s per chat
     timeout_s: float = 15.0
+    max_attempts: int = 12              # then the alert is dead-lettered (kept in the DB)
 
 
 @dataclass
@@ -107,6 +108,7 @@ def load_config(path: str | Path) -> Config:
         chat_id=os.environ.get(tg_raw.get("chat_id_env", "TG_CHAT_ID")),
         min_interval_s=tg_raw.get("min_interval_s", 1.1),
         timeout_s=tg_raw.get("timeout_s", 15.0),
+        max_attempts=tg_raw.get("max_attempts", 12),
     )
 
     db_path = os.environ.get("TRACKER_DB_PATH") or raw.get("db_path", "tracker.db")

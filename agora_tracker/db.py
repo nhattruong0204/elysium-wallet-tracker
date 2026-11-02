@@ -8,9 +8,9 @@ from __future__ import annotations
 
 import sqlite3
 import time
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Iterator
 
 SCHEMA = """
 PRAGMA journal_mode=WAL;
@@ -36,12 +36,30 @@ CREATE TABLE IF NOT EXISTS outbox (
 """
 
 
+# Columns added after v0.1. Existing databases are upgraded in place on startup; the
+# backfilled values say plainly that old rows were produced by the v0.1 logic.
+_UPGRADES = [
+    ("events", "confidence", "TEXT NOT NULL DEFAULT 'legacy'"),
+    ("events", "hype_method", "TEXT NOT NULL DEFAULT 'legacy'"),
+    ("positions", "basis", "TEXT NOT NULL DEFAULT 'legacy'"),
+    ("positions", "realized_est_wei", "TEXT NOT NULL DEFAULT '0'"),
+    ("outbox", "status", "TEXT NOT NULL DEFAULT 'pending'"),
+    ("outbox", "next_attempt_at", "INTEGER NOT NULL DEFAULT 0"),
+    ("outbox", "last_error", "TEXT"),
+]
+
+BASIS_KNOWN, BASIS_ESTIMATED, BASIS_PARTIAL, BASIS_LEGACY = (
+    "known", "estimated", "partial_unknown", "legacy")
+
+
 @dataclass
 class Position:
     qty: int = 0
-    cost_wei: int = 0
-    realized_wei: int = 0
+    cost_wei: int = 0          # cost of the part of `qty` whose cost is known/estimated
+    realized_wei: int = 0      # PnL from sells with measured proceeds and known basis
     opened_at: int | None = None
+    basis: str = BASIS_KNOWN   # known | estimated | partial_unknown | legacy
+    realized_est_wei: int = 0  # PnL that relied on an estimate somewhere
 
 
 class Store:
@@ -49,6 +67,22 @@ class Store:
         self.conn = sqlite3.connect(path, isolation_level=None, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(SCHEMA)
+        self._upgrade()
+
+    def _upgrade(self) -> None:
+        for table, col, decl in _UPGRADES:
+            cols = {r["name"] for r in self.conn.execute(f"PRAGMA table_info({table})")}
+            if col not in cols:
+                self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
+                if (table, col) == ("events", "confidence"):
+                    self.conn.execute("UPDATE events SET confidence='estimated' WHERE approx=1")
+                if (table, col) == ("outbox", "status"):
+                    self.conn.execute("UPDATE outbox SET status='sent' WHERE sent_at IS NOT NULL")
+                    self.conn.execute("UPDATE outbox SET status='dead' "
+                                      "WHERE sent_at IS NULL AND attempts >= 10")
+        self.conn.execute("CREATE INDEX IF NOT EXISTS ix_events_leg ON events(tx, wallet, token)")
+        self.conn.execute("CREATE INDEX IF NOT EXISTS ix_outbox_due "
+                          "ON outbox(status, next_attempt_at)")
 
     @contextmanager
     def tx(self) -> Iterator[sqlite3.Connection]:
@@ -93,12 +127,19 @@ class Store:
     # --- events / positions -------------------------------------------------
     @staticmethod
     def insert_event(c: sqlite3.Connection, ev, block_ts: int | None) -> bool:
+        """Insert once per (tx, wallet, token) leg. Returns False if the leg already exists,
+        whatever kind it was classified as before (v0.1 keys also contained the kind)."""
+        if c.execute("SELECT 1 FROM events WHERE tx=? AND wallet=? AND token=? LIMIT 1",
+                     (ev.tx, ev.wallet, ev.token)).fetchone():
+            return False
         cur = c.execute(
             """INSERT OR IGNORE INTO events(key,block,ts,tx,wallet,kind,token,qty,hype_wei,
-               counter_token,counter_qty,approx) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+               counter_token,counter_qty,approx,confidence,hype_method)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (ev.key, ev.block, block_ts, ev.tx, ev.wallet, ev.kind, ev.token, str(ev.qty),
              None if ev.hype_wei is None else str(ev.hype_wei), ev.counter_token,
-             None if ev.counter_qty is None else str(ev.counter_qty), int(ev.approx)))
+             None if ev.counter_qty is None else str(ev.counter_qty), int(ev.approx),
+             ev.confidence, ev.hype_method))
         return cur.rowcount == 1
 
     @staticmethod
@@ -106,23 +147,33 @@ class Store:
         r = c.execute("SELECT * FROM positions WHERE wallet=? AND token=?", (wallet, token)).fetchone()
         if not r:
             return Position()
-        return Position(int(r["qty"]), int(r["cost_wei"]), int(r["realized_wei"]), r["opened_at"])
+        return Position(int(r["qty"]), int(r["cost_wei"]), int(r["realized_wei"]), r["opened_at"],
+                        r["basis"], int(r["realized_est_wei"]))
 
     @staticmethod
     def put_position(c: sqlite3.Connection, wallet: str, token: str, p: Position) -> None:
         c.execute(
-            """INSERT INTO positions(wallet,token,qty,cost_wei,realized_wei,opened_at)
-               VALUES(?,?,?,?,?,?) ON CONFLICT(wallet,token) DO UPDATE SET qty=excluded.qty,
-               cost_wei=excluded.cost_wei, realized_wei=excluded.realized_wei,
-               opened_at=excluded.opened_at""",
-            (wallet, token, str(p.qty), str(p.cost_wei), str(p.realized_wei), p.opened_at))
+            """INSERT INTO positions(wallet,token,qty,cost_wei,realized_wei,opened_at,basis,
+               realized_est_wei) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(wallet,token) DO UPDATE SET
+               qty=excluded.qty, cost_wei=excluded.cost_wei, realized_wei=excluded.realized_wei,
+               opened_at=excluded.opened_at, basis=excluded.basis,
+               realized_est_wei=excluded.realized_est_wei""",
+            (wallet, token, str(p.qty), str(p.cost_wei), str(p.realized_wei), p.opened_at,
+             p.basis, str(p.realized_est_wei)))
 
     @staticmethod
-    def recent_buyers(c: sqlite3.Connection, token: str, since_ts: int) -> list[str]:
+    def recent_buyers(c: sqlite3.Connection, token: str, since_ts: int,
+                      min_hype_wei: int = 0) -> list[str]:
+        """Distinct wallets with a measured (high-confidence) BUY of at least min_hype_wei."""
         rows = c.execute(
-            "SELECT DISTINCT wallet FROM events WHERE token=? AND kind='BUY' AND ts>=?",
-            (token, since_ts)).fetchall()
-        return [r["wallet"] for r in rows]
+            "SELECT wallet, hype_wei FROM events WHERE token=? AND kind='BUY' AND ts>=? "
+            "AND confidence='high' ORDER BY ts, block", (token, since_ts)).fetchall()
+        out: list[str] = []
+        for r in rows:
+            if r["hype_wei"] is not None and int(r["hype_wei"]) >= min_hype_wei \
+                    and r["wallet"] not in out:
+                out.append(r["wallet"])
+        return out
 
     @staticmethod
     def cluster_due(c: sqlite3.Connection, token: str, now: int, window: int) -> bool:
@@ -159,13 +210,30 @@ class Store:
     def enqueue_now(self, key: str, text: str) -> None:
         self.enqueue(self.conn, key, text)
 
-    def pending_alerts(self, limit: int = 20) -> list[sqlite3.Row]:
+    def pending_alerts(self, limit: int = 20, now: int | None = None) -> list[sqlite3.Row]:
+        now = int(time.time()) if now is None else now
         return self.conn.execute(
-            "SELECT * FROM outbox WHERE sent_at IS NULL AND attempts < 10 ORDER BY id LIMIT ?",
-            (limit,)).fetchall()
+            "SELECT * FROM outbox WHERE status='pending' AND next_attempt_at<=? ORDER BY id LIMIT ?",
+            (now, limit)).fetchall()
+
+    def outbox_counts(self) -> dict[str, int]:
+        return {r["status"]: r["n"] for r in self.conn.execute(
+            "SELECT status, COUNT(*) AS n FROM outbox GROUP BY status")}
 
     def mark_sent(self, alert_id: int) -> None:
-        self.conn.execute("UPDATE outbox SET sent_at=? WHERE id=?", (int(time.time()), alert_id))
+        self.conn.execute("UPDATE outbox SET sent_at=?, status='sent' WHERE id=?",
+                          (int(time.time()), alert_id))
 
-    def mark_failed(self, alert_id: int) -> None:
-        self.conn.execute("UPDATE outbox SET attempts=attempts+1 WHERE id=?", (alert_id,))
+    def mark_failed(self, alert_id: int, error: str, max_attempts: int,
+                    permanent: bool = False, now: int | None = None) -> str:
+        """Exponential backoff (10s, 20s, 40s ... capped at 1h); dead-letter after
+        max_attempts or on a permanent error. Dead rows stay for inspection."""
+        now = int(time.time()) if now is None else now
+        row = self.conn.execute("SELECT attempts FROM outbox WHERE id=?", (alert_id,)).fetchone()
+        attempts = (row["attempts"] if row else 0) + 1
+        status = "dead" if permanent or attempts >= max_attempts else "pending"
+        delay = min(10 * 2 ** (attempts - 1), 3600)
+        self.conn.execute(
+            "UPDATE outbox SET attempts=?, status=?, next_attempt_at=?, last_error=? WHERE id=?",
+            (attempts, status, now + delay, error[:500], alert_id))
+        return status
