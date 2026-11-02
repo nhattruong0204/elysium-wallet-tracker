@@ -58,24 +58,29 @@ need_docker() {
 write_env() {
   # .env.incoming holds TG_* from GitHub secrets. POSTGRES_PASSWORD is generated once on
   # the VPS and kept: changing it would lock the app out of the existing database volume.
-  umask 077
-  local pg=""
-  if [ -f .env ]; then
-    pg="$(grep -E '^POSTGRES_PASSWORD=' .env | head -1 | cut -d= -f2- || true)"
-  fi
-  if [ -z "$pg" ]; then
-    pg="$(openssl rand -hex 24 2>/dev/null || head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')"
-    echo "generated a new POSTGRES_PASSWORD (stored only in $DIR/.env)"
-  fi
-  { echo "POSTGRES_PASSWORD=$pg"; cat .env.incoming; } > .env.tmp
-  mv .env.tmp .env
-  rm -f .env.incoming
+  # The umask is scoped to this subshell so it only affects .env, not later files.
+  (
+    umask 077
+    pg=""
+    if [ -f .env ]; then
+      pg="$(grep -E '^POSTGRES_PASSWORD=' .env | head -1 | cut -d= -f2- || true)"
+    fi
+    if [ -z "$pg" ]; then
+      pg="$(openssl rand -hex 24 2>/dev/null || head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+      echo "generated a new POSTGRES_PASSWORD (stored only in $DIR/.env)"
+    fi
+    { echo "POSTGRES_PASSWORD=$pg"; cat .env.incoming; } > .env.tmp
+    mv .env.tmp .env
+    rm -f .env.incoming
+  )
 }
 
 install_config() {
+  # Read by the container's non-root user (uid 10001): world-readable, no secrets inside.
   mkdir -p config backups
-  cp deploy/config.yaml config/config.yaml
-  cp deploy/watchlist.txt config/watchlist.txt
+  install -m 0644 deploy/config.yaml config/config.yaml
+  install -m 0644 deploy/watchlist.txt config/watchlist.txt
+  chmod 0755 config
 }
 
 wait_healthy() {
