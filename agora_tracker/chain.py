@@ -33,6 +33,10 @@ def topic_addr(topic: str) -> str:
     return "0x" + topic[-40:].lower()
 
 
+def _hex_int(v: str | None) -> int | None:
+    return int(v, 16) if isinstance(v, str) and v.startswith("0x") else None
+
+
 def _is_revert(e: RpcError) -> bool:
     return e.code == 3 or "revert" in str(e).lower()
 
@@ -79,10 +83,24 @@ class TokenCache:
                 dec = 18
             if dec > 36:
                 dec = 18
-            self.store.put_token(t, sym, dec)
+            reverted = any(isinstance(r, RpcError) for r in (sym_raw, dec_raw))
+            self.store.put_token(t, sym, dec, "fallback_revert" if reverted else "rpc")
 
     def get(self, token: str) -> tuple[str, int]:
         return self.store.get_token(token) or (token[:8], 18)
+
+
+@dataclass
+class ScanResult:
+    """Everything derived from one block range, persisted atomically by the engine."""
+    events: list[TradeEvent] = field(default_factory=list)
+    block_times: dict[int, int] = field(default_factory=dict)
+    block_hashes: dict[int, tuple[str | None, str | None]] = field(default_factory=dict)
+    transactions: list[dict] = field(default_factory=list)   # raw evidence
+    transfers: list[dict] = field(default_factory=list)      # raw evidence
+
+    def __iter__(self):  # back-compat: `events, ts = follower.scan(...)`
+        return iter((self.events, self.block_times))
 
 
 @dataclass
@@ -129,10 +147,11 @@ class ChainFollower:
         return list(seen.values())
 
     # --- main -----------------------------------------------------------------
-    def scan(self, frm: int, to: int, wallets: set[str]) -> tuple[list[TradeEvent], dict[int, int]]:
-        """Returns events for [frm, to] and {block: timestamp} for blocks with events."""
+    def scan(self, frm: int, to: int, wallets: set[str]) -> ScanResult:
+        """Events for [frm, to] plus the raw evidence they were derived from."""
+        out = ScanResult()
         if not wallets:
-            return [], {}
+            return out
         logs = self.fetch_logs(frm, to, sorted(wallets))
         flows: dict[tuple[str, str], _TxFlows] = {}
         wnative = self.cfg.wrapped_native
@@ -146,14 +165,18 @@ class ChainFollower:
             if amount == 0 or src == dst:
                 continue
             tx, block = lg["transactionHash"].lower(), int(lg["blockNumber"], 16)
+            out.transfers.append({"tx_hash": tx, "log_index": int(lg["logIndex"], 16),
+                                  "block_number": block, "token": token,
+                                  "from_address": src, "to_address": dst, "amount": amount})
             for w, sign in ((src, -1), (dst, 1)):
                 if w in wallets:
                     f = flows.setdefault((tx, w), _TxFlows(tx, block, w))
                     f.deltas[token] += sign * amount
         if not flows:
-            return [], {}
+            return out
 
         txs = sorted({f.tx for f in flows.values()})
+        tx_block = {f.tx: f.block for f in flows.values()}
         res = self.rpc.batch([("eth_getTransactionByHash", [t]) for t in txs] +
                              [("eth_getTransactionReceipt", [t]) for t in txs])
         tx_info = {t: res[i] for i, t in enumerate(txs)}
@@ -164,6 +187,18 @@ class ChainFollower:
             for what, val in (("transaction", tx_info[t]), ("receipt", receipts[t])):
                 if not isinstance(val, dict):
                     raise RpcError(f"{what} for {t} unavailable ({val!r:.120}); retrying range")
+            info, rc = tx_info[t], receipts[t]
+            gas_used = _hex_int(rc.get("gasUsed"))
+            price = _hex_int(rc.get("effectiveGasPrice") or info.get("gasPrice"))
+            out.transactions.append({
+                "tx_hash": t, "block_number": _hex_int(info.get("blockNumber")) or tx_block[t],
+                "from_address": (info.get("from") or "").lower() or None,
+                "to_address": (info.get("to") or "").lower() or None,
+                "value_wei": _hex_int(info.get("value")), "nonce": _hex_int(info.get("nonce")),
+                "status": _hex_int(rc.get("status")), "gas_used": gas_used,
+                "effective_gas_price": price,
+                "fee_wei": gas_used * price if gas_used is not None and price is not None
+                else None})
 
         # Per (wallet, block): balance and nonce before/after. The balance change can be
         # attributed to one tx only when the wallet had exactly one tracked tx in the block
@@ -236,10 +271,19 @@ class ChainFollower:
                 if not isinstance(blk, dict):
                     raise RpcError(f"block {b} unavailable ({blk!r:.120}); retrying range")
                 ts[b] = int(blk["timestamp"], 16)
+                out.block_hashes[b] = (blk.get("hash"), blk.get("parentHash"))
             self.tokens.resolve({e.token for e in events} |
                                 {e.counter_token for e in events if e.counter_token})
         events.sort(key=lambda e: (e.block, e.tx, e.wallet, e.token))
-        return events, ts
+        out.events, out.block_times = events, ts
+        # every tx referenced by a stored transfer must exist (FK); fill block from the log
+        known = {x["tx_hash"] for x in out.transactions}
+        for tr in out.transfers:
+            if tr["tx_hash"] not in known:
+                out.transactions.append({"tx_hash": tr["tx_hash"],
+                                         "block_number": tr["block_number"]})
+                known.add(tr["tx_hash"])
+        return out
 
     def filter_eoas(self, addrs: set[str]) -> set[str]:
         """Drop contracts (pools, routers, vaults) the leaderboard might list."""

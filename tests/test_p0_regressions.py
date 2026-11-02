@@ -4,21 +4,17 @@ v0.1 (ea11ad4) and must pass now."""
 from __future__ import annotations
 
 import logging
-import sqlite3
-from pathlib import Path
 
 import pytest
-from test_tracker import E18, FEE, FRESH, POOL, TOKEN, W1, W2, FakeChain, build
+import sqlalchemy as sa
+from test_tracker import E18, FEE, FRESH, POOL, TOKEN, W1, W2, FakeChain, build, get_pos
 
 from agora_tracker import rpc as rpc_mod
 from agora_tracker.__main__ import Tracker
 from agora_tracker.config import AlertConfig, ChainConfig, Config, LeaderboardConfig, TelegramConfig
-from agora_tracker.db import Store
 from agora_tracker.leaderboard import Trader, parse_items
 from agora_tracker.notify import Notifier
 from agora_tracker.rpc import RpcClient, RpcError, redact
-
-FIXTURES = Path(__file__).parent / "fixtures"
 
 
 @pytest.fixture(autouse=True)
@@ -27,13 +23,18 @@ def no_sleep(monkeypatch):
 
 
 def scan_apply(f, e, wallets, frm=1, to=40):
-    ev, ts = f.scan(frm, to, wallets)
-    e.apply_range(ev, ts, to)
-    return ev
+    res = f.scan(frm, to, wallets)
+    e.apply_range(res, to)
+    return res.events
+
+
+def q(store, sql, **params):
+    with store.engine.connect() as c:
+        return c.execute(sa.text(sql), params).all()
 
 
 # --- C1: missing tx data must fail the range, not drop the trade ----------------------
-def test_C1_tx_lookup_failure_fails_range_and_keeps_cursor(tmp_path):
+def test_C1_tx_lookup_failure_fails_range_and_keeps_cursor(store):
     c = FakeChain()
     c.add_tx("0xa", 10, W1, value=E18, transfers=[(POOL, W1, 1000 * E18)],
              bal={W1: (10 * E18, 9 * E18 - FEE)})
@@ -45,74 +46,74 @@ def test_C1_tx_lookup_failure_fails_range_and_keeps_cursor(tmp_path):
         return orig(m, p)
 
     c.call = flaky
-    store, f, e = build(tmp_path, c)
+    store, f, e = build(store, c)
     with pytest.raises(RpcError):
         scan_apply(f, e, {W1})
-    assert store.get_kv("cursor") is None
+    assert store.get_cursor() is None
 
     c.call = orig  # provider recovers: the same range now yields the trade
     ev = scan_apply(f, e, {W1})
     assert [(x.kind, x.hype_wei, x.confidence) for x in ev] == [("BUY", E18, "high")]
 
 
-def test_C1_missing_block_timestamp_fails_range(tmp_path):
+def test_C1_missing_block_timestamp_fails_range(store):
     c = FakeChain()
     c.add_tx("0xa", 10, W1, value=E18, transfers=[(POOL, W1, 5 * E18)],
              bal={W1: (10 * E18, 9 * E18 - FEE)})
     orig = c.call
     c.call = lambda m, p: None if m == "eth_getBlockByNumber" else orig(m, p)
-    _, f, _ = build(tmp_path, c)
+    _, f, _ = build(store, c)
     with pytest.raises(RpcError):
         f.scan(1, 40, {W1})
 
 
 # --- C2/C3: HYPE attribution ----------------------------------------------------------
-def test_C2_airdrop_next_to_unrelated_hype_payment_is_not_a_buy(tmp_path):
+def test_C2_airdrop_next_to_unrelated_hype_payment_is_not_a_buy(store):
     c = FakeChain()
     c.add_tx("0xa", 10, FRESH, transfers=[(FRESH, W1, 1000 * E18)],
              bal={W1: (10 * E18, 5 * E18)})
     c.plain_sends.append((W1, 10))  # W1 paid 5 HYPE to someone in another tx, same block
-    store, f, e = build(tmp_path, c)
+    store, f, e = build(store, c)
     (ev,) = scan_apply(f, e, {W1})
     assert ev.kind == "TRANSFER_IN" and ev.hype_wei is None
-    pos = Store.get_position(store.conn, W1, TOKEN)
+    pos = get_pos(store, W1, TOKEN)
     assert pos.cost_wei == 0 and pos.basis == "partial_unknown"
 
 
-def test_C2_own_buy_plus_hidden_plain_send_falls_back_to_estimate(tmp_path):
+def test_C2_own_buy_plus_hidden_plain_send_falls_back_to_estimate(store):
     c = FakeChain()
     # W1 buys for 1 HYPE AND sends 3 HYPE elsewhere in the same block (no token logs).
     c.add_tx("0xa", 10, W1, value=E18, transfers=[(POOL, W1, 1000 * E18)],
              bal={W1: (10 * E18, 6 * E18 - 2 * FEE)})
     c.plain_sends.append((W1, 10))
-    _, f, _ = build(tmp_path, c)
+    _, f, _ = build(store, c)
     (ev,), _ = f.scan(1, 40, {W1})
     # v0.1 would book ~4 HYPE as exact; now: nonce mismatch -> tx.value, flagged estimated.
     assert (ev.kind, ev.hype_wei, ev.confidence, ev.hype_method) == \
         ("BUY", E18, "estimated", "tx_value")
 
 
-def test_C2_nonce_unavailable_means_not_high_confidence(tmp_path):
+def test_C2_nonce_unavailable_means_not_high_confidence(store):
     c = FakeChain()
     c.nonce_unavailable = True
     c.add_tx("0xd", 20, W1, transfers=[(W1, POOL, 500 * E18)],
              bal={W1: (5 * E18, 5 * E18 + 8 * E18 // 10 - FEE)})
-    _, f, _ = build(tmp_path, c)
+    _, f, _ = build(store, c)
     (ev,), _ = f.scan(1, 40, {W1})
     assert (ev.kind, ev.confidence) == ("TRANSFER_OUT", "unknown")
 
 
-def test_C3_tx_sent_by_someone_else_is_never_a_trade(tmp_path):
+def test_C3_tx_sent_by_someone_else_is_never_a_trade(store):
     c = FakeChain()
     # A keeper fills W1's order: tokens arrive in the keeper's tx, W1's balance even moves.
     c.add_tx("0xk", 10, FRESH, transfers=[(POOL, W1, 50 * E18)],
              bal={W1: (10 * E18, 11 * E18)})
-    _, f, _ = build(tmp_path, c)
+    _, f, _ = build(store, c)
     (ev,), _ = f.scan(1, 40, {W1})
     assert ev.kind == "TRANSFER_IN"
 
 
-def test_wrapped_hype_payment_is_high_confidence_without_balance_history(tmp_path):
+def test_wrapped_hype_payment_is_high_confidence_without_balance_history(store):
     c = FakeChain()
     whype = "0x" + "e0" * 20
     c.add_tx("0xw", 10, W1, transfers=[(POOL, W1, 100 * E18)])
@@ -120,7 +121,7 @@ def test_wrapped_hype_payment_is_high_confidence_without_balance_history(tmp_pat
                    "logIndex": "0x9", "data": "0x" + (2 * E18).to_bytes(32, "big").hex(),
                    "topics": [c.logs[0]["topics"][0], "0x" + "0" * 24 + W1[2:],
                               "0x" + "0" * 24 + POOL[2:]]})
-    store, f, e = build(tmp_path, c)
+    store, f, e = build(store, c)
     f.cfg.wrapped_native = whype
     (ev,), _ = f.scan(1, 40, {W1})
     assert (ev.kind, ev.hype_wei, ev.confidence, ev.hype_method) == \
@@ -128,7 +129,7 @@ def test_wrapped_hype_payment_is_high_confidence_without_balance_history(tmp_pat
 
 
 # --- C4: metadata cache ---------------------------------------------------------------
-def test_C4_transient_metadata_failure_is_not_cached(tmp_path):
+def test_C4_transient_metadata_failure_is_not_cached(store):
     c = FakeChain()
     orig = c.call
 
@@ -138,7 +139,7 @@ def test_C4_transient_metadata_failure_is_not_cached(tmp_path):
         return orig(m, p)
 
     c.call = flaky
-    store, f, _ = build(tmp_path, c)
+    store, f, _ = build(store, c)
     f.tokens.resolve({TOKEN})
     assert store.get_token(TOKEN) is None
     c.call = orig
@@ -146,18 +147,18 @@ def test_C4_transient_metadata_failure_is_not_cached(tmp_path):
     assert store.get_token(TOKEN) == ("KLEOS", 18)
 
 
-def test_C4_reverting_token_is_cached_with_fallback(tmp_path):
+def test_C4_reverting_token_is_cached_with_fallback(store):
     c = FakeChain()
     orig = c.call
     c.call = lambda m, p: (_ for _ in ()).throw(RpcError("execution reverted", 3)) \
         if m == "eth_call" else orig(m, p)
-    store, f, _ = build(tmp_path, c)
+    store, f, _ = build(store, c)
     f.tokens.resolve({TOKEN})
     assert store.get_token(TOKEN) == (TOKEN[:8], 18)
 
 
 # --- C6: rate limits must not trigger range splitting ----------------------------------
-def test_C6_rate_limited_getlogs_is_not_split(tmp_path):
+def test_C6_rate_limited_getlogs_is_not_split(store):
     c = FakeChain()
     calls = {"n": 0}
     orig = c.call
@@ -169,98 +170,101 @@ def test_C6_rate_limited_getlogs_is_not_split(tmp_path):
         return orig(m, p)
 
     c.call = limited
-    _, f, _ = build(tmp_path, c)
+    _, f, _ = build(store, c)
     with pytest.raises(RpcError):
         f.fetch_logs(1, 10, [W1])
     assert calls["n"] == 1
 
 
 # --- T2: one row per leg across replays and v0.1 keys ---------------------------------
-def test_T2_replay_with_better_data_does_not_duplicate_leg(tmp_path):
+def test_T2_replay_with_better_data_does_not_duplicate_leg(store):
     c = FakeChain()
     c.add_tx("0xd", 20, W1, transfers=[(W1, POOL, 500 * E18)])  # no balance history yet
-    store, f, e = build(tmp_path, c)
+    store, f, e = build(store, c)
     scan_apply(f, e, {W1})
     c.balances[(W1, 19)] = 9 * E18
     c.balances[(W1, 20)] = 9 * E18 + 8 * E18 // 10 - FEE
     scan_apply(f, e, {W1})
-    rows = store.conn.execute("SELECT kind FROM events WHERE tx='0xd'").fetchall()
+    rows = q(store, "SELECT kind FROM trades WHERE tx_hash='0xd'")
     assert [r[0] for r in rows] == ["TRANSFER_OUT"]
 
 
 # --- P1: estimates never become exact PnL ---------------------------------------------
-def test_P1_estimated_buy_books_estimated_pnl_only(tmp_path):
+def test_P1_estimated_buy_books_estimated_pnl_only(store):
     c = FakeChain()
     c.add_tx("0xa", 10, W1, value=E18, transfers=[(POOL, W1, 1000 * E18)])  # no balances
     c.add_tx("0xd", 20, W1, transfers=[(W1, POOL, 1000 * E18)],
              bal={W1: (5 * E18, 7 * E18 - FEE)})
-    store, f, e = build(tmp_path, c)
+    store, f, e = build(store, c)
     scan_apply(f, e, {W1})
-    pos = Store.get_position(store.conn, W1, TOKEN)
+    pos = get_pos(store, W1, TOKEN)
     assert pos.realized_wei == 0 and pos.realized_est_wei == E18
     texts = [r["text"] for r in store.pending_alerts(50)]
     assert any("≈1.000 HYPE" in t and "estimated (tx_value)" in t for t in texts)
     assert any("realized ≈+1.000 HYPE" in t for t in texts)
 
 
-def test_P1_sell_after_unknown_cost_transfer_in_books_no_pnl(tmp_path):
+def test_P1_sell_after_unknown_cost_transfer_in_books_no_pnl(store):
     c = FakeChain()
     c.add_tx("0xa", 10, W1, value=E18, transfers=[(POOL, W1, 1000 * E18)],
              bal={W1: (10 * E18, 9 * E18 - FEE)})
     c.add_tx("0xb", 12, FRESH, transfers=[(FRESH, W1, 1000 * E18)])  # gift, cost unknown
     c.add_tx("0xd", 20, W1, transfers=[(W1, POOL, 2000 * E18)],
              bal={W1: (9 * E18, 12 * E18 - FEE)})
-    store, f, e = build(tmp_path, c)
+    store, f, e = build(store, c)
     scan_apply(f, e, {W1})
-    pos = Store.get_position(store.conn, W1, TOKEN)
+    pos = get_pos(store, W1, TOKEN)
     assert pos.qty == 0 and pos.realized_wei == 0 and pos.realized_est_wei == 0
     assert any("PnL unknown" in r["text"] for r in store.pending_alerts(50))
 
 
-def test_P4_cluster_ignores_dust_and_estimated_buys(tmp_path):
+def test_P4_cluster_ignores_dust_and_estimated_buys(store):
     c = FakeChain()
     c.add_tx("0xa", 10, W1, value=E18, transfers=[(POOL, W1, 100 * E18)],
              bal={W1: (10 * E18, 9 * E18 - FEE)})
     c.add_tx("0xb", 11, W2, value=E18 // 100, transfers=[(POOL, W2, 1 * E18)],   # dust
              bal={W2: (10 * E18, 10 * E18 - E18 // 100 - FEE)})
     c.add_tx("0xc", 12, FRESH, value=E18, transfers=[(POOL, FRESH, 100 * E18)])  # estimated
-    store, f, e = build(tmp_path, c)
+    store, f, e = build(store, c)
     scan_apply(f, e, {W1, W2, FRESH})
     assert not any("CLUSTER" in r["text"] for r in store.pending_alerts(50))
 
 
 # --- crash recovery ---------------------------------------------------------------------
-def test_crash_mid_range_rolls_back_everything(tmp_path, monkeypatch):
+def test_crash_mid_range_rolls_back_everything(store, monkeypatch):
     c = FakeChain()
     for i, w in enumerate((W1, W2)):
         c.add_tx(f"0x{i}", 10 + i, w, value=E18, transfers=[(POOL, w, 10 * E18)],
                  bal={w: (10 * E18, 9 * E18 - FEE)})
-    store, f, e = build(tmp_path, c)
-    real = Store.enqueue
+    store, f, e = build(store, c)
+    real = store.enqueue
     n = {"i": 0}
 
-    def boom(conn, key, text):
+    def boom(conn, key, text, severity="info"):
         n["i"] += 1
         if n["i"] == 2:
             raise RuntimeError("process killed")
-        real(conn, key, text)
+        real(conn, key, text, severity)
 
-    monkeypatch.setattr(Store, "enqueue", staticmethod(boom))
+    monkeypatch.setattr(store, "enqueue", boom)
     with pytest.raises(RuntimeError):
         scan_apply(f, e, {W1, W2})
-    assert store.conn.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 0
-    assert store.conn.execute("SELECT COUNT(*) FROM positions").fetchone()[0] == 0
-    assert store.get_kv("cursor") is None
-    monkeypatch.setattr(Store, "enqueue", staticmethod(real))
+    for table in ("trades", "wallet_positions", "transactions", "token_transfers",
+                  "notification_outbox", "indexed_blocks"):
+        assert q(store, f"SELECT COUNT(*) FROM {table}")[0][0] == 0, table
+    assert store.get_cursor() is None
+    monkeypatch.setattr(store, "enqueue", real)
     scan_apply(f, e, {W1, W2})
-    assert store.conn.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 2
+    assert q(store, "SELECT COUNT(*) FROM trades")[0][0] == 2
+    assert q(store, "SELECT COUNT(*) FROM token_transfers")[0][0] == 2
 
 
 # --- D1 + L2: tracker lifecycle ---------------------------------------------------------
-def make_tracker(tmp_path, chain=None) -> Tracker:
+def make_tracker(store, monkeypatch, chain=None) -> Tracker:
     cfg = Config(chain=ChainConfig(rpc_urls=["http://fake"], max_block_range=100),
                  leaderboard=LeaderboardConfig(enabled=False), alerts=AlertConfig(),
-                 telegram=TelegramConfig(), db_path=str(tmp_path / "t.db"))
+                 telegram=TelegramConfig())
+    monkeypatch.setattr("agora_tracker.__main__.Store", lambda **kw: store)
     t = Tracker(cfg, dry_run=True)
     fake = chain or FakeChain()
     t.rpc = fake
@@ -269,25 +273,27 @@ def make_tracker(tmp_path, chain=None) -> Tracker:
     return t
 
 
-def test_D1_cursor_held_while_nothing_is_tracked(tmp_path):
-    t = make_tracker(tmp_path)
-    t.store.set_kv("cursor", "5")
+def test_D1_cursor_held_while_nothing_is_tracked(store, monkeypatch):
+    t = make_tracker(store, monkeypatch)
+    t.store.set_cursor(None, 5)
     t.tracked = set()
     assert t.scan_step() is False
-    assert t.store.get_kv("cursor") == "5"
+    assert t.store.get_cursor() == 5
     t.tracked = {W1}
     t.scan_step()
-    assert t.store.get_kv("cursor") == "40"
+    assert t.store.get_cursor() == 40
 
 
-def test_L2_degraded_leaderboard_keeps_previous_set_and_sends_no_exits(tmp_path):
-    t = make_tracker(tmp_path)
+def test_L2_degraded_leaderboard_keeps_previous_set_and_sends_no_exits(store, monkeypatch):
+    t = make_tracker(store, monkeypatch)
     t.cfg.exclude_contracts = False
     t.cfg.leaderboard.top_n = 4
     full = [Trader(address="0x" + f"{i:040x}", rank=i + 1, pnl=100.0 - i) for i in range(4)]
 
     class LB:
         rows = full
+        last_payload = None
+        last_meta: dict = {}
 
         def fetch(self):
             return self.rows
@@ -299,6 +305,9 @@ def test_L2_degraded_leaderboard_keeps_previous_set_and_sends_no_exits(tmp_path)
     t.refresh_leaderboard()
     assert len(t.tracked) == 4
     assert not any("dropped out" in r["text"] for r in t.store.pending_alerts(50))
+    statuses = [r[0] for r in q(store, "SELECT status FROM leaderboard_snapshots ORDER BY id")]
+    assert statuses == ["ok", "degraded"]         # history kept, degraded one recorded
+    assert len(store.top_traders()) == 4          # but not used as the current set
 
 
 def test_L1_zero_pnl_sorts_above_negative():
@@ -406,8 +415,12 @@ class FakeResp:
             raise requests.HTTPError(response=self)
 
 
-def make_notifier(tmp_path, responses, max_attempts=3):
-    store = Store(str(tmp_path / "n.db"))
+def make_due(store):
+    with store.engine.begin() as c:
+        c.execute(sa.text("UPDATE notification_outbox SET next_attempt_at = now()"))
+
+
+def make_notifier(store, responses, max_attempts=3):
     n = Notifier(store, TelegramConfig(bot_token="123:SECRET", chat_id="1", min_interval_s=0,
                                        max_attempts=max_attempts))
     seq = list(responses)
@@ -422,59 +435,36 @@ def make_notifier(tmp_path, responses, max_attempts=3):
     return store, n
 
 
-def test_N1_backoff_then_dead_letter_and_token_not_logged(tmp_path, caplog):
+def test_N1_backoff_then_dead_letter_and_token_not_logged(store, caplog):
     import requests
-    store, n = make_notifier(tmp_path, [requests.ConnectionError(
+    store, n = make_notifier(store, [requests.ConnectionError(
         "https://api.telegram.org/bot123:SECRET/sendMessage failed")] * 3)
     store.enqueue_now("k1", "hello")
     caplog.set_level(logging.WARNING)
     for _ in range(3):
-        row = store.conn.execute("SELECT * FROM outbox").fetchone()
-        store.conn.execute("UPDATE outbox SET next_attempt_at=? WHERE id=?", (0, row["id"]))
+        make_due(store)
         n.drain()
-    row = store.conn.execute("SELECT * FROM outbox").fetchone()
-    assert (row["status"], row["attempts"]) == ("dead", 3)
-    assert "SECRET" not in caplog.text and "SECRET" not in (row["last_error"] or "")
+    status, attempts, err = q(store, "SELECT status, attempts, last_error "
+                                     "FROM notification_outbox")[0]
+    assert (status, attempts) == ("dead", 3)
+    assert "SECRET" not in caplog.text and "SECRET" not in (err or "")
+    assert q(store, "SELECT COUNT(*), bool_or(ok) FROM notification_deliveries")[0] == (3, False)
 
 
-def test_N1_failed_alert_waits_for_backoff(tmp_path):
+def test_N1_failed_alert_waits_for_backoff(store):
     import requests
-    store, n = make_notifier(tmp_path, [requests.Timeout("t"), FakeResp(200)])
+    store, n = make_notifier(store, [requests.Timeout("t"), FakeResp(200)])
     store.enqueue_now("k1", "hello")
     n.drain()
     assert n.drain() == 0                        # not due yet (10s backoff)
-    store.conn.execute("UPDATE outbox SET next_attempt_at=0")
+    make_due(store)
     assert n.drain() == 1
     assert store.outbox_counts() == {"sent": 1}
 
 
-def test_N1_bad_request_is_dead_immediately_and_does_not_block_queue(tmp_path):
-    store, n = make_notifier(tmp_path, [FakeResp(400, text="chat not found"), FakeResp(200)])
+def test_N1_bad_request_is_dead_immediately_and_does_not_block_queue(store):
+    store, n = make_notifier(store, [FakeResp(400, text="chat not found"), FakeResp(200)])
     store.enqueue_now("k1", "bad")
     store.enqueue_now("k2", "good")
     assert n.drain() == 1
     assert store.outbox_counts() == {"dead": 1, "sent": 1}
-
-
-# --- upgrade of a v0.1 database ---------------------------------------------------------
-def test_v0_1_database_upgrades_in_place(tmp_path):
-    db = tmp_path / "old.db"
-    con = sqlite3.connect(db)
-    con.executescript((FIXTURES / "schema_v0_1.sql").read_text())
-    con.execute("INSERT INTO events(key,block,ts,tx,wallet,kind,token,qty,hype_wei,approx) "
-                "VALUES(?,10,1,'0xa',?,'BUY',?,'5','7',1)", (f"0xa:{W1}:{TOKEN}:BUY", W1, TOKEN))
-    con.execute("INSERT INTO positions VALUES(?,?,'5','7','0',1)", (W1, TOKEN))
-    con.execute("INSERT INTO outbox(key,text,created_at,sent_at,attempts) VALUES('a','x',1,2,0)")
-    con.execute("INSERT INTO outbox(key,text,created_at,attempts) VALUES('b','y',1,10)")
-    con.execute("INSERT INTO outbox(key,text,created_at,attempts) VALUES('c','z',1,0)")
-    con.commit()
-    con.close()
-
-    store = Store(str(db))
-    assert store.conn.execute("SELECT confidence FROM events").fetchone()[0] == "estimated"
-    assert Store.get_position(store.conn, W1, TOKEN).basis == "legacy"
-    assert store.outbox_counts() == {"sent": 1, "dead": 1, "pending": 1}
-    # a replay of the same leg is recognised despite the v0.1 key format
-    from agora_tracker.classify import TradeEvent
-    ev = TradeEvent("BUY", "0xa", 10, W1, TOKEN, 5, 7)
-    assert Store.insert_event(store.conn, ev, 1) is False

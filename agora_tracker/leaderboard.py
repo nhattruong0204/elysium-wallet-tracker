@@ -99,6 +99,8 @@ class HttpLeaderboard:
     def __init__(self, cfg: LeaderboardConfig):
         self.cfg = cfg
         self.session = requests.Session()
+        self.last_payload: Any = None
+        self.last_meta: dict[str, Any] = {}
 
     def fetch(self) -> list[Trader]:
         c = self.cfg
@@ -107,11 +109,19 @@ class HttpLeaderboard:
         if c.body is not None:
             kw["json" if isinstance(c.body, (dict, list)) else "data"] = c.body
         r = self.session.request(c.method.upper(), c.url, **kw)
+        # Request metadata for the snapshot record. Headers (cookies, keys) are never kept.
+        self.last_meta = {"url": c.url.split("?")[0], "method": c.method.upper(),
+                          "params": c.params or {}, "status": r.status_code,
+                          "elapsed_ms": int(r.elapsed.total_seconds() * 1000)
+                          if r.elapsed else None}
+        self.last_payload = None
         if r.status_code in (401, 403):
             raise PermissionError(f"leaderboard HTTP {r.status_code}: endpoint needs fresh "
                                   "headers/cookies; re-import with --import-curl")
         r.raise_for_status()
-        traders = parse_items(r.json(), c)
+        payload = r.json()
+        self.last_payload = payload if len(r.content) <= 2_000_000 else None
+        traders = parse_items(payload, c)
         if not traders:
             raise ValueError("leaderboard returned 0 traders; check items_path / fields.address")
         return traders
