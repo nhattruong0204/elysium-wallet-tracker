@@ -30,6 +30,7 @@ status and read logs from a phone. Credentials live only in GitHub secrets.
 | `discover` | Find Agora's leaderboard API; paste the result into `deploy/config.yaml` via PR, then `deploy` |
 | `dry-run` | Catch up once and print alerts instead of sending |
 | `test-telegram` | Send one test message |
+| `test-card` | Re-send the latest tracked BUY/SELL as a full alert card with live market data |
 | `restart` / `stop` | As named |
 
 Bot settings are config-as-code: change `deploy/config.yaml` or `deploy/watchlist.txt` in a

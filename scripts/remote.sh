@@ -145,6 +145,9 @@ case "$ACTION" in
   test-telegram)
     docker compose run --rm --no-deps tracker --test-telegram
     ;;
+  test-card)
+    docker compose run --rm --no-deps tracker --test-card
+    ;;
   restart)
     docker compose restart tracker
     wait_healthy || true

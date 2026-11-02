@@ -147,3 +147,25 @@ def test_notifier_sends_buttons_and_falls_back_when_rendering_breaks(store):
     store.enqueue_now("b", "fallback text", payload=payload())
     assert n.drain() == 1
     assert sent[1]["text"] == "fallback text" and "reply_markup" not in sent[1]
+
+
+def test_test_card_sends_latest_trade(store, monkeypatch):
+    from agora_tracker import __main__ as cli
+    from agora_tracker.classify import TradeEvent
+    from agora_tracker.config import (
+        AlertConfig,
+        ChainConfig,
+        Config,
+        LeaderboardConfig,
+        MarketConfig,
+    )
+    cfg = Config(chain=ChainConfig(rpc_urls=["x"]), leaderboard=LeaderboardConfig(),
+                 alerts=AlertConfig(), telegram=TelegramConfig(bot_token="1:x", chat_id="1"),
+                 market=MarketConfig(enabled=False))
+    with store.tx() as c:
+        store.insert_trade(c, TradeEvent("BUY", TX, 7, WALLET, TOKEN, 10**18, 2 * 10**18), 1)
+    monkeypatch.setattr(cli, "Store", lambda **kw: store)
+    sent = []
+    monkeypatch.setattr(cli.Notifier, "_send", lambda self, t, kb=None: (sent.append((t, kb)) or (True, "", False)))
+    assert cli.test_card(cfg) == 0
+    assert "test card" in sent[0][0] and sent[0][1]["inline_keyboard"][0][0]["text"] == "🛒 Agora"
