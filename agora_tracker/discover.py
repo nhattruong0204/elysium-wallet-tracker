@@ -106,7 +106,8 @@ def probe(urls: list[str], timeout: float = 15) -> list[dict]:
                       "origin": "https://www.agoradex.app"})
     hits = []
     for u in urls:
-        for params in ({"sort": "pnl", "limit": 100}, {}):
+        attempts: list[dict[str, str | int]] = [{"sort": "pnl", "limit": 100}, {}]
+        for params in attempts:
             try:
                 r = s.get(u, params=params, timeout=timeout)
                 if r.status_code != 200 or "json" not in r.headers.get("content-type", ""):
