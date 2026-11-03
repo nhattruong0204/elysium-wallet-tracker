@@ -34,11 +34,39 @@ status and read logs from a phone. Credentials live only in GitHub secrets.
 | `test-card` | Re-send the latest tracked BUY/SELL as a full alert card with live market data |
 | `ui-smoke` | Render every Intelligence Center view on live data, build a complete XLSX and send both to the owner chat (no polling) |
 | `restart` / `stop` | As named (`restart` restarts tracker and ui) |
+| `web` | Deploy **only** the dashboard: build, migrate, `up -d --no-deps web`, smoke + role checks. Needs `backup_run=<id of a successful off-site backup run, <= 36 h old>`. Never restarts tracker/ui/postgres |
+| `web-smoke` / `loadtest` / `web-rollback` | Page and role checks on the loopback port; 5 rps x 5 min load test that aborts if the bots degrade; stop the `web` container |
+| `maint` | Allow-listed steps (`steps=a,b`), now also `install-revival-health`, `caddy-show`, `caddy-backup`, `caddy-switch`, `caddy-rollback` |
 
 Bot settings are config-as-code: change `deploy/config.yaml` or `deploy/watchlist.txt` in a
 PR and run `deploy`. The first run prints the server's SSH host key fingerprint; save that
 line as `VPS_HOST_KEY` to pin it. Set `install_docker` only if Docker is missing and the SSH
 user is root.
+
+## Dashboard (onchainflow.app)
+
+Design, boundary and verification record: [infra/ONCHAINFLOW_DASHBOARD.md](infra/ONCHAINFLOW_DASHBOARD.md).
+
+* `web` is a compose service on `127.0.0.1:8100` (256 MB, read-only rootfs, no `.env` secrets).
+  It logs in as `dashboard_ro` using `DASHBOARD_DB_PASSWORD`, generated once on the VPS into
+  `.env` (mode 0600, never printed) and preserved by `deploy`.
+* Public edge: the existing Caddy container (host network) proxies `onchainflow.app` to
+  `127.0.0.1:8100`. Caddyfile backup: `/opt/gmgn-revival-radar/deploy/Caddyfile.pre-elysium`.
+* **Schema changes and the bots.** The tracker and ui refuse to start when the database
+  schema differs from the one their image expects (`schema at X, code expects Y`). Migration
+  0004 advanced the schema, so until `tracker` and `ui` are recreated on the new image their
+  Docker health reads *unhealthy* (they keep working) and **a restart of either would fail to
+  start**. The `web` action deliberately does not recreate them. Bring them level with
+  `action=deploy` (recreates tracker and ui, resumes from the stored cursor, no replay) at a
+  moment you accept a few seconds of downtime. Any future migration needs the same step.
+* External check of the public site: push `requested=<time>` to `deploy/SITE_CHECK` on `ops`.
+* Revival scan-health monitor: `revival-health.timer` (every 5 min) runs
+  `/opt/elysium-ops/revival-health.py`, read-only on the Revival SQLite file. Alerts via
+  Telegram (6 h cooldown per condition, recovery notice) for: no finished scan within 20 min,
+  all sources down for 3 scans, DB unreadable, disk low (< 15% or < 8 GB), container down.
+  Zero candidates is healthy. `systemctl list-timers revival-health.timer`,
+  `journalctl -u revival-health.service -n 20`. It replaces the retired `onchainflow-health`,
+  which stays disabled.
 
 ## First deployment (manual, over SSH)
 

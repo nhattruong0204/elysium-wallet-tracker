@@ -80,6 +80,16 @@ export TEST_DATABASE_URL=postgresql+psycopg://tracker:tracker@127.0.0.1/tracker_
 pytest -q && ruff check . && mypy agora_tracker
 ```
 
+## Public dashboard
+
+`python -m agora_tracker --web` serves a read-only research dashboard (Overview, Projects,
+Smart money, Early plays, Scanner health, wallet and token pages, JSON API) as the database
+role `dashboard_ro`, which can only read the filtered `public_api` views: wallets that are
+not on Agora's public leaderboard stay private by construction. Live at
+https://onchainflow.app. Design, boundary, verification and rollback:
+[docs/infra/ONCHAINFLOW_DASHBOARD.md](docs/infra/ONCHAINFLOW_DASHBOARD.md); operations:
+[docs/OPERATIONS.md](docs/OPERATIONS.md#dashboard-onchainflowapp).
+
 ## Limits you should know
 
 - **Pre-launch (until Nov 9) trades land in bursts.** Elysium only advances when a batch posts
