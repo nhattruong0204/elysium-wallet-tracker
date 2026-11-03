@@ -32,16 +32,16 @@ df -hT -x tmpfs -x devtmpfs -x overlay
 sub "inodes"; df -i -x tmpfs -x devtmpfs -x overlay
 sub "block devices"; lsblk -f -o NAME,FSTYPE,SIZE,FSUSE%,MOUNTPOINTS 2>/dev/null || lsblk -f
 sub "largest top-level dirs on / (same filesystem)"
-$SLOW T 900 du -xh --max-depth=1 / 2>/dev/null | sort -h | tail -20
+T 900 $SLOW du -xh --max-depth=1 / 2>/dev/null | sort -h | tail -20
 for d in /var /var/lib /var/lib/docker /root /opt /home /srv /var/log /tmp; do
   [ -d "$d" ] || continue
-  sub "du $d (depth 1)"; $SLOW T 900 du -xh --max-depth=1 "$d" 2>/dev/null | sort -h | tail -15
+  sub "du $d (depth 1)"; T 900 $SLOW du -xh --max-depth=1 "$d" 2>/dev/null | sort -h | tail -15
 done
 sub "files >= 500 MB (same filesystem, paths only)"
-$SLOW T 900 find / -xdev -type f -size +500M -printf '%s\t%TY-%Tm-%Td %TH:%TM\t%p\n' 2>/dev/null \
+T 900 $SLOW find / -xdev -type f -size +500M -printf '%s\t%TY-%Tm-%Td %TH:%TM\t%p\n' 2>/dev/null \
   | sort -rn | awk -F'\t' '{printf "%8.2f GB  %s  %s\n", $1/1073741824, $2, $3}' | head -50
 sub "SQLite / WAL files >= 1 MB"
-$SLOW T 900 find / -xdev -type f \( -name '*.db' -o -name '*.sqlite' -o -name '*.sqlite3' \
+T 900 $SLOW find / -xdev -type f \( -name '*.db' -o -name '*.sqlite' -o -name '*.sqlite3' \
   -o -name '*.db-wal' -o -name '*.db-shm' -o -name '*-wal' -o -name '*.db-journal' \) -size +1M \
   -printf '%s\t%TY-%Tm-%Td %TH:%TM\t%p\n' 2>/dev/null | sort -rn \
   | awk -F'\t' '{printf "%10.1f MB  %s  %s\n", $1/1048576, $2, $3}' | head -60
@@ -77,7 +77,7 @@ for c in $(docker ps -aq); do
   done
 done
 sub "docker system df"; T 600 docker system df 2>&1
-sub "docker system df -v (volumes / images)"; $SLOW T 900 docker system df -v 2>&1 | sed -n '/VOLUME NAME/,/^$/p;/REPOSITORY/,/^$/p' | head -80
+sub "docker system df -v (volumes / images)"; T 900 $SLOW docker system df -v 2>&1 | sed -n '/VOLUME NAME/,/^$/p;/REPOSITORY/,/^$/p' | head -80
 sub "volumes"; docker volume ls 2>&1
 sub "networks"; docker network ls 2>&1
 sub "container json logs >= 10 MB"
@@ -100,6 +100,7 @@ done
 
 sec "DATABASES: PostgreSQL (read-only SQL)"
 for c in $(docker ps --format '{{.Names}} {{.Image}}' | awk 'tolower($2) ~ /postgres|timescale|postgis/ {print $1}'); do
+  docker inspect "$c" --format '{{range .Config.Env}}{{println .}}{{end}}' | grep -q '^PGHOST=' && continue  # a client (e.g. backup sidecar), not a server
   sub "postgres container $c"
   docker exec "$c" sh -c 'echo "PGDATA=${PGDATA:-/var/lib/postgresql/data}"; du -sh "${PGDATA:-/var/lib/postgresql/data}" "${PGDATA:-/var/lib/postgresql/data}/pg_wal" 2>/dev/null'
   q() { docker exec "$c" sh -c 'psql -X -A -F" | " -v ON_ERROR_STOP=0 -U "${POSTGRES_USER:-postgres}" -d "$1" -c "SET default_transaction_read_only = on;" -c "$2" 2>&1' -- "$1" "$2"; }
@@ -122,7 +123,7 @@ if systemctl is-active --quiet postgresql 2>/dev/null; then
 fi
 
 sec "DATABASES: SQLite (read-only header facts, cheap)"
-for f in $($SLOW T 600 find / -xdev -type f \( -name '*.db' -o -name '*.sqlite' -o -name '*.sqlite3' \) -size +50M 2>/dev/null); do
+for f in $(T 600 $SLOW find / -xdev -type f \( -name '*.db' -o -name '*.sqlite' -o -name '*.sqlite3' \) -size +50M 2>/dev/null); do
   sub "$f"
   ls -la --time-style=+%F_%T "$f" "$f-wal" "$f-shm" 2>/dev/null
   T 120 python3 - "$f" <<'PY' 2>&1
@@ -145,6 +146,9 @@ done
 sec "SYSTEMD"
 systemctl list-units --type=service --state=running --no-pager --no-legend 2>/dev/null | awk '{print $1}' | grep -vE '^(systemd-|dbus|getty|serial-getty|user@|ssh|cron|rsyslog|snapd|polkit|udisks|ModemManager|multipathd|networkd|unattended|irqbalance|qemu-guest|chrony|packagekit|fwupd)'
 sub "failed units"; systemctl --failed --no-pager --no-legend 2>/dev/null
+for u in $(systemctl --failed --no-pager --no-legend --plain 2>/dev/null | awk '{print $1}'); do
+  sub "last log lines of failed $u"; journalctl -u "$u" -n 25 --no-pager -o short-iso 2>/dev/null | redact
+done
 sub "timers"; systemctl list-timers --all --no-pager 2>/dev/null | head -40
 for u in $(systemctl list-unit-files --no-legend --no-pager 2>/dev/null | awk '{print $1}' | grep -iE 'radar|onchain|elysium|revival|caddy|nginx|traefik|backup|gmgn|tracker|web'); do
   sub "unit $u ($(systemctl is-enabled "$u" 2>/dev/null)/$(systemctl is-active "$u" 2>/dev/null))"
@@ -178,7 +182,7 @@ done
 echo "this host's public IPv4: $(T 10 curl -s -4 https://api.ipify.org || echo '?') ; interfaces: $(ip -4 -o addr show scope global | awk '{print $4}' | tr '\n' ' ')"
 
 sec "APPLICATION DIRECTORIES (git checkouts)"
-for g in $($SLOW T 300 find / -xdev -maxdepth 5 -type d -name .git -not -path '*/node_modules/*' 2>/dev/null); do
+for g in $(T 300 $SLOW find / -xdev -maxdepth 5 -type d -name .git -not -path '*/node_modules/*' 2>/dev/null); do
   d=$(dirname "$g")
   echo "== $d  [$(du -sh --exclude=.git "$d" 2>/dev/null | cut -f1)]"
   echo "   remote: $(git -C "$d" remote get-url origin 2>/dev/null | redact)  branch: $(git -C "$d" rev-parse --abbrev-ref HEAD 2>/dev/null)"
@@ -189,7 +193,7 @@ done
 sec "LOGS AND BACKUPS"
 journalctl --disk-usage 2>/dev/null; grep -E '^\s*(SystemMaxUse|MaxRetentionSec)' /etc/systemd/journald.conf 2>/dev/null || echo "journald: default limits"
 sub "backup-looking directories"
-$SLOW T 600 find / -xdev -maxdepth 4 -type d \( -iname '*backup*' -o -iname '*dump*' -o -iname '*snapshot*' \) -not -path '/proc/*' -not -path '/usr/*' -not -path '/var/lib/docker/overlay2/*' 2>/dev/null | while read -r d; do
+T 600 $SLOW find / -xdev -maxdepth 4 -type d \( -iname '*backup*' -o -iname '*dump*' -o -iname '*snapshot*' \) -not -path '/proc/*' -not -path '/usr/*' -not -path '/var/lib/docker/overlay2/*' 2>/dev/null | while read -r d; do
   printf '%8s  %5s files  newest %s  %s\n' "$(du -sh "$d" 2>/dev/null | cut -f1)" "$(find "$d" -type f 2>/dev/null | wc -l)" \
     "$(find "$d" -type f -printf '%TY-%Tm-%Td\n' 2>/dev/null | sort | tail -1)" "$d"
 done
