@@ -126,6 +126,34 @@ PY
       journalctl -u revival-health.service -n 5 --no-pager 2>&1 | sed 's/^/  /'
       echo "old website health timer: $(systemctl is-enabled onchainflow-health.timer 2>&1)/$(systemctl is-active onchainflow-health.timer 2>&1) (must stay disabled)"
       ;;
+    probe-kleos-pro)
+      say "read-only probe: Kleos new RPC / site domain (.pro) vs the current endpoints"
+      rpc() { curl -s -m 15 -H 'content-type: application/json' -d "$2" "$1" || true; }
+      hexn() { python3 -c 'import json,sys
+try: print(int(json.loads(sys.stdin.read())["result"],16))
+except Exception: print("n/a")'; }
+      for u in https://rpc.thekleos.pro/rpc https://rpc.thekleos.xyz/rpc https://rpc-live.boxa.club https://rpc-live.elyspump.com; do
+        cid=$(rpc "$u" '{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}' | hexn)
+        t0=$(date +%s.%N)
+        head=$(rpc "$u" '{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}' | hexn)
+        dt=$(python3 -c "import time;print(round(time.time()-$t0,3))")
+        for n in 20 50; do
+          body=$(python3 -c "import json;print(json.dumps([{'jsonrpc':'2.0','id':i,'method':'eth_blockNumber','params':[]} for i in range($n)]))")
+          ok=$(rpc "$u" "$body" | python3 -c 'import json,sys
+try:
+    d=json.loads(sys.stdin.read()); print(sum(1 for x in d if isinstance(x,dict) and "result" in x) if isinstance(d,list) else "reject")
+except Exception: print("reject")')
+          eval "b$n=$ok"
+        done
+        echo "  $u chainId=$cid (want 99901) head=$head latency=${dt}s batch20_ok=$b20 batch50_ok=$b50"
+      done
+      echo "  (heads within a few blocks of each other => latest-state node; hours behind => batch-confirmed)"
+      tok=$(docker exec elysium-postgres psql -U tracker -d tracker -X -A -t -c "SELECT token FROM trades ORDER BY id DESC LIMIT 1" 2>/dev/null | head -1)
+      for u in "https://www.thekleos.pro/" "https://www.thekleos.pro/token/$tok" "https://thekleos.pro/token/$tok" "https://www.thekleos.xyz/token/$tok"; do
+        r=$(curl -s -o /dev/null -m 15 -w '%{http_code} final=%{url_effective} ssl=%{ssl_verify_result}' -L "$u" || echo fail)
+        echo "  site ${u%$tok}<token> -> $r"
+      done
+      ;;
     audit-activity-fx)
       say "read-only audit for the Activity monitor and USD market cap (aggregates only)"
       docker exec -i elysium-postgres psql -U tracker -d tracker -X <<'SQL' 2>&1 | sed 's/^/  /'
