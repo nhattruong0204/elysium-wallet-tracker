@@ -6,7 +6,8 @@ chain:
   # behind the live head, and would delay alerts; the head-lag guard would skip it anyway.
   # After Nov 9 add Kinetiq's official RPC. Every node you use sees your VPS's IP.
   rpc_urls:
-    - https://rpc.thekleos.xyz/rpc        # Kleos
+    - https://rpc.thekleos.pro/rpc        # Kleos (new address, moved off the wallet blocklist 2026-11-03)
+    - https://rpc.thekleos.xyz/rpc        # Kleos (old address; remove once it stops answering)
     - https://rpc-live.boxa.club          # BOXA (batches capped at 20; learned automatically)
     - https://rpc-live.elyspump.com       # ElysPump
   chain_id: 99901              # Elysium mainnet. The tracker refuses to run on a mismatch.
@@ -63,7 +64,7 @@ alerts:
 links:                         # every alert detail links here (formats verified 2026-11-02)
   explorer: https://elyscan.live
   agora: https://www.agoradex.app
-  kleos: https://www.thekleos.xyz
+  kleos: https://www.thekleos.pro
   boxa: https://boxa.club
   elyspump: https://elysp.com
 
