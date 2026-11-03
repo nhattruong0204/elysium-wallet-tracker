@@ -11,6 +11,7 @@ and that real data is rendered. Writes screenshots to ./shots and prints a summa
 from __future__ import annotations
 
 import argparse
+import gzip
 import json
 import re
 import socket
@@ -70,7 +71,9 @@ def http_basics(base: str) -> None:
         check(h.get("referrer-policy") == "no-referrer", "Referrer-Policy: no-referrer")
         check(h.get("content-encoding") in ("gzip", "zstd"), "response compressed by the proxy", h.get("content-encoding", "none"))
         body = r.read()
-        check(b"Elysium" in body, "page is the Elysium dashboard", f"{len(body)} bytes (compressed)")
+        if h.get("content-encoding") == "gzip":
+            body = gzip.decompress(body)
+        check(b"Elysium" in body, "page is the Elysium dashboard", f"{len(body)} bytes")
         check(b"Revival" not in body, "old Revival Radar site is gone")
     for p in ("/healthz", "/robots.txt", "/api/v1/meta"):
         with urllib.request.urlopen(base + p, timeout=15) as r:
