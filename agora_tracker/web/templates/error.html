@@ -1,0 +1,8 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="panel narrow center">
+  <h1>{{ d.headline }}</h1>
+  <p class="lead">{{ d.detail }}</p>
+  <p><a class="btn primary" href="/">Back to overview</a>{% if d.retry %} <a class="btn" href="{{ path }}{{ qs() if qs else '' }}">Try again</a>{% endif %}</p>
+</div>
+{% endblock %}

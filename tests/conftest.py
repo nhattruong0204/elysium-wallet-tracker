@@ -29,8 +29,10 @@ def pg_engine():
         raise RuntimeError("refusing to wipe a database whose name does not contain 'test'")
     eng = make_engine(TEST_URL)
     with eng.begin() as c:
+        c.execute(sa.text("DROP SCHEMA IF EXISTS public_api CASCADE"))
         c.execute(sa.text("DROP SCHEMA IF EXISTS public CASCADE"))
         c.execute(sa.text("CREATE SCHEMA public"))
+        c.execute(sa.text("GRANT USAGE ON SCHEMA public TO PUBLIC"))   # as in a fresh PG16
     upgrade(eng)
     yield eng
     eng.dispose()

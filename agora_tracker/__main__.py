@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import shutil
 import signal
 import sys
@@ -417,6 +418,11 @@ def migrate() -> int:
     before = current_revision(engine)
     upgrade(engine)
     log.info("schema %s -> %s", before, head_revision())
+    pw = os.environ.get("DASHBOARD_DB_PASSWORD")
+    if pw:
+        from .migrate import set_dashboard_password
+        set_dashboard_password(engine, pw)
+        log.info("dashboard_ro password set from DASHBOARD_DB_PASSWORD")
     return 0
 
 
@@ -522,6 +528,10 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--ui-smoke", action="store_true",
                     help="end-to-end check of the Telegram UI on live data; sends the result "
                          "and a sample XLSX to the owner chat (does not poll updates)")
+    ap.add_argument("--web", action="store_true",
+                    help="serve the public research dashboard (read-only database role)")
+    ap.add_argument("--host", default=None, help="--web bind address (default web.host)")
+    ap.add_argument("--port", type=int, default=None, help="--web port (default web.port)")
     ap.add_argument("--collect-once", action="store_true",
                     help="take one market snapshot round and exit")
     ap.add_argument("--log-level", default="INFO")
@@ -551,6 +561,10 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(test_telegram(cfg))
     if args.test_card:
         sys.exit(test_card(cfg))
+    if args.web:
+        from .web.run import serve
+        serve(cfg, args.host, args.port)
+        return
     if args.ui:
         run_ui(cfg)
         return

@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% from "_macros.html" import range_bar, freshness, pager, token, waddr, badge, empty with context %}
+{% set pg = d.page %}
+{% block body %}
+<h1>Smart money</h1>
+<p class="lead">Activity of <b>qualified</b> wallets: on Agora's public leaderboard with positive Agora-reported PnL at the time. That is a screen, not a prediction: being on the list does not mean a wallet is right next time. Agora's PnL and our independently measured realized PnL are always shown separately.</p>
+{{ range_bar(tr, qs, query) }}
+<div class="tabs" role="tablist" aria-label="Smart money views">
+  {% for v in ['net', 'buyers', 'new', 'repeat', 'exits', 'clusters'] %}<a href="{{ qs(view=v, page=None) }}"{% if d.view == v %} aria-current="true"{% endif %}>{{ d.views[v] }}</a>{% endfor %}
+  <span class="gap"></span>
+  {% for v in ['traders-agora', 'traders-realized', 'traders-active', 'traders-consistent', 'traders-movers'] %}<a href="{{ qs(view=v, page=None) }}"{% if d.view == v %} aria-current="true"{% endif %}>{{ d.views[v] }}</a>{% endfor %}
+</div>
+{{ freshness(d.meta, d.universe) }}
+{% if d.note %}<div class="banner info">{{ d.note }}</div>{% endif %}
+<div class="panel flush">
+{% if not pg['items'] %}
+  {{ empty('Nothing to show for this view', 'No qualified wallet matched in this window. Try a longer range or another view.') }}
+{% elif d.kind == 'tokens' %}
+  <div class="tw"><table>
+    <thead><tr><th>Token</th><th class="r">Qualified buyers</th><th class="r">Qualified sellers</th><th class="r">Bought (HYPE)</th><th class="r">Sold (HYPE)</th><th class="r">Net (HYPE)</th><th class="r">All tracked buyers</th><th class="r">Estimated (HYPE)</th></tr></thead>
+    <tbody>{% for r in pg['items'] %}
+    <tr><td>{{ token(r) }}</td><td class="r">{{ r.q_buyers }}</td><td class="r">{{ r.q_sellers }}</td><td class="r">{{ r.q_buy|hype }}</td><td class="r">{{ r.q_sell|hype }}</td><td class="r {{ r.q_net|tone }}">{{ r.q_net|signed }}</td><td class="r muted">{{ r.buyers }}</td><td class="r muted">{{ (r.buy_est + r.sell_est)|hype }}</td></tr>
+    {% endfor %}</tbody>
+  </table></div>
+{% elif d.kind == 'clusters' %}
+  <div class="tw"><table>
+    <thead><tr><th>Raised (UTC)</th><th>Token</th><th class="r">Wallets</th><th>Window</th><th>Wallets involved</th></tr></thead>
+    <tbody>{% for r in pg['items'] %}
+    <tr><td>{{ r.created_at|ts }}</td><td>{{ token(r) }}</td><td class="r">{{ r.n_wallets }}</td><td>{{ r.window_start|ts }} → {{ r.window_end|ts }}</td>
+      <td class="wrap-ok">{% for w in (r.details.wallets or [])[:6] %}{{ waddr(w) }} {% endfor %}</td></tr>
+    {% endfor %}</tbody>
+  </table></div>
+{% else %}
+  <div class="tw"><table>
+    <thead><tr><th class="r">Rank</th><th>Wallet</th><th class="r">Agora PnL (all-time)</th><th class="r">Measured PnL (window)</th><th class="r">Win rate</th><th class="r">Trades</th><th class="r">Buys / sells</th><th class="r">Tokens bought</th><th>Last active</th>{% if d.view == 'traders-movers' %}<th class="r">Rank change</th>{% endif %}</tr></thead>
+    <tbody>{% for r in pg['items'] %}
+    <tr><td class="r">{{ r.rank or '–' }}</td><td>{{ waddr(r.wallet) }}</td>
+      <td class="r {{ r.agora_pnl|tone }}">{{ r.agora_pnl|signed if r.agora_pnl is not none else '–' }}</td>
+      <td class="r {{ r.realized|tone }}">{% if r.n_measured %}{{ r.realized|signed }}{% else %}<span class="faint">none measured</span>{% endif %}</td>
+      <td class="r">{% if r.n_measured >= 3 %}{{ (r.wins / r.n_measured * 100)|round|int }}%{% else %}<span class="faint">n&lt;3</span>{% endif %}</td>
+      <td class="r">{{ r.legs }}</td><td class="r">{{ r.buys }} / {{ r.sells }}</td><td class="r">{{ r.tokens_bought }}</td><td>{{ r.last_at|ts }}</td>
+      {% if d.view == 'traders-movers' %}<td class="r">{% if r.delta is not none %}<span class="{{ r.delta|tone }}">{{ '%+d'|format(r.delta) }}</span>{% else %}new{% endif %}</td>{% endif %}
+    </tr>
+    {% endfor %}</tbody>
+  </table></div>
+  <p class="faint note note-pad">Agora PnL is Agora's accounting in HYPE since the wallet started. Measured PnL is realized on-chain inside this window only, from sells whose cost basis we know. The two are not comparable and never summed.</p>
+{% endif %}
+{% if pg['items'] %}{{ pager(pg, qs) }}{% endif %}
+</div>
+{% endblock %}

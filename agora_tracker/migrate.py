@@ -42,3 +42,15 @@ def downgrade(engine: Engine, revision: str) -> None:
     with engine.begin() as conn:
         cfg.attributes["connection"] = conn
         command.downgrade(cfg, revision)
+
+
+def set_dashboard_password(engine: Engine, password: str) -> None:
+    """Give the read-only dashboard role a scram-sha-256 password (idempotent, rotatable).
+    The role is created without one by migration 0004, so it cannot log in before this."""
+    import re
+    if not re.fullmatch(r"[A-Za-z0-9_-]{24,128}", password):
+        raise ValueError("DASHBOARD_DB_PASSWORD must be 24-128 characters of [A-Za-z0-9_-] "
+                         "(e.g. `openssl rand -hex 24`)")
+    with engine.begin() as conn:
+        # DDL cannot take bind parameters; the charset check above makes inlining safe
+        conn.exec_driver_sql(f"ALTER ROLE dashboard_ro PASSWORD '{password}'")

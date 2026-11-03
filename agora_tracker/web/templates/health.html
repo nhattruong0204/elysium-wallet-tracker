@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% from "_macros.html" import kpi, badge, empty %}
+{% set h = d.health %}
+{% block body %}
+<h1>Scanner health</h1>
+<p class="lead">Is the tracker actually seeing the chain? These checks read the scanner's own stored state, so a silent stall shows up here even when the process is still running.</p>
+<div class="fresh"><span>Computed {{ d.meta.age_s }}s ago{% if d.meta.stale %} <b class="warnc">(stale: database slow)</b>{% endif %}</span></div>
+{% if not h.db_ok %}
+<div class="banner bad"><b>Database unreachable.</b> The dashboard cannot read scanner state right now.</div>
+{% else %}
+<div class="banner {{ 'info' if h.status == 'ok' else 'bad' if h.status == 'down' else 'warn' }}">
+  <b>{{ {'ok': 'All checks passing', 'degraded': 'Degraded', 'down': 'Scanner problem'}[h.status] }}.</b>
+  {% if h.reasons %}<ul>{% for r in h.reasons %}<li>{{ r }}</li>{% endfor %}</ul>{% endif %}
+</div>
+<div class="kpis">
+  {{ kpi('Indexed block', h.cursor|number, 'checkpoint of the indexer') }}
+  {{ kpi('Chain head', h.head|number, 'best node') }}
+  {{ kpi('Block lag', h.lag|number if h.lag is not none else '–', 'blocks behind the best node') }}
+  {{ kpi('Tracked wallets', h.wallets|number, 'followed from the leaderboard') }}
+  {{ kpi('Trades stored', h.trades|number, 'last: ' ~ (h.last_trade|ts if h.last_trade else 'none')) }}
+  {{ kpi('Market tokens (24h)', h.market_tokens|number, 'snapshotted by the collector') }}
+</div>
+<div class="grid g2">
+  <section class="panel flush" aria-labelledby="chk"><h2 id="chk" class="ph">Checks</h2>
+    <div class="tw"><table><thead><tr><th>Check</th><th>State</th><th>Detail</th></tr></thead>
+      <tbody>{% for c in h.checks %}<tr><td>{{ c.name }}</td><td><span class="dot {{ 'ok' if c.state == 'ok' else 'warn' if c.state == 'warn' else 'down' if c.state == 'down' else '' }}"></span>{{ c.state }}</td><td class="muted">{{ c.detail }}</td></tr>{% endfor %}</tbody></table></div>
+  </section>
+  <section class="panel flush" aria-labelledby="nd"><h2 id="nd" class="ph">RPC providers <span class="sub">chain head per node</span></h2>
+    {% if h.nodes %}
+    <div class="tw"><table><thead><tr><th>Provider</th><th class="r">Head</th><th class="r">Behind best</th><th>State</th></tr></thead>
+      <tbody>{% for n in h.nodes %}<tr><td>{{ n.label }}</td><td class="r">{{ n.head|number if n.head is not none else '–' }}</td><td class="r">{{ n.behind|number if n.behind is not none else '–' }}</td>
+        <td>{% if n.head is none %}{{ badge('down', 'unreachable') }}{% elif n.lagging %}{{ badge('warn', 'lagging, skipped') }}{% else %}{{ badge('ok', 'in sync') }}{% endif %}</td></tr>{% endfor %}</tbody></table></div>
+    {% else %}{{ empty('No head data yet', 'The tracker records provider heads every minute.') }}{% endif %}
+  </section>
+</div>
+<div class="grid g2">
+  <section class="panel flush" aria-labelledby="lbh"><h2 id="lbh" class="ph">Leaderboard refreshes <span class="sub">latest 12</span></h2>
+    {% if d.snapshots %}
+    <div class="tw"><table><thead><tr><th>Captured (UTC)</th><th>Status</th><th class="r">Rows</th><th class="r">Accepted</th></tr></thead>
+      <tbody>{% for s in d.snapshots %}<tr><td>{{ s.captured_at|ts(true) }}</td><td>{{ badge('ok' if s.status in ('ok', 'imported') else 'warn' if s.status == 'degraded' else 'bad', s.status) }}</td><td class="r">{{ s.row_count }}</td><td class="r">{{ s.accepted_count }}</td></tr>{% endfor %}</tbody></table></div>
+    {% else %}{{ empty('No snapshots yet') }}{% endif %}
+  </section>
+  <section class="panel"><h2>Coverage</h2>
+    <dl class="kv">
+      <dt>Tracking since</dt><dd>{{ h.tracking_since|ts if h.tracking_since else '–' }}</dd>
+      <dt>Indexed through</dt><dd>{{ h.indexed_through|ts if h.indexed_through else 'unknown' }}</dd>
+      <dt>Last accepted leaderboard</dt><dd>{{ h.lb_ok|ts(true) if h.lb_ok else 'never' }}</dd>
+      <dt>Market snapshots</dt><dd>newest {{ h.market_at|ts(true) if h.market_at else 'none' }}; history since {{ h.market_since|ts if h.market_since else '–' }}</dd>
+      <dt>Alert queue</dt><dd>{{ h.outbox.get('pending', 0) }} pending · {{ h.outbox.get('sent', 0) }} sent · {{ h.outbox.get('dead', 0) }} failed</dd>
+    </dl>
+    {% if h.warnings %}<h3 class="mt">Open warnings</h3><ul class="plain">{% for wn in h.warnings %}<li class="warnc">{{ wn }}</li>{% endfor %}</ul>{% endif %}
+  </section>
+</div>
+{% endif %}
+{% endblock %}

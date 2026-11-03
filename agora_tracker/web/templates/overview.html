@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% from "_macros.html" import kpi, range_bar, freshness, coverage, badge, token, trades_table, empty with context %}
+{% set t = d.totals %}{% set p = d.prev %}{% set h = d.health %}
+{% block body %}
+<h1>Overview</h1>
+<p class="lead">What the <b>tracked wallets</b> (Agora's public top-PnL leaderboard, not the whole chain) did on Elysium. Verified amounts were measured on-chain; estimated ones are shown apart and never added in.</p>
+{{ range_bar(tr, qs, query) }}
+{{ freshness(d.meta, d.universe) }}
+{% if h.status != 'ok' %}
+<div class="banner {{ 'bad' if h.status == 'down' else 'warn' }}"><b>Scanner {{ 'is down' if h.status == 'down' else 'is degraded' }}.</b> Numbers below may be incomplete. <a href="/scanner">See scanner health</a>.
+  <ul>{% for r in h.reasons %}<li>{{ r }}</li>{% endfor %}</ul></div>
+{% endif %}
+{{ coverage(d.coverage) }}
+
+<div class="kpis">
+  {{ kpi('Tracked wallets', h.wallets|number, 'followed from the leaderboard') }}
+  {{ kpi('Active in window', t.wallets|number, t.txs|number ~ ' transactions') }}
+  {{ kpi('Tokens traded', t.tokens|number, t.new_tokens|number ~ ' first seen in window') }}
+  {{ kpi('Verified buys', t.buy|hype, t.buys|number ~ ' trades', 'HYPE') }}
+  {{ kpi('Verified sells', t.sell|hype, t.sells|number ~ ' trades', 'HYPE') }}
+  {{ kpi('Net verified flow', (t.net|signed), 'previous window: ' ~ (p.net|signed), 'HYPE') }}
+  {{ kpi('Estimated (not measured)', (t.buy_est + t.sell_est)|hype, t.est_legs|number ~ ' trades, excluded above', 'HYPE') }}
+  {{ kpi('Cluster signals', t.signals|number, 'raised by the tracker') }}
+  {{ kpi('Indexed block', h.cursor|number, ('lag ' ~ h.lag ~ ' blocks') if h.lag is not none else 'chain head unknown') }}
+</div>
+
+{% if d.summary %}
+<section class="panel" aria-labelledby="sum"><h2 id="sum">In plain words</h2>
+  <ul class="plain">{% for s in d.summary %}<li>{{ s }}</li>{% endfor %}</ul>
+  <p class="faint note">Generated from the numbers on this page; observations, not recommendations.</p>
+</section>
+{% endif %}
+
+<div class="grid g2">
+  <section class="panel flush" aria-labelledby="top"><h2 id="top" class="ph">Most traded tokens <span class="sub">by verified HYPE volume</span></h2>
+    {% if d.top_tokens %}
+    <div class="tw"><table>
+      <thead><tr><th>Token</th><th class="r">Buyers</th><th class="r">Sellers</th><th class="r">Net HYPE</th></tr></thead>
+      <tbody>{% for r in d.top_tokens %}<tr><td>{{ token(r) }}</td><td class="r">{{ r.buyers }}</td><td class="r">{{ r.sellers }}</td><td class="r {{ r.net|tone }}">{{ r.net|signed }}</td></tr>{% endfor %}</tbody>
+    </table></div>
+    {% else %}{{ empty('No verified volume', 'No measured buys or sells in this window.') }}{% endif %}
+  </section>
+  <section class="panel" aria-labelledby="lp"><h2 id="lp">Launchpads <span class="sub">tracked-wallet activity</span></h2>
+    {% if d.launchpads %}
+    {% set mx = (d.launchpads|map(attribute='volume')|map('float')|max) or 1 %}
+    <div class="bars">{% for l in d.launchpads %}
+      <div class="bar-row"><span>{{ l.launchpad }}</span><meter class="meter" min="0" max="{{ mx }}" value="{{ l.volume|float }}"></meter><span class="r">{{ l.volume|hype }}</span></div>
+    {% endfor %}</div>
+    <p class="faint note">Verified HYPE volume; “unknown” = no launchpad profile stored.</p>
+    {% else %}{{ empty('No activity') }}{% endif %}
+  </section>
+</div>
+
+<div class="grid g3">
+  <section class="panel" aria-labelledby="rise"><h2 id="rise">Rising participation</h2>
+    {% if d.rising %}<ul class="plain">{% for r in d.rising %}<li>{{ token(r) }} <span class="muted">{{ r.prev_buyers }} → {{ r.buyers }} buyers</span></li>{% endfor %}</ul>
+    {% else %}<p class="muted">No token gained buyers versus the previous window.</p>{% endif %}
+  </section>
+  <section class="panel" aria-labelledby="multi"><h2 id="multi">2+ qualified buyers</h2>
+    {% if d.multi_qualified %}<ul class="plain">{% for r in d.multi_qualified %}<li>{{ token(r) }} <span class="muted">{{ r.q_buyers }} wallets · {{ r.q_buy|hype }} HYPE</span></li>{% endfor %}</ul>
+    {% else %}<p class="muted">No token was bought by two or more qualified wallets.</p>{% endif %}
+  </section>
+  <section class="panel" aria-labelledby="sell"><h2 id="sell">Net selling</h2>
+    {% if d.selling %}<ul class="plain">{% for r in d.selling %}<li>{{ token(r) }} <span class="neg">{{ r.net|signed }} HYPE</span></li>{% endfor %}</ul>
+    {% else %}<p class="muted">No token saw net selling by tracked wallets.</p>{% endif %}
+  </section>
+</div>
+
+<section class="panel flush" aria-labelledby="rec"><h2 id="rec" class="ph">Recent activity <span class="sub">newest 15 in this window</span></h2>
+  {{ trades_table(d.recent, qs) }}
+</section>
+{% endblock %}

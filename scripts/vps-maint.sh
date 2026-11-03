@@ -8,6 +8,10 @@
 set -uo pipefail
 export LC_ALL=C
 STEPS="${1:?steps}"
+REPO="$(cd "${2:-elysium-wallet-tracker}" 2>/dev/null && pwd || true)"   # code bundle uploaded by the workflow
+CADDYFILE=/opt/gmgn-revival-radar/deploy/Caddyfile
+CADDY_C=gmgn-revival-radar-caddy-1
+CADDY_BAK="$CADDYFILE.pre-elysium"
 LIVE_DB=/opt/gmgn-revival-radar/data/revival_radar.db
 KEEP_DAILY=/root/onchainflow-backups/daily/daily-20261101T190022807644Z.db   # newest copy stays
 
@@ -94,6 +98,91 @@ for step in ${STEPS//,/ }; do
       systemctl restart systemd-journald
       journalctl --vacuum-size=200M 2>&1 | tail -1
       journalctl --disk-usage
+      ;;
+    install-revival-health)
+      say "install the Revival scan-health monitor (read-only; replaces the retired onchainflow-health)"
+      [ -f "$REPO/scripts/revival-health.py" ] && [ -f "$REPO/deploy/systemd/revival-health.timer" ] \
+        || { echo "code bundle missing under $REPO"; exit 1; }
+      install -d -m 0755 /opt/elysium-ops
+      install -m 0755 "$REPO/scripts/revival-health.py" /opt/elysium-ops/revival-health.py
+      install -m 0644 "$REPO/deploy/systemd/revival-health.service" /etc/systemd/system/revival-health.service
+      install -m 0644 "$REPO/deploy/systemd/revival-health.timer" /etc/systemd/system/revival-health.timer
+      systemctl daemon-reload
+      echo "scan_runs columns and newest rows (no secrets in this table):"
+      python3 - "$LIVE_DB" <<'PY'
+import sqlite3, sys, urllib.parse
+c = sqlite3.connect("file:%s?mode=ro" % urllib.parse.quote(sys.argv[1]), uri=True, timeout=5)
+c.execute("PRAGMA query_only=ON")
+print("  columns:", [r[1] for r in c.execute("PRAGMA table_info(scan_runs)")])
+for r in c.execute("SELECT id, started, finished, duration_seconds, processed, errors, sent, sources_ok FROM scan_runs ORDER BY id DESC LIMIT 3"):
+    print("  ", r)
+PY
+      echo "dry evaluation:"; python3 /opt/elysium-ops/revival-health.py --no-alert --json </dev/null || true
+      echo "telegram delivery check:"; python3 /opt/elysium-ops/revival-health.py --test-telegram </dev/null || true
+      systemctl enable --now revival-health.timer 2>&1
+      systemctl start revival-health.service 2>&1 || true
+      echo "timer: $(systemctl is-enabled revival-health.timer)/$(systemctl is-active revival-health.timer)"
+      systemctl list-timers revival-health.timer --no-pager 2>&1 | head -3
+      journalctl -u revival-health.service -n 5 --no-pager 2>&1 | sed 's/^/  /'
+      echo "old website health timer: $(systemctl is-enabled onchainflow-health.timer 2>&1)/$(systemctl is-active onchainflow-health.timer 2>&1) (must stay disabled)"
+      ;;
+    caddy-show)
+      say "Caddy: structure of the live Caddyfile (long token-like strings redacted)"
+      ls -la "$CADDYFILE" "$CADDY_BAK" 2>&1 | sed 's/^/  /'
+      docker inspect -f '  container: {{.State.Status}}, network={{.HostConfig.NetworkMode}}' "$CADDY_C" 2>&1
+      docker inspect -f '{{range .Mounts}}  mount: {{.Source}} -> {{.Destination}} (rw={{.RW}}){{"\n"}}{{end}}' "$CADDY_C" 2>&1
+      sed -E 's/[A-Za-z0-9+\/=_-]{24,}/<redacted>/g' "$CADDYFILE" | sed 's/^/  | /'
+      ;;
+    caddy-backup)
+      say "Caddy: back up the live Caddyfile (never overwrites an existing backup)"
+      if [ -e "$CADDY_BAK" ]; then echo "backup already exists: $CADDY_BAK"; else cp -p "$CADDYFILE" "$CADDY_BAK" && echo "created $CADDY_BAK"; fi
+      sha256sum "$CADDYFILE" "$CADDY_BAK" | sed 's/^/  /'
+      ;;
+    caddy-switch|caddy-rollback)
+      # caddy_apply <source-file>: validate it, write it IN PLACE (the file is a Docker bind
+      # mount: replacing the inode, e.g. with `sed -i` or mv, would leave the container reading
+      # the old content), confirm the container sees it, then reload (graceful, no downtime).
+      caddy_apply() {
+        docker exec -i "$CADDY_C" caddy validate --config /dev/stdin --adapter caddyfile < "$1" 2>&1 | tail -3 \
+          && [ "${PIPESTATUS[0]}" = 0 ] || { echo "validation FAILED: live file untouched"; return 1; }
+        cat "$1" > "$CADDYFILE" || return 1
+        cmp -s "$1" "$CADDYFILE" && docker exec "$CADDY_C" sh -c 'cat /etc/caddy/Caddyfile' | cmp -s - "$1" \
+          || { echo "container does not see the new file"; return 1; }
+        docker exec "$CADDY_C" caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile 2>&1 | tail -3
+      }
+      site_ok() {  # public HTTPS check from this host: status, real content, valid certificate
+        local code body
+        code=$(curl -s -o /tmp/.cf_body -w '%{http_code}' -m 20 https://onchainflow.app/) || return 1
+        echo "  https://onchainflow.app/ -> $code (certificate verified by curl)"
+        [ "$code" = 200 ] && grep -q "Elysium" /tmp/.cf_body
+      }
+      if [ "$step" = caddy-rollback ]; then
+        say "Caddy ROLLBACK: restore $CADDY_BAK"
+        [ -f "$CADDY_BAK" ] || { echo "no backup file"; exit 1; }
+        caddy_apply "$CADDY_BAK" && echo "restored; upstream lines now:" && grep -nE 'reverse_proxy' "$CADDYFILE" | sed 's/^/  /'
+        echo "  (the old website container is stopped: start it with 'docker start gmgn-revival-radar-web-1' for :8000)"
+        continue
+      fi
+      say "Caddy cutover: onchainflow.app upstream 127.0.0.1:8000 -> 127.0.0.1:8100"
+      [ -f "$CADDY_BAK" ] || { echo "run caddy-backup first"; exit 1; }
+      for path in /healthz / /tokens /smart-money /early /scanner; do
+        code=$(curl -s -o /dev/null -w '%{http_code}' -m 20 "http://127.0.0.1:8100$path" || echo 000)
+        echo "  pre-check :8100$path -> $code"; [ "$code" = 200 ] || { echo "dashboard not ready: aborting before any change"; exit 1; }
+      done
+      n=$(grep -cE 'reverse_proxy.*:8000' "$CADDYFILE" || true)
+      [ "$n" = 1 ] || { echo "expected exactly one ':8000' reverse_proxy line, found $n: aborting"; exit 1; }
+      tmp=$(mktemp); sed -E '/reverse_proxy/ s/:8000/:8100/' "$CADDYFILE" > "$tmp"
+      diff <(sed -E 's/[A-Za-z0-9+\/=_-]{24,}/<redacted>/g' "$CADDYFILE") <(sed -E 's/[A-Za-z0-9+\/=_-]{24,}/<redacted>/g' "$tmp") | sed 's/^/  diff /'
+      if caddy_apply "$tmp"; then
+        sleep 3
+        if site_ok; then echo "CUTOVER OK"; else
+          echo "post-check FAILED: rolling back automatically"; caddy_apply "$CADDY_BAK"; site_ok || true; rm -f "$tmp"; exit 1
+        fi
+      else
+        echo "apply failed: restoring the backup"; caddy_apply "$CADDY_BAK" || true; rm -f "$tmp"; exit 1
+      fi
+      rm -f "$tmp"
+      healthy_bots
       ;;
     *)
       echo "unknown step: $step"; exit 2 ;;

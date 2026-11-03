@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% from "_macros.html" import range_bar, freshness, badge, kpi, waddr, trades_table, pager_simple, copy, ext_links, empty with context %}
+{% set m = d.meta_token %}{% set f = d.flow %}{% set info = d.info %}
+{% block body %}
+<h1>{{ m.symbol or d.token|short }} <span class="muted light">{{ m.name or '' }}</span></h1>
+<p class="lead"><span class="addr mono">{{ d.token }}{{ copy(d.token) }}</span>
+  {% if m.launchpad %} · launchpad <b>{{ m.launchpad }}</b>{% endif %}
+  {% if m.launched_at %} · launched {{ m.launched_at|ts }}{% endif %}</p>
+{{ ext_links(links.token(d.token)) }}
+<div class="spacer"></div>
+{{ range_bar(tr, qs, query) }}
+{{ freshness(d.meta, d.universe) }}
+
+<div class="kpis">
+  {% if f %}
+  {{ kpi('Qualified buyers', f.q_buyers, f.buyers ~ ' tracked buyers in total') }}
+  {{ kpi('Qualified sellers', f.q_sellers, f.sellers ~ ' tracked sellers in total') }}
+  {{ kpi('Verified buys', f.buy|hype, f.buys ~ ' trades', 'HYPE') }}
+  {{ kpi('Verified sells', f.sell|hype, f.sells ~ ' trades', 'HYPE') }}
+  {{ kpi('Verified net', f.net|signed, 'qualified wallets: ' ~ (f.q_net|signed), 'HYPE') }}
+  {{ kpi('Estimated (separate)', (f.buy_est + f.sell_est)|hype, f.est_legs ~ ' trades, not measured', 'HYPE') }}
+  {% else %}
+  {{ kpi('Tracked activity', 'none', 'no tracked-wallet trades in this window') }}
+  {% endif %}
+  {{ kpi('First tracked trade', (d.seen.first_at|ts), d.seen.n|number ~ ' trades ever') }}
+</div>
+
+<div class="grid g2">
+  <section class="panel" aria-labelledby="mk"><h2 id="mk">Market snapshot <span class="sub">stored, not live</span></h2>
+    {% if info %}
+    <dl class="kv">
+      <dt>Price</dt><dd>{{ info.price_hype|price }} HYPE</dd>
+      <dt>Market cap</dt><dd>{{ info.mcap_hype|hype(0) }} HYPE</dd>
+      <dt>Volume 24h</dt><dd>{{ info.vol_24h_hype|hype(1) }} HYPE</dd>
+      <dt>Change 1h / 24h</dt><dd><span class="{{ info.change_1h|tone }}">{{ info.change_1h|pct }}</span> / <span class="{{ info.change_24h|tone }}">{{ info.change_24h|pct }}</span> <span class="faint">(Agora, at snapshot)</span></dd>
+      <dt>Trades 24h</dt><dd>{{ info.trades_24h|number }}{% if info.buys_24h is not none %} <span class="faint">({{ info.buys_24h }} buys)</span>{% endif %}</dd>
+    </dl>
+    {% else %}{{ empty('No market data stored', 'The collector has not snapshotted this token. Nothing is estimated.') }}{% endif %}
+  </section>
+  <section class="panel" aria-labelledby="pr"><h2 id="pr">Price in this window</h2>
+    {% if d.spark %}
+    <svg class="spark {{ 'up' if d.spark.up else 'down' }}" viewBox="0 0 {{ d.spark.w }} {{ d.spark.h }}" preserveAspectRatio="none" role="img" aria-label="Stored price snapshots over the window"><polyline points="{{ d.spark.points }}"/></svg>
+    <p class="muted note-s">{{ d.spark.n }} stored snapshots: {{ d.spark.first|price }} → {{ d.spark.last|price }} HYPE
+      {% if d.perf %}<b class="{{ d.perf.ret|tone }}">({{ d.perf.ret|pct }})</b> <span class="faint">source: {{ d.perf.source }}</span>{% endif %}</p>
+    {% else %}{{ empty('Not enough price history', 'Fewer than two stored snapshots cover this window.') }}{% endif %}
+  </section>
+</div>
+
+<section class="panel flush" aria-labelledby="who"><h2 id="who" class="ph">Tracked wallet participation <span class="sub">who traded it in this window</span></h2>
+  {% if d.buyers %}
+  <div class="tw"><table>
+    <thead><tr><th>Wallet</th><th class="r">Rank</th><th>Qualified</th><th class="r">Buys</th><th class="r">Sells</th><th class="r">Bought (HYPE)</th><th class="r">Sold (HYPE)</th><th class="r">Estimated (HYPE)</th><th>First buy</th></tr></thead>
+    <tbody>{% for b in d.buyers[:50] %}
+    <tr><td>{{ waddr(b.wallet) }}</td><td class="r">{{ b.rank or '–' }}</td><td>{% if b.qualified %}{{ badge('ok', 'yes') }}{% else %}{{ badge('', 'no') }}{% endif %}</td>
+      <td class="r">{{ b.buys }}</td><td class="r">{{ b.sells }}</td><td class="r">{{ b.buy|hype(3) }}</td><td class="r">{{ b.sell|hype(3) }}</td><td class="r muted">{{ b.est|hype(3) }}</td><td>{{ b.first_buy|ts }}</td></tr>
+    {% endfor %}</tbody>
+  </table></div>
+  {% else %}{{ empty('No tracked wallet traded this token in the window') }}{% endif %}
+</section>
+
+<section class="panel flush" aria-labelledby="tl"><h2 id="tl" class="ph">Activity timeline <span class="sub">newest first</span></h2>
+  {{ trades_table(d.trades['items'], qs, true, false) }}
+  {{ pager_simple(d.trades, qs) }}
+</section>
+<div class="banner info"><b>Reading this page.</b> Counts cover wallets on Agora's public leaderboard only. A token with few tracked trades may still be heavily traded by others. Missing market data is shown as missing; nothing is interpolated.</div>
+{% endblock %}

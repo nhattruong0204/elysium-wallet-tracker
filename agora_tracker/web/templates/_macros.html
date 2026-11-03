@@ -1,0 +1,113 @@
+{% macro copy(text) -%}
+<button type="button" class="copy" data-copy="{{ text }}" aria-label="Copy address">copy</button>
+{%- endmacro %}
+
+{% macro waddr(a) -%}
+<span class="addr"><a href="/wallets/{{ a }}" title="{{ a }}">{{ a|short }}</a>{{ copy(a) }}</span>
+{%- endmacro %}
+
+{% macro taddr(a) -%}
+<span class="addr"><a href="/tokens/{{ a }}" title="{{ a }}">{{ a|short }}</a>{{ copy(a) }}</span>
+{%- endmacro %}
+
+{% macro token(r) -%}
+<a class="tok" href="/tokens/{{ r.token }}"><b>{{ r.symbol or r.token|short }}</b><span>{{ r.name or r.launchpad or r.token|short }}</span></a>
+{%- endmacro %}
+
+{% macro badge(kind, text) -%}<span class="badge {{ kind }}">{{ text }}</span>{%- endmacro %}
+
+{% macro kpi(label, value, note='', unit='') -%}
+<div class="kpi"><div class="l">{{ label }}</div><div class="v">{{ value }}{% if unit %} <small>{{ unit }}</small>{% endif %}</div>{% if note %}<div class="n">{{ note }}</div>{% endif %}</div>
+{%- endmacro %}
+
+{% macro empty(title, text='') -%}
+<div class="empty"><b>{{ title }}</b>{{ text }}</div>
+{%- endmacro %}
+
+{# Time-range selector. Presets keep the other query parameters; custom is an explicit [start, end) in UTC. #}
+{% macro range_bar(tr, qs, query) -%}
+<div class="controls">
+  <nav class="seg" aria-label="Time range">
+    {% for p, label in presets %}
+    <a href="{{ qs(range=p, start=None, end=None, page=None) }}"{% if tr.preset == p %} aria-current="true"{% endif %}>{{ label }}</a>
+    {% endfor %}
+  </nav>
+  <details class="custom"{% if not tr.preset %} open{% endif %}>
+    <summary class="btn{% if not tr.preset %} primary{% endif %}">Custom range</summary>
+    <form id="custom-form" method="get" action="{{ path }}">
+      {% for k, v in query.items() if k not in ('range', 'start', 'end', 'page') %}<input type="hidden" name="{{ k }}" value="{{ v }}">{% endfor %}
+      <input type="hidden" name="range" value="custom">
+      <label>Start (UTC) <input type="datetime-local" name="start" required value="{{ tr.start.strftime('%Y-%m-%dT%H:%M') }}"></label>
+      <label>End (UTC, exclusive) <input type="datetime-local" name="end" required value="{{ tr.end.strftime('%Y-%m-%dT%H:%M') }}"></label>
+      <button class="btn primary" type="submit">Apply</button>
+    </form>
+  </details>
+  <span class="win">Window <b>{{ tr.start|ts }}</b> → <b>{{ tr.end|ts }}</b> <span class="faint">[start, end)</span></span>
+</div>
+{%- endmacro %}
+
+{# Population, data age and coverage in one place so no page shows numbers without them. #}
+{% macro freshness(meta, universe=None) -%}
+<div class="fresh">
+  <span>Data computed {{ meta.age_s }}s ago{% if meta.stale %} <b class="warnc">(stale: database slow, showing last good result)</b>{% endif %}</span>
+  {% if universe %}
+  <span>Qualified wallets: {% if universe.basis == 'leaderboard' %}{{ universe.qualified|length }} of {{ universe.ranks|length }} on the leaderboard snapshot of {{ universe.captured_at|ts }}{% else %}<b class="warnc">unscored (no leaderboard snapshot)</b>{% endif %}</span>
+  {% endif %}
+</div>
+{%- endmacro %}
+
+{% macro coverage(cov) -%}
+{% if cov and cov.warnings %}
+<div class="banner {{ 'bad' if cov.status == 'none' else 'warn' }}"><b>Partial coverage.</b> The tracker did not observe everything in this window:
+  <ul>{% for wn in cov.warnings %}<li>{{ wn }}</li>{% endfor %}</ul></div>
+{% endif %}
+{%- endmacro %}
+
+{% macro pager(p, qs) -%}
+<div class="pager">
+  <span>{{ p.total }} row{{ '' if p.total == 1 else 's' }} · page {{ p.page }} of {{ p.pages }}</span>
+  <span class="btns">
+    {% if p.page > 1 %}<a href="{{ qs(page=p.page - 1) }}" rel="prev">← Prev</a>{% else %}<span class="dis">← Prev</span>{% endif %}
+    {% if p.page < p.pages %}<a href="{{ qs(page=p.page + 1) }}" rel="next">Next →</a>{% else %}<span class="dis">Next →</span>{% endif %}
+  </span>
+</div>
+{%- endmacro %}
+
+{% macro pager_simple(p, qs) -%}
+<div class="pager">
+  <span>page {{ p.page }}</span>
+  <span class="btns">
+    {% if p.page > 1 %}<a href="{{ qs(page=p.page - 1) }}" rel="prev">← Prev</a>{% else %}<span class="dis">← Prev</span>{% endif %}
+    {% if p.has_next %}<a href="{{ qs(page=p.page + 1) }}" rel="next">Next →</a>{% else %}<span class="dis">Next →</span>{% endif %}
+  </span>
+</div>
+{%- endmacro %}
+
+{% macro th(label, key, cur, desc, qs, right=False) -%}
+<th class="{{ 'r' if right }}"><a href="{{ qs(sort=key, dir=('asc' if (cur == key and desc) else 'desc'), page=None) }}"{% if cur == key %} aria-sort="{{ 'descending' if desc else 'ascending' }}"{% endif %}>{{ label }}{% if cur == key %} {{ '↓' if desc else '↑' }}{% endif %}</a></th>
+{%- endmacro %}
+
+{% macro trades_table(rows, qs, show_wallet=True, show_token=True) -%}
+{% if rows %}
+<div class="tw"><table>
+  <thead><tr><th>Time (UTC)</th>{% if show_wallet %}<th>Wallet</th>{% endif %}{% if show_token %}<th>Token</th>{% endif %}<th>Action</th><th class="r">HYPE</th><th>Basis</th><th>Tx</th></tr></thead>
+  <tbody>
+  {% for t in rows %}
+  <tr>
+    <td>{{ t.block_time|ts(true) }}</td>
+    {% if show_wallet %}<td>{{ waddr(t.wallet) }}</td>{% endif %}
+    {% if show_token %}<td><a class="tok" href="/tokens/{{ t.token }}"><b>{{ t.symbol or t.token|short }}</b></a></td>{% endif %}
+    <td>{% if t.kind == 'BUY' %}<span class="pos">BUY</span>{% elif t.kind == 'SELL' %}<span class="neg">SELL</span>{% else %}<span class="muted">{{ t.kind|replace('_', ' ') }}</span>{% endif %}</td>
+    <td class="r">{% if t.hype is not none %}{{ t.hype|hype(3) }}{% else %}<span class="faint">unknown</span>{% endif %}</td>
+    <td>{% if t.confidence == 'high' %}{{ badge('ok', 'verified') }}{% elif t.confidence == 'estimated' %}{{ badge('est', 'estimated') }}{% else %}{{ badge('', t.confidence) }}{% endif %}</td>
+    <td><a class="mono" href="{{ links.tx(t.tx_hash) }}" target="_blank" rel="noopener noreferrer" title="{{ t.tx_hash }}">{{ t.tx_hash|short(8, 4) }} ↗</a></td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table></div>
+{% else %}{{ empty('No trades in this window', 'Tracked wallets made no recorded trades here. Try a longer range.') }}{% endif %}
+{%- endmacro %}
+
+{% macro ext_links(d) -%}
+<div class="links">{% for name, url in d.items() %}<a href="{{ url }}" target="_blank" rel="noopener noreferrer">{{ name }} ↗</a>{% endfor %}</div>
+{%- endmacro %}

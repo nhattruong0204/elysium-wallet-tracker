@@ -135,6 +135,28 @@ class CollectorConfig:
 
 
 @dataclass
+class WebConfig:
+    """Public research dashboard (the `web` service). See docs/infra/ONCHAINFLOW_DASHBOARD.md."""
+    host: str = "127.0.0.1"
+    port: int = 8100
+    site_name: str = "Elysium Research"
+    public_url: str = "https://onchainflow.app"
+    page_size: int = 25
+    cache_ttl_s: float = 30.0
+    cache_max_entries: int = 256
+    cache_stale_s: float = 300.0             # serve a stale page this long if the database fails
+    query_timeout_ms: int = 5000             # per statement; the role enforces the same default
+    db_pool_size: int = 3
+    db_max_overflow: int = 1                 # pool + overflow stays below the role's limit of 5
+    max_concurrent_builds: int = 3           # page builds that may query at once
+    rate_limit_per_ip: float = 10.0          # requests / second / client IP (0 disables)
+    rate_burst: int = 40
+    stale_after_s: int = 900                 # data older than this is flagged "stale"
+    market_max_age_s: int = 1800             # stored market snapshots older than this are not "live"
+    max_custom_days: int = 30
+
+
+@dataclass
 class Config:
     chain: ChainConfig
     leaderboard: LeaderboardConfig
@@ -144,6 +166,7 @@ class Config:
     market: MarketConfig = field(default_factory=MarketConfig)
     ui: UiConfig = field(default_factory=UiConfig)
     collector: CollectorConfig = field(default_factory=CollectorConfig)
+    web: WebConfig = field(default_factory=WebConfig)
     db_path: str = "tracker.db"
     watchlist_file: str | None = None
     exclude_contracts: bool = True
@@ -199,8 +222,10 @@ def load_config(path: str | Path) -> Config:
     ui = UiConfig(**{k: v for k, v in (raw.get("ui") or {}).items() if k != "admin_ids"})
     ui.admin_ids = _admin_ids(tg.chat_id, os.environ.get(ui.admin_ids_env, ""))
     collector = CollectorConfig(**(raw.get("collector") or {}))
+    web = WebConfig(**(raw.get("web") or {}))
     return Config(chain=chain, leaderboard=lb, alerts=alerts, telegram=tg, links=links,
-                  market=market, ui=ui, collector=collector, db_path=db_path, watchlist_file=wl,
+                  market=market, ui=ui, collector=collector, web=web, db_path=db_path,
+                  watchlist_file=wl,
                   exclude_contracts=raw.get("exclude_contracts", True))
 
 
