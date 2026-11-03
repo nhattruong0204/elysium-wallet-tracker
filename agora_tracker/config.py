@@ -189,8 +189,9 @@ def load_config(path: str | Path) -> Config:
     if wl and not os.path.isabs(wl):
         wl = str(base / wl)
 
-    links = LinksConfig(**{k: v.rstrip("/") if isinstance(v, str) else v
-                           for k, v in (raw.get("links") or {}).items()})
+    links_raw: dict[str, Any] = {k: v.rstrip("/") if isinstance(v, str) else v
+                                 for k, v in (raw.get("links") or {}).items()}
+    links = LinksConfig(**links_raw)
     market = MarketConfig(**(raw.get("market") or {}))
     ui = UiConfig(**{k: v for k, v in (raw.get("ui") or {}).items() if k != "admin_ids"})
     ui.admin_ids = _admin_ids(tg.chat_id, os.environ.get(ui.admin_ids_env, ""))
