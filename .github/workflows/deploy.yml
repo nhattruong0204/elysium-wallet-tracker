@@ -25,7 +25,7 @@ on:
         description: What to do on the VPS
         type: choice
         default: status
-        options: [preflight, deploy, status, logs, discover, dry-run, test-telegram, test-card, ui-smoke, restart, stop, audit]
+        options: [preflight, deploy, status, logs, discover, dry-run, test-telegram, test-card, ui-smoke, restart, stop, audit, backup]
       deploy_dir:
         description: Directory on the VPS (relative to the SSH user's home, or absolute)
         type: string
@@ -45,7 +45,7 @@ concurrency:
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 150
     env:
       VPS_HOST: ${{ secrets.VPS_HOST }}
       VPS_USER: ${{ secrets.VPS_USER }}
@@ -66,7 +66,7 @@ jobs:
             IN_SCOPE="$(get scope)"
           fi
           case "$IN_ACTION" in
-            preflight|deploy|status|logs|discover|dry-run|test-telegram|test-card|ui-smoke|restart|stop|audit) ;;
+            preflight|deploy|status|logs|discover|dry-run|test-telegram|test-card|ui-smoke|restart|stop|audit|backup) ;;
             *) echo "invalid action '$IN_ACTION'"; exit 1 ;;
           esac
           [ "$IN_INSTALL" = true ] || IN_INSTALL=false
@@ -123,6 +123,7 @@ jobs:
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
           TG_ADMIN_IDS: ${{ secrets.TG_ADMIN_IDS }}
+          BACKUP_PASSPHRASE: ${{ secrets.BACKUP_PASSPHRASE }}
         run: |
           ssh_() {
             if [ -n "${USE_SSHPASS:-}" ]; then
@@ -156,6 +157,13 @@ jobs:
             printf 'TG_BOT_TOKEN=%s\nTG_CHAT_ID=%s\nTG_ADMIN_IDS=%s\n' "$TG_BOT_TOKEN" "$TG_CHAT_ID" "$TG_ADMIN_IDS" | \
               ssh_ "umask 077 && cat > '$DIR/.env.incoming'"
           fi
+          if [ "$ACTION" = backup ]; then
+            # Off-site backup: streamed to this runner, restore-tested, encrypted with the
+            # BACKUP_PASSPHRASE secret; nothing is written to the VPS disk.
+            export USE_SSHPASS SSHPASS BACKUP_PASSPHRASE
+            bash scripts/offsite-backup.sh
+            exit 0
+          fi
           if [ "$ACTION" = audit ]; then
             # Read-only infrastructure audit. This repository is public, so the output is
             # encrypted here (CMS, AES-256, to deploy/ops-recipient.pem) before anything is
@@ -170,3 +178,13 @@ jobs:
             exit 0
           fi
           ssh_ "bash -s -- '$ACTION' '$DIR' '$INSTALL_DOCKER'" < scripts/remote.sh
+
+      - name: Store encrypted backup (90 days)
+        if: env.ACTION == 'backup' && success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: offsite-backup-${{ env.BACKUP_STAMP }}
+          path: ${{ runner.temp }}/offsite/upload/
+          retention-days: 90
+          compression-level: 0
+          if-no-files-found: error

@@ -176,7 +176,10 @@ for f in $(T 600 $SLOW find / -xdev -type f \( -name '*.db' -o -name '*.sqlite' 
   T 120 python3 - "$f" <<'PY' 2>&1
 import sqlite3, sys
 p = sys.argv[1]
-c = sqlite3.connect(f"file:{p}?mode=ro", uri=True, timeout=5)
+import os
+# copies (no live -wal) are opened immutable: no -shm/-wal side files are created
+live = os.path.exists(p + "-wal") and os.path.getsize(p + "-wal") > 0
+c = sqlite3.connect(f"file:{p}?mode=ro" + ("" if live else "&immutable=1"), uri=True, timeout=5)
 g = lambda q: c.execute(q).fetchone()[0]
 ps, pc, fl = g("PRAGMA page_size"), g("PRAGMA page_count"), g("PRAGMA freelist_count")
 print(f"journal_mode={g('PRAGMA journal_mode')} page_size={ps} pages={pc} -> {ps*pc/1e9:.2f} GB, free pages={fl} ({ps*fl/1e9:.2f} GB reclaimable by VACUUM)")
