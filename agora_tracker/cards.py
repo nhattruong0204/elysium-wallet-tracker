@@ -27,6 +27,7 @@ import math
 import re
 import time
 from typing import Any
+from urllib.parse import quote
 
 from .config import LinksConfig
 from .market import TokenInfo
@@ -96,6 +97,29 @@ class Links:
 
     def boxa_token(self, t: str) -> str:
         return f"{self.c.boxa}/token?address={t}"
+
+    def trade_page(self, t: str) -> str:
+        return {"boxa": self.boxa_token, "kleos": self.kleos_token}.get(
+            self.c.trade_site, self.agora_token)(t)
+
+    def wallet_buttons(self, t: str, symbol: str) -> list[dict]:
+        """Buttons that open the token's trade page inside a wallet app (mobile).
+
+        Telegram buttons only accept https/tg links, so these are the wallets' own https
+        universal links; if Telegram opens one in its in-app browser instead, the wallet's
+        landing page hands over to the app."""
+        page = quote(self.trade_page(t), safe="")
+        out = []
+        for w in self.c.wallet_buttons:
+            if w == "rabby":
+                out.append({"text": f"⚡ Rabby: {symbol}",
+                            "url": f"https://go.rabby.io/mobile/?_cmd=open-dapp&dapp={page}"})
+            elif w == "okx":
+                deep = f"okx://wallet/dapp/url?dappUrl={page}"
+                out.append({"text": f"⚡ OKX: {symbol}",
+                            "url": "https://web3.okx.com/download?deeplink="
+                                   + quote(deep, safe="")})
+        return out
 
     def native(self, launchpad: str | None, t: str) -> tuple[str, str] | None:
         """The token's own launchpad page, when it isn't already Kleos or BOXA."""
@@ -223,7 +247,8 @@ def link_bar(L: Links, token: str, symbol: str, info: TokenInfo | None,
 def keyboard(L: Links, token: str, symbol: str, info: TokenInfo | None,
              tx: str | None, wallet: str | None = None) -> dict:
     s = (symbol or token[:6])[:12]
-    rows = [[{"text": f"🛒 Agora: {s}", "url": L.agora_token(token)},
+    rows = [r for r in (L.wallet_buttons(token, s),) if r]
+    rows += [[{"text": f"🛒 Agora: {s}", "url": L.agora_token(token)},
              {"text": f"BOXA: {s}", "url": L.boxa_token(token)}]]
     row2 = [{"text": f"Kleos: {s}", "url": L.kleos_token(token)}]
     nat = L.native(info.launchpad if info else None, token)
