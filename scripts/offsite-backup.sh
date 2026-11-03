@@ -48,7 +48,10 @@ ls -l work/elysium-tracker.pgdump
 ssh_ "docker exec $PG_CONTAINER psql -X -A -t -U tracker -d tracker -c \"SELECT relname||' '||n_live_tup FROM pg_stat_user_tables ORDER BY 1\"" > work/pg-live-estimates.txt
 log "restore test into a scratch postgres:16"
 docker run -d --name pgverify -e POSTGRES_PASSWORD=verify -e POSTGRES_USER=tracker -e POSTGRES_DB=tracker postgres:16-alpine >/dev/null
-for _ in $(seq 1 60); do docker exec pgverify pg_isready -U tracker -d tracker >/dev/null 2>&1 && break; sleep 1; done
+# The image first runs a temporary init server on the unix socket only, then restarts;
+# the final server is the one listening on TCP.
+for _ in $(seq 1 90); do docker exec pgverify pg_isready -h 127.0.0.1 -U tracker -d tracker >/dev/null 2>&1 && break; sleep 1; done
+sleep 2
 docker exec -i pgverify pg_restore -U tracker -d tracker --no-owner --exit-on-error < work/elysium-tracker.pgdump
 docker exec pgverify psql -X -A -t -U tracker -d tracker -c "SELECT version_num FROM alembic_version" > work/pg-alembic.txt
 tables=$(docker exec pgverify psql -X -A -t -U tracker -d tracker -c "SELECT tablename FROM pg_tables WHERE schemaname='public' ORDER BY 1")
