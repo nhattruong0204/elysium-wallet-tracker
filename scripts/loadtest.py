@@ -66,6 +66,19 @@ def build_mix(base: str) -> list[tuple[str, str, int]]:
         mix.append((f"smart-{r}", f"/smart-money?range={r}", 1))
         mix.append((f"early-{r}", f"/early?range={r}", 1))
     mix.append(("tokens-p2", "/tokens?range=7d&page=2", 1))
+    # Activity: pages across ranges / filters / sorts, and the viewers' polling (the hot path)
+    head = ((fetch_json(f"{base}/api/v1/activity?range=all&size=1") or {}).get("items") or [{}])[0].get("id")
+    for r in ("15m", "1h", "4h", "12h", "24h", "7d", "30d", "all"):
+        mix.append((f"activity-{r}", f"/activity?range={r}", 2))
+    for act in ("buy", "sell", "transfer_in", "transfer_out", "swap", "other"):
+        mix.append(("activity-filter", f"/activity?range=7d&action={act}", 1))
+    for srt in ("oldest", "largest_buy", "largest_sell"):
+        mix.append(("activity-sort", f"/activity?range=24h&sort={srt}", 1))
+    mix.append(("activity-sort-all", "/activity?range=all&sort=largest_buy", 1))
+    mix.append(("activity-search", "/activity?range=all&q=0x", 1))
+    mix.append(("activity-api", "/api/v1/activity?range=24h&size=50", 4))
+    if head:
+        mix.append(("activity-poll", f"/api/v1/activity?range=24h&since_id={head}", 10))
     toks = fetch_json(f"{base}/api/v1/tokens?range=30d") or {}
     for row in ((toks.get("page") or {}).get("items") or [])[:15]:
         a = row.get("token")

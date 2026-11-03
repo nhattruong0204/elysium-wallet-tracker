@@ -17,6 +17,7 @@ import re
 import socket
 import ssl
 import sys
+import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
@@ -85,11 +86,104 @@ def api_json(base: str, path: str):
         return json.load(r)
 
 
+def activity_api(base: str) -> None:
+    """Contract checks for /api/v1/activity and the USD fields. Prints aggregates only."""
+    print("== activity + USD API")
+    req = urllib.request.Request(base + "/api/v1/activity?range=7d&size=20")
+    with urllib.request.urlopen(req, timeout=30) as r:
+        etag = r.headers.get("ETag")
+        cc = r.headers.get("Cache-Control", "")
+        d = json.load(r)
+    rows = d.get("items") or []
+    check(bool(rows), "activity API returns rows", str(len(rows)))
+    check(bool(etag) and "no-cache" in cc, "activity API has ETag and no-cache", f"{bool(etag)} {cc}")
+    need = {"id", "block_time", "wallet", "token", "action", "basis", "tx_hash", "block_number"}
+    check(all(need <= set(x) for x in rows), "activity rows carry the documented fields",
+          str(sorted(need - set(rows[0])) if rows else ""))
+    bad = [x for x in rows if x.get("action") in ("buy", "sell") and x.get("kind") not in ("BUY", "SELL")]
+    check(not bad, "buy/sell actions come only from BUY/SELL legs (transfers never relabelled)", str(len(bad)))
+    check(all(x.get("basis") in ("verified", "estimated", "unknown") for x in rows), "basis is verified/estimated/unknown")
+    check(isinstance(d.get("freshness"), dict), "activity API carries freshness", str(list(d.get("freshness") or {})[:8]))
+    try:
+        r2 = urllib.request.Request(base + "/api/v1/activity?range=7d&size=20", headers={"If-None-Match": etag or ""})
+        urllib.request.urlopen(r2, timeout=30)
+        check(False, "conditional request returns 304")
+    except urllib.error.HTTPError as e:
+        check(e.code == 304, "conditional request returns 304", str(e.code))
+    for q, label in (("range=bogus", "bad range"), ("sort=sideways", "bad sort"), ("action=nope", "bad action"),
+                     ("q=%25", "wildcard search"), ("cursor=garbage", "bad cursor")):
+        try:
+            urllib.request.urlopen(base + "/api/v1/activity?" + q, timeout=15)
+            check(False, f"{label} -> 400")
+        except urllib.error.HTTPError as e:
+            check(e.code == 400, f"{label} -> 400", str(e.code))
+    first = rows[0] if rows else {}
+    if first.get("tx_hash"):
+        h = first["tx_hash"]
+        part = api_json(base, f"/api/v1/activity?range=all&q={h[:12]}")
+        check(any(x.get("tx_hash") == h for x in (part.get("items") or [])), "tx-hash partial search finds the row")
+    if rows:
+        newest = api_json(base, "/api/v1/activity?range=all&size=1")
+        head = (newest.get("items") or [{}])[0].get("id")
+        inc = api_json(base, f"/api/v1/activity?range=all&since_id={head}")
+        check(not inc.get("items"), "since_id at head returns nothing new")
+    # every detail link the lists hand out must resolve (the load test once saw a stray 404)
+    probe = []
+    for it in ((api_json(base, "/api/v1/tokens?range=30d").get("page") or {}).get("items") or [])[:15]:
+        probe.append(("token", f"/tokens/{it['token']}?range=7d"))
+    for it in ((api_json(base, "/api/v1/smart-money?view=traders-agora&range=30d").get("page") or {}).get("items") or [])[:12]:
+        probe.append(("wallet", f"/wallets/{it.get('wallet') or it.get('address')}?range=30d"))
+    for kind, path in probe:
+        try:
+            with urllib.request.urlopen(base + path, timeout=30) as r:
+                code = r.status
+        except urllib.error.HTTPError as e:
+            code = e.code
+        i = probe.index((kind, path))
+        check(code == 200, f"detail link #{i} ({kind}) resolves", str(code))
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import loadtest  # the load-test URL mix: each URL must answer 200 once
+    bad = []
+    for label, path, _w in loadtest.build_mix(base):
+        try:
+            with urllib.request.urlopen(base + path, timeout=30) as r:
+                code = r.status
+        except urllib.error.HTTPError as e:
+            code = e.code
+        if code != 200 and not (label == "search" and code == 404):  # no match is a 404 page by design
+            bad.append(f"{code} {label} {path.split('?')[0][:40]}{'?' + path.split('?', 1)[1][:60] if '?' in path else ''}")
+    check(not bad, "every load-test URL answers 200", "; ".join(bad[:6]))
+    toks = api_json(base, "/api/v1/tokens?range=30d&sort=mcap&dir=desc")
+    items = (toks.get("page") or {}).get("items") or []
+    usd = [(i.get("market") or {}).get("usd") or {} for i in items]
+    have = [m for m in usd if m.get("market_cap_usd") is not None]
+    check(bool(have), "tokens expose market_cap_usd", f"{len(have)}/{len(items)} with a USD value")
+    check(all(m.get("market_cap_status") in ("valid", "stale") for m in have), "USD values carry a valid/stale status")
+    check(all(m.get("market_cap_usd") is None or float(m["market_cap_usd"]) > 0 for m in usd), "no zero/negative USD market cap")
+    from decimal import Decimal
+    off = [m for m in have if abs(Decimal(str(m["market_cap_hype"])) * Decimal(str(m["hype_usd"])) - Decimal(str(m["market_cap_usd"]))) > Decimal("0.01")]
+    check(not off, "market_cap_usd == market_cap_hype x hype_usd (no double conversion)", f"{len(off)} off of {len(have)}")
+    rates = {str(m["hype_usd"]) for m in have}
+    check(all(0.01 < float(r) < 10000 for r in rates), "HYPE/USD rates are plausible", f"{len(rates)} distinct rates, range {min(map(float, rates)):.2f}-{max(map(float, rates)):.2f}")
+    newest = max((m.get("hype_usd_as_of") or "" for m in have), default="")
+    print(f"  newest HYPE/USD rate used: {newest}; newest market snapshot: {max((m.get('market_cap_as_of') or '' for m in have), default='')}")
+    check(newest >= "2026-11-03T11:40", "rates recorded after the migration (trigger is live)", newest)
+    qual = {m.get("hype_usd_quality") for m in have}
+    print(f"  USD quality mix: {sorted(map(str, qual))}")
+    check(all(m.get("market_cap_source") for m in usd if m), "market_cap_source present")
+    vals = [float(m["market_cap_usd"]) for m in have]
+    check(vals == sorted(vals, reverse=True), "USD sort is descending by USD", f"{len(vals)} values")
+    check(all(m.get("market_cap_usd") is None for m in usd if m.get("market_cap_status") == "unavailable"),
+          "unavailable status never has a value")
+    meta = api_json(base, "/api/v1/meta")
+    check("units" in meta, "meta documents units", str(list(meta.get("units") or {})[:6]))
+
+
 def pages_in_browser(base: str, out: Path) -> None:
     out.mkdir(parents=True, exist_ok=True)
     toks = api_json(base, "/api/v1/tokens?range=30d")
     items = (toks.get("page") or {}).get("items") or []
-    paths = ["/", "/tokens", "/smart-money", "/early", "/scanner", "/about"]
+    paths = ["/", "/activity?range=24h", "/tokens", "/smart-money", "/early", "/scanner", "/about"]
     if items:
         paths.append(f"/tokens/{items[0]['token']}")
     sm = api_json(base, "/api/v1/smart-money?view=traders-agora&range=30d")
@@ -132,6 +226,24 @@ def pages_in_browser(base: str, out: Path) -> None:
         page.goto(base + "/search?q=zz-no-such-token-zz", wait_until="networkidle")
         check(page.inner_text("body").strip() != "", "no-match search renders a page")
         page.goto(base + "/?range=1h&start=garbage", wait_until="networkidle")
+        check("$" in page.inner_text("body"), "overview shows USD market caps")
+        # Activity: live polling really happens, without errors, and the page states its freshness
+        polls: list[str] = []
+        errs: list[str] = []
+        act = ctx.new_page()
+        act.on("request", lambda r: polls.append(r.url) if "/api/v1/activity" in r.url and "since_id" in r.url else None)
+        act.on("console", lambda m: errs.append(m.text[:100]) if m.type in ("error", "warning") else None)
+        act.goto(base + "/activity?range=24h", wait_until="networkidle")
+        body = act.inner_text("body")
+        check(act.locator("table tbody tr").count() > 0, "activity table has rows", str(act.locator("table tbody tr").count()))
+        check(re.search(r"heartbeat|scanner", body, re.I) is not None, "activity page shows scanner freshness")
+        act.goto(base + "/activity?range=24h&action=buy", wait_until="networkidle")
+        check("action=buy" in act.url, "action filter is server-side (URL driven)")
+        act.goto(base + "/activity?range=24h", wait_until="networkidle")
+        act.wait_for_timeout(26000)
+        check(len(polls) >= 1, "activity polls the API with since_id within 26 s", str(len(polls)))
+        check(not errs, "activity polling is console-clean", "; ".join(errs[:2]))
+        act.close()
         browser.close()
 
 
@@ -143,6 +255,7 @@ def main() -> int:
     host = urlparse(a.base).hostname
     tls(host)
     http_basics(a.base)
+    activity_api(a.base)
     pages_in_browser(a.base, Path(a.out))
     print(f"\n{'FAILED: ' + ', '.join(FAILS) if FAILS else 'ALL CHECKS PASSED'}")
     return 1 if FAILS else 0
