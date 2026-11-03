@@ -16,6 +16,10 @@ ADDR_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
 _TS_FORMATS = ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d")
 
 
+class ParamError(ValueError):
+    """A query parameter is invalid; the message is safe to show (HTTP 400)."""
+
+
 def parse_ts(text: str) -> datetime:
     """'2026-11-01T08:00', '2026-11-01 08:00:30', '2026-11-01', optional trailing Z -> UTC."""
     s = re.sub(r"\s+", " ", text.strip().replace("T", " ").rstrip("Zz")).strip()

@@ -154,6 +154,17 @@ class WebConfig:
     stale_after_s: int = 900                 # data older than this is flagged "stale"
     market_max_age_s: int = 1800             # stored market snapshots older than this are not "live"
     max_custom_days: int = 30
+    # HYPE/USD rate alignment (see web/usd.py): a snapshot is converted with the stored rate
+    # closest in time; the gap decides the provenance label and a hard cut-off.
+    fx_exact_s: int = 60                     # |gap| <= this: "exact"
+    fx_aligned_s: int = 600                  # <= this: "aligned" (one leaderboard cycle is 300 s)
+    fx_max_gap_s: int = 3600                 # beyond this no USD value is produced
+    activity_page_size: int = 50
+    activity_max_page_size: int = 100
+    activity_cache_ttl_s: float = 5.0        # shared by every client polling the same query
+    activity_since_limit: int = 100          # most rows one incremental poll returns
+    activity_poll_s: int = 20                # browser poll interval while the tab is visible
+    activity_hidden_poll_s: int = 120        # ... and while it is hidden (0 = pause)
 
 
 @dataclass

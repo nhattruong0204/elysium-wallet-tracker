@@ -34,8 +34,17 @@ from starlette.staticfiles import StaticFiles
 from ..config import Config
 from ..timerange import RangeError
 from . import format as fmt
+from .activity import (
+    ACTION_LABELS,
+    BASES,
+    SORT_LABELS,
+    parse_activity,
+)
+from .activity import (
+    RANGE_LABELS as ACT_RANGE_LABELS,
+)
 from .jsonutil import to_jsonable
-from .params import ADDR_RE, PRESET_ORDER, list_params, parse_range
+from .params import ADDR_RE, PRESET_ORDER, ParamError, list_params, parse_range
 from .service import EARLY_SORTS, SM_VIEWS, TOKEN_SORTS, Busy, Dashboard, NotFound, sparkline
 
 log = logging.getLogger("agora_tracker.web")
@@ -44,7 +53,7 @@ HERE = Path(__file__).parent
 CSP = ("default-src 'none'; img-src 'self' data:; style-src 'self'; script-src 'self'; "
        "font-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'; "
        "frame-ancestors 'none'")
-NAV = (("overview", "/", "Overview"), ("tokens", "/tokens", "Projects"),
+NAV = (("overview", "/", "Overview"), ("activity", "/activity", "Activity"), ("tokens", "/tokens", "Projects"),
        ("smart", "/smart-money", "Smart money"), ("early", "/early", "Early plays"),
        ("health", "/scanner", "Scanner health"))
 RANGE_LABELS = {"15m": "15 min", "1h": "1 hour", "6h": "6 hours", "24h": "24 hours",
@@ -94,6 +103,11 @@ class Guard(BaseHTTPMiddleware):
                     and "x-forwarded-for" not in request.headers)
         if not loopback and path != "/healthz" and not path.startswith("/static/") \
                 and not self.limiter.allow(client_ip(request)):
+            if path.startswith("/api/"):
+                return JSONResponse({"error": "Too many requests",
+                                     "detail": "Slow down; retry after the indicated delay.",
+                                     "retry_after_s": 5}, status_code=429,
+                                    headers={"Retry-After": "5"})
             return PlainTextResponse("Too many requests, slow down.", 429,
                                      headers={"Retry-After": "5"})
         resp = await call_next(request)
@@ -119,6 +133,7 @@ def create_app(cfg: Config, dash: Dashboard, engine: Engine | None = None) -> St
         loader=jinja2.FileSystemLoader(HERE / "templates"),
         autoescape=jinja2.select_autoescape(["html"]), trim_blocks=True, lstrip_blocks=True)
     links = fmt.Links(cfg.links)
+    dash.links = links
     fmt.register(env, links)
     asset_v = hashlib.sha1(b"".join(p.read_bytes() for p in sorted((HERE / "static").glob("*"))
                                     if p.is_file())).hexdigest()[:10]
@@ -178,6 +193,8 @@ def create_app(cfg: Config, dash: Dashboard, engine: Engine | None = None) -> St
                 return await handler(request)
             except RangeError as e:
                 return fail(request, 400, "Invalid time range", str(e))
+            except ParamError as e:
+                return fail(request, 400, "Invalid parameter", str(e))
             except NotFound as e:
                 return fail(request, 404, "Not found", str(e))
             except Busy:
@@ -215,6 +232,34 @@ def create_app(cfg: Config, dash: Dashboard, engine: Engine | None = None) -> St
         d = await run(request, lambda: dash.overview(tr, now_utc()))
         return page(request, "overview.html", "overview", d, tr, title="Overview")
 
+    def act_params(request: Request) -> Any:
+        return parse_activity(request.query_params, now_utc(), default_size=w.activity_page_size,
+                              max_size=w.activity_max_page_size)
+
+    @guarded
+    async def activity(request: Request) -> Response:
+        p = act_params(request)
+        d = await run(request, lambda: dash.activity(p, now_utc()))
+        ctx = {**d, "p": p, "action_labels": ACTION_LABELS, "range_labels": ACT_RANGE_LABELS,
+               "sort_labels": SORT_LABELS, "bases": list(BASES),
+               "poll_s": w.activity_poll_s, "hidden_poll_s": w.activity_hidden_poll_s}
+        return page(request, "activity.html", "activity", ctx, None, title="Activity")
+
+    @guarded
+    async def api_activity(request: Request) -> Response:
+        p = act_params(request)
+        d = await run(request, lambda: dash.activity(p, now_utc()))
+        fr = d["freshness"]
+        # The validator covers what a client can act on; clocks and ages tick on their own.
+        tag = hashlib.sha1(repr((request.url.query, [i["id"] for i in d["items"]],
+                                 d.get("head_id"), fr["scanner_status"], fr["last_indexed_block"],
+                                 d.get("overflow"))).encode()).hexdigest()[:20]
+        etag = f'W/"{tag}"'
+        headers = {"ETag": etag, "Cache-Control": "private, no-cache"}
+        if request.headers.get("if-none-match") == etag:
+            return Response(status_code=304, headers=headers)
+        return JSONResponse(to_jsonable(d), headers=headers)
+
     @guarded
     async def tokens(request: Request) -> Response:
         tr = get_range(request)
@@ -228,7 +273,7 @@ def create_app(cfg: Config, dash: Dashboard, engine: Engine | None = None) -> St
         tr = get_range(request)
         d = await run(request, lambda: dash.token(addr, tr, page_num(request), now_utc()))
         d["spark"] = sparkline(d["series"])
-        d["mcap_spark"] = sparkline(d["series"], "mcap_hype")
+        d["mcap_spark"] = sparkline(d["series"], "mcap_usd")
         return page(request, "token.html", "tokens", d, tr,
                     title=(d["meta_token"].get("symbol") or addr[:10]))
 
@@ -305,7 +350,14 @@ def create_app(cfg: Config, dash: Dashboard, engine: Engine | None = None) -> St
                 "population": "wallets on Agora's public top-PnL leaderboard (not chain-wide)",
                 "uptime_s": int(time.time() - started),
                 "ranges": PRESET_ORDER + ["custom"], "smart_money_views": list(SM_VIEWS),
-                "early_sorts": list(EARLY_SORTS), "token_sorts": list(TOKEN_SORTS)}
+                "early_sorts": list(EARLY_SORTS), "token_sorts": list(TOKEN_SORTS),
+                "activity": {"actions": list(ACTION_LABELS), "ranges": list(ACT_RANGE_LABELS)
+                             + ["custom"], "sorts": list(SORT_LABELS), "bases": list(BASES),
+                             "default_limit": w.activity_page_size,
+                             "max_limit": w.activity_max_page_size,
+                             "poll_interval_s": w.activity_poll_s},
+                "units": {"market_cap_usd": "USD", "amount_hype": "HYPE",
+                          "decimals": "exact decimals are strings"}}
 
     # -- operational ---------------------------------------------------------------------------------
     async def healthz(request: Request) -> Response:
@@ -329,11 +381,12 @@ def create_app(cfg: Config, dash: Dashboard, engine: Engine | None = None) -> St
         return fail(request, 404, "Page not found", "That page does not exist.")
 
     routes = [
-        Route("/", overview), Route("/tokens", tokens), Route("/tokens/{addr}", token),
+        Route("/", overview), Route("/activity", activity), Route("/tokens", tokens), Route("/tokens/{addr}", token),
         Route("/smart-money", smart), Route("/wallets/{addr}", wallet), Route("/early", early),
         Route("/scanner", scanner), Route("/about", about), Route("/search", search),
         Route("/healthz", healthz), Route("/robots.txt", robots),
         Route("/api/v1/meta", api(api_meta)),
+        Route("/api/v1/activity", api_activity),
         Route("/api/v1/overview", api(lambda r: dash.overview(get_range(r), now_utc()))),
         Route("/api/v1/tokens", api(api_tokens)),
         Route("/api/v1/tokens/{addr}", api(api_token)),

@@ -1013,6 +1013,11 @@ class Reports:
     # --- Trending (P2) ---------------------------------------------------------------------------
     TR_SORTS = ("score", "smart", "buying", "new", "growth")
 
+    def _mcap_text(self, mcap_hype: float) -> str:
+        """Market cap as shown inside report text. The Telegram reports speak HYPE; the public
+        dashboard overrides this to speak USD."""
+        return f"{mcap_hype:.0f} HYPE"
+
     def trending(self, tr: TimeRange, sort: str = "score", now: datetime | None = None
                  ) -> dict[str, Any]:
         """Explainable trending score (0-100) from tracked-wallet evidence plus Agora's live
@@ -1084,7 +1089,7 @@ class Reports:
                 if ch is not None:
                     why.append(f"price {ch:+.0%} ({w})")
                 if m.mcap_hype is not None and m.mcap_hype < self.ui.min_mcap_hype:
-                    flags.append(f"thin market (MC {m.mcap_hype:.0f} HYPE)")
+                    flags.append(f"thin market (MC {self._mcap_text(m.mcap_hype)})")
                 if m.trades_24h and (m.vol_24h_hype or 0) / m.trades_24h < 0.05:
                     flags.append("many tiny trades (bots / wash risk)")
                     comp["wash_penalty"] = -10.0

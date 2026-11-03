@@ -14,6 +14,12 @@
 <a class="tok" href="/tokens/{{ r.token }}"><b>{{ r.symbol or r.token|short }}</b><span>{{ r.name or r.launchpad or r.token|short }}</span></a>
 {%- endmacro %}
 
+{# Market cap in USD from the public contract (see web/usd.py). Stale values are starred, never hidden. #}
+{% macro mcap(m) -%}
+{% if m and m.market_cap_usd is not none %}<span{% if m.market_cap_status == 'stale' %} class="warnc"{% endif %} title="{{ m|mcap_title }}">{{ m.market_cap_usd|usd }}{% if m.market_cap_status == 'stale' %}*{% endif %}</span>
+{%- else %}<span class="faint" title="{{ m|mcap_title }}">–</span>{% endif %}
+{%- endmacro %}
+
 {% macro badge(kind, text) -%}<span class="badge {{ kind }}">{{ text }}</span>{%- endmacro %}
 
 {% macro kpi(label, value, note='', unit='') -%}
@@ -110,4 +116,19 @@
 
 {% macro ext_links(d) -%}
 <div class="links">{% for name, url in d.items() %}<a href="{{ url }}" target="_blank" rel="noopener noreferrer">{{ name }} ↗</a>{% endfor %}</div>
+{%- endmacro %}
+
+{# One Activity row. static/activity.js builds the same cells for rows that arrive by polling;
+   tests/test_activity_browser.py compares the two. #}
+{% macro act_row(t) -%}
+<tr data-id="{{ t.id }}" data-ts="{{ t.block_time.timestamp()|int }}" data-kind="{{ t.kind }}">
+  <td class="nw">{{ t.block_time|ts(true) }}</td>
+  <td>{{ waddr(t.wallet) }}</td>
+  <td><a class="tok" href="/tokens/{{ t.token }}" title="{{ t.token }}"><b>{{ t.symbol or t.token|short }}</b></a></td>
+  <td><span class="act act-{{ t.action }}">{{ action_labels[t.action] }}</span></td>
+  <td class="r">{% if t.amount_hype is not none %}{{ t.amount_hype|hype(3) }}{% else %}<span class="faint" title="{{ 'A transfer moves tokens without a HYPE payment: it is not a buy or a sell.' if t.kind in ('TRANSFER_IN', 'TRANSFER_OUT') else 'The HYPE amount could not be determined.' }}">{{ 'no HYPE leg' if t.kind in ('TRANSFER_IN', 'TRANSFER_OUT') else 'unknown' }}</span>{% endif %}</td>
+  <td>{% if t.basis == 'verified' %}{{ badge('ok', 'verified') }}{% elif t.basis == 'estimated' %}{{ badge('est', 'estimated') }}{% else %}{{ badge('', 'unknown') }}{% endif %}</td>
+  <td class="r mono">{{ t.block_number|number }}</td>
+  <td><a class="mono" href="{{ links.tx(t.tx_hash) }}" target="_blank" rel="noopener noreferrer" title="{{ t.tx_hash }}">{{ t.tx_hash|short(8, 4) }} ↗</a></td>
+</tr>
 {%- endmacro %}

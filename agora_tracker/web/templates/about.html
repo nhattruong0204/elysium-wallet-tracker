@@ -9,7 +9,7 @@
 <h2>Two kinds of PnL</h2>
 <p><b>Agora PnL</b> is the figure Agora reports for a wallet since it began trading. <b>Measured PnL</b> is realized profit the tracker computed from sells with a known cost basis inside the selected window. They answer different questions and are never combined.</p>
 <h2>Market data</h2>
-<p>Prices, market caps and changes are Agora's numbers captured by a collector about every ten minutes and stored. This site never queries Agora or the chain when you load a page, so figures carry the snapshot time and can be minutes old. Market caps are in HYPE; USD conversion is not stored.</p>
+<p>Prices, market caps and changes are Agora's numbers captured by a collector about every ten minutes and stored. This site never queries Agora or the chain when you load a page, so figures carry the snapshot time and can be minutes old. Market caps are shown in USD: Agora quotes them in HYPE, and each snapshot is converted with the HYPE/USD rate Agora reported closest to that snapshot&rsquo;s time (stored every ~5 minutes), so a past market cap does not change when HYPE moves. If no rate was stored within an hour of a snapshot, the market cap is shown as unavailable rather than estimated. Trade sizes and net flows stay in HYPE.</p>
 <h2>Time</h2>
 <p>All times are UTC. A window is half-open, <span class="mono">[start, end)</span>: it includes the start instant and excludes the end instant. Rolling presets end at the page-load time rounded down to 30 seconds. Results are cached for 30 seconds.</p>
 <h2>Limits</h2>

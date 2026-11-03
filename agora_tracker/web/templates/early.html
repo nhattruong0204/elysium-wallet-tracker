@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import range_bar, freshness, token, waddr, badge, empty with context %}
+{% from "_macros.html" import range_bar, freshness, token, waddr, badge, empty, mcap with context %}
 {% block body %}
 <h1>Early plays</h1>
 <p class="lead">New and increasingly active projects, ranked by <b>observed</b> tracked-wallet activity. Each row says why it is listed.</p>
@@ -13,10 +13,10 @@
   {% for s, lbl in [('score', 'score'), ('smart', 'qualified buyers'), ('buying', 'buy volume')] %}<a href="{{ qs(sort=s) }}"{% if d.sort == s %} aria-current="true" class="warnc"{% endif %}>{{ lbl }}</a>{{ ' · ' if not loop.last }}{% endfor %}</span></h2>
   {% if d.trending %}
   <div class="tw"><table>
-    <thead><tr><th class="r">Score</th><th>Token</th><th class="r">Qualified buyers</th><th class="r">Qualified net (HYPE)</th><th class="r">Market cap (HYPE)</th><th>Why it is listed</th></tr></thead>
+    <thead><tr><th class="r">Score</th><th>Token</th><th class="r">Qualified buyers</th><th class="r">Qualified net (HYPE)</th><th class="r">Market cap (USD)</th><th>Why it is listed</th></tr></thead>
     <tbody>{% for r in d.trending %}
     <tr><td class="r"><span class="score" title="0 to 100; components are fixed and documented">{{ r.score }}</span></td><td>{{ token(r) }}</td>
-      <td class="r">{{ r.q_buyers }}</td><td class="r {{ r.q_net|tone }}">{{ r.q_net|signed }}</td><td class="r">{{ r.mcap|hype(0) if r.mcap is not none else '–' }}</td>
+      <td class="r">{{ r.q_buyers }}</td><td class="r {{ r.q_net|tone }}">{{ r.q_net|signed }}</td><td class="r">{{ mcap(r.market_cap) }}</td>
       <td class="why">{{ r.why|join('; ') if r.why else 'tracked-wallet activity only' }}{% if r.flags %}<br><i>⚠ {{ r.flags|join('; ') }}</i>{% endif %}</td></tr>
     {% endfor %}</tbody>
   </table></div>

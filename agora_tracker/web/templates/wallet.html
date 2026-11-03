@@ -31,7 +31,7 @@
     {% else %}{{ empty('No open positions recorded') }}{% endif %}
   </section>
 </div>
-<section class="panel flush"><h2 class="ph">Trades <span class="sub">newest first</span></h2>
+<section class="panel flush"><h2 class="ph">Trades <span class="sub">newest first</span> <a class="btn right" href="/activity?wallet={{ d.wallet }}&range=30d">All activity for this wallet →</a></h2>
   {{ trades_table(d.trades['items'], qs, false, true) }}
   {{ pager_simple(d.trades, qs) }}
 </section>

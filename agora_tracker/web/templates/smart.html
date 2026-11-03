@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import range_bar, freshness, pager, token, waddr, badge, empty with context %}
+{% from "_macros.html" import range_bar, freshness, pager, token, waddr, badge, empty, mcap with context %}
 {% set pg = d.page %}
 {% block body %}
 <h1>Smart money</h1>
@@ -17,9 +17,9 @@
   {{ empty('Nothing to show for this view', 'No qualified wallet matched in this window. Try a longer range or another view.') }}
 {% elif d.kind == 'tokens' %}
   <div class="tw"><table>
-    <thead><tr><th>Token</th><th class="r">Qualified buyers</th><th class="r">Qualified sellers</th><th class="r">Bought (HYPE)</th><th class="r">Sold (HYPE)</th><th class="r">Net (HYPE)</th><th class="r">All tracked buyers</th><th class="r">Estimated (HYPE)</th></tr></thead>
+    <thead><tr><th>Token</th><th class="r">Qualified buyers</th><th class="r">Qualified sellers</th><th class="r">Bought (HYPE)</th><th class="r">Sold (HYPE)</th><th class="r">Net (HYPE)</th><th class="r">Market cap (USD)</th><th class="r">All tracked buyers</th><th class="r">Estimated (HYPE)</th></tr></thead>
     <tbody>{% for r in pg['items'] %}
-    <tr><td>{{ token(r) }}</td><td class="r">{{ r.q_buyers }}</td><td class="r">{{ r.q_sellers }}</td><td class="r">{{ r.q_buy|hype }}</td><td class="r">{{ r.q_sell|hype }}</td><td class="r {{ r.q_net|tone }}">{{ r.q_net|signed }}</td><td class="r muted">{{ r.buyers }}</td><td class="r muted">{{ (r.buy_est + r.sell_est)|hype }}</td></tr>
+    <tr><td>{{ token(r) }}</td><td class="r">{{ r.q_buyers }}</td><td class="r">{{ r.q_sellers }}</td><td class="r">{{ r.q_buy|hype }}</td><td class="r">{{ r.q_sell|hype }}</td><td class="r {{ r.q_net|tone }}">{{ r.q_net|signed }}</td><td class="r">{{ mcap(r.market_cap) }}</td><td class="r muted">{{ r.buyers }}</td><td class="r muted">{{ (r.buy_est + r.sell_est)|hype }}</td></tr>
     {% endfor %}</tbody>
   </table></div>
 {% elif d.kind == 'clusters' %}
