@@ -381,7 +381,8 @@ def token_detail(d: dict, cov: dict, tz: ZoneInfo, L: Links, hype_usd: float | N
     lines.append("🔗 " + " · ".join([a(L.agora_token(tok), "Agora"), a(L.kleos_token(tok), "Kleos"),
                                      a(L.boxa_token(tok), "BOXA"),
                                      a(L.explorer_token(tok), "Elyscan")]))
-    k = kb([btn("🐳 View Buyers", f"tb|{tok}|0"), btn("🧾 Trades", f"tx|{tok}|0")],
+    k = kb(L.wallet_buttons(tok, (symbol or tok[:6])[:12]),
+           [btn("🐳 View Buyers", f"tb|{tok}|0"), btn("🧾 Trades", f"tx|{tok}|0")],
            [url_btn("🛒 Agora", L.agora_token(tok)), url_btn("Kleos", L.kleos_token(tok)),
             url_btn("BOXA", L.boxa_token(tok))],
            controls(f"tk|{tok}", f"xs|t|{tok}"), home_row("sm|net|0"))

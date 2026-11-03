@@ -81,6 +81,11 @@ class LinksConfig:
     kleos: str = "https://www.thekleos.xyz"         # /token/<a>
     boxa: str = "https://boxa.club"                 # /token?address=<a> (any Elysium token)
     elyspump: str = "https://elysp.com"             # /#/token/<a>
+    # "Trade in wallet" buttons: open the trade page inside the wallet app's browser.
+    # rabby: https://go.rabby.io/mobile/?_cmd=open-dapp&dapp=<url> (Rabby Mobile universal link)
+    # okx:   https://web3.okx.com/download?deeplink=okx://wallet/dapp/url?dappUrl=<url>
+    wallet_buttons: list[str] = field(default_factory=lambda: ["rabby", "okx"])
+    trade_site: str = "agora"                       # page opened: agora | boxa | kleos
 
 
 @dataclass
@@ -184,7 +189,8 @@ def load_config(path: str | Path) -> Config:
     if wl and not os.path.isabs(wl):
         wl = str(base / wl)
 
-    links = LinksConfig(**{k: v.rstrip("/") for k, v in (raw.get("links") or {}).items()})
+    links = LinksConfig(**{k: v.rstrip("/") if isinstance(v, str) else v
+                           for k, v in (raw.get("links") or {}).items()})
     market = MarketConfig(**(raw.get("market") or {}))
     ui = UiConfig(**{k: v for k, v in (raw.get("ui") or {}).items() if k != "admin_ids"})
     ui.admin_ids = _admin_ids(tg.chat_id, os.environ.get(ui.admin_ids_env, ""))

@@ -86,6 +86,7 @@ def test_buy_card_layout_links_and_buttons():
     assert "<b>Seen</b>: 6d: " in bar and "9.97K HYPE" not in text
     assert f"<code>{TOKEN}</code>" in text and "2m ago" in text
     assert [[b["text"] for b in r] for r in kb["inline_keyboard"]] == [
+        ["⚡ Rabby: BLOB", "⚡ OKX: BLOB"],
         ["🛒 Agora: BLOB", "BOXA: BLOB"], ["Kleos: BLOB", "ElysPump: BLOB"]]
     assert all(b["url"].startswith("https://") for r in kb["inline_keyboard"] for b in r)
     assert cards.preview_url(L, info) == "https://www.agoradex.app/api/img?src=x"
@@ -123,8 +124,8 @@ def test_card_without_market_data_still_has_all_links():
     assert f"https://boxa.club/token?address={TOKEN}" in hrefs
     assert f"https://elyscan.live/tx/{TX}" in hrefs
     assert "📊" not in text and "MC" not in text and "@$" not in text
-    assert [b["text"] for b in kb["inline_keyboard"][0]] == ["🛒 Agora: BLOB", "BOXA: BLOB"]
-    assert kb["inline_keyboard"][1][1]["text"] == "🧾 Tx"
+    assert [b["text"] for b in kb["inline_keyboard"][1]] == ["🛒 Agora: BLOB", "BOXA: BLOB"]
+    assert kb["inline_keyboard"][2][1]["text"] == "🧾 Tx"
     assert cards.preview_url(L, None) is None
 
 
@@ -159,7 +160,7 @@ def test_cluster_card_links_each_wallet():
     hrefs = parse(text).hrefs
     assert f"https://elyscan.live/address/0x{'ab' * 20}" in hrefs
     assert "2 tracked wallets" in text and "<b>MC</b>: $856.64K" in text
-    assert len(kb["inline_keyboard"]) == 2
+    assert len(kb["inline_keyboard"]) == 3
 
 
 class FakeResp:
@@ -190,7 +191,7 @@ def test_notifier_sends_buttons_and_falls_back_when_rendering_breaks(store):
     n.session.post = lambda url, json, timeout: (sent.append(json), FakeResp(200))[1]
     store.enqueue_now("a", "fallback text", payload=payload())
     assert n.drain() == 1
-    assert sent[0]["reply_markup"]["inline_keyboard"][0][0]["text"] == "🛒 Agora: BLOB"
+    assert sent[0]["reply_markup"]["inline_keyboard"][1][0]["text"] == "🛒 Agora: BLOB"
     assert sent[0]["parse_mode"] == "HTML"
     assert sent[0]["link_preview_options"] == {          # token picture above the card
         "url": "https://www.agoradex.app/api/img?src=x", "prefer_large_media": True,
@@ -224,7 +225,7 @@ def test_test_card_sends_latest_trade(store, monkeypatch):
     sent = []
     monkeypatch.setattr(cli.Notifier, "_send", lambda self, t, kb=None, img=None: (sent.append((t, kb)) or (True, "", False)))
     assert cli.test_card(cfg) == 0
-    assert "Test card" in sent[0][0] and sent[0][1]["inline_keyboard"][0][0]["text"].startswith("🛒 Agora")
+    assert "Test card" in sent[0][0] and sent[0][1]["inline_keyboard"][1][0]["text"].startswith("🛒 Agora")
 
 
 def test_market_cap_falls_back_to_hype_without_a_usd_rate():
@@ -232,3 +233,21 @@ def test_market_cap_falls_back_to_hype_without_a_usd_rate():
     info = TokenInfo(address=TOKEN, mcap_hype=9970.0)
     assert "<b>MC</b>: 9.97K HYPE" in cards.link_bar(L, TOKEN, "BLOB", info, None)
     assert "<b>MC</b>: $857.42K" in cards.link_bar(L, TOKEN, "BLOB", info, 86.0)
+
+
+def test_wallet_trade_buttons_use_the_wallets_universal_links():
+    from urllib.parse import parse_qs, unquote, urlsplit
+
+    from agora_tracker.config import LinksConfig
+    rabby, okx = Links(LinksConfig()).wallet_buttons(TOKEN, "BLOB")
+    page = f"https://www.agoradex.app/token/{TOKEN}"
+    u = urlsplit(rabby["url"])               # Rabby: /mobile/* is claimed by the app (AASA)
+    assert (u.scheme, u.netloc, u.path) == ("https", "go.rabby.io", "/mobile/")
+    assert parse_qs(u.query) == {"_cmd": ["open-dapp"], "dapp": [page]}
+    o = urlsplit(okx["url"])                 # OKX: documented download?deeplink= wrapper
+    deep = parse_qs(o.query)["deeplink"][0]
+    assert o.netloc == "web3.okx.com" and deep.startswith("okx://wallet/dapp/url?dappUrl=")
+    assert unquote(deep.split("dappUrl=", 1)[1]) == page
+    boxa = Links(LinksConfig(trade_site="boxa", wallet_buttons=["rabby"])).wallet_buttons(TOKEN, "B")
+    assert len(boxa) == 1 and "boxa.club" in unquote(boxa[0]["url"])
+    assert Links(LinksConfig(wallet_buttons=[])).wallet_buttons(TOKEN, "B") == []
