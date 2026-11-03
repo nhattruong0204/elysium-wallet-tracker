@@ -658,6 +658,7 @@ def health(h: dict, tz: ZoneInfo, now: datetime | None = None) -> tuple[str, Kb]
              + (f" · last attempt {ago(h.get('lb_any'), now)}" if h.get("lb_any") else ""),
              f"👛 Monitored wallets: {h.get('wallets')} · trades stored {h.get('trades'):,}",
              f"🧾 Last tracked trade: {ago(h.get('last_trade'), now)}",
+             _disk_line(h),
              "📨 Alerts: " + (" · ".join(f"{k} {v}" for k, v in sorted(h["outbox"].items()))
                               or "none yet")]
     heads = h.get("heads") or {}
@@ -678,6 +679,16 @@ def health(h: dict, tz: ZoneInfo, now: datetime | None = None) -> tuple[str, Kb]
     else:
         lines += ["", "✅ No coverage warnings"]
     return clip(lines), kb([btn("🔄 Refresh", "hl")], home_row())
+
+
+def _disk_line(h: dict) -> str:
+    d = h.get("disk") or {}
+    db = f" · tracker DB {h['db_bytes'] / 1e6:.0f} MB" if h.get("db_bytes") else ""
+    if not d.get("total"):
+        return "💾 Disk: not measured yet" + db
+    pct = d["free"] / d["total"]
+    return (f"💾 Disk: {'✅' if pct >= 0.15 else '⚠️'} {d['free'] / 1e9:.1f} GB free of "
+            f"{d['total'] / 1e9:.0f} GB ({pct:.0%}){db}")
 
 
 def _na(v: Any) -> str:

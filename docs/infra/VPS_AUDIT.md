@@ -82,6 +82,28 @@ prune-first and a free-space check.
    is switched with `caddy reload` (no DNS change, same certificate).
 6. After a week of stable operation: remove the `web` container and old image tags.
 
+## Executed (2026-11-03, approved at Gates A and B)
+
+| Step | Result |
+|---|---|
+| Paused `onchainflow-backup.timer` | disabled (reversible) |
+| Stopped the old website: `gmgn-revival-radar-web-1` stopped (container and image kept), `onchainflow-health.timer` disabled | `onchainflow.app` → 502 until the dashboard cutover |
+| Off-site backup, restore-tested (run 41587908853) | both DBs verified; see BACKUP_AND_RECOVERY.md |
+| Deleted copies (exact paths, gated on that run) | 6 daily copies, release bundle, rehearsals, stage, pre-change and pre-upgrade copies |
+| `docker builder prune` | 2.15 GB |
+| Superseded revival image tags | 7 tags removed (`:latest` and `v2-cb3401f` kept) |
+| journald capped at 200 MB / keep 2 GB free | 177 MB in use |
+
+**Disk: before 50.3 GB used / 3.4 GB free (94%) → after 18.2 GB used / 35.4 GB free (≈34%).**
+Both bots stayed healthy throughout (revival scans with `errors=0`, tracker heartbeat fresh).
+
+Ongoing protection: daily off-site backup (scheduled workflow); the tracker sends a
+Telegram alert when the host disk drops below 15% / 8 GB free; the health page shows
+disk usage and the tracker DB size. Growth: the revival DB grows about 120 MB/day (about
+3.6 GB/month), the tracker DB about 1–2 MB/day plus about 3 MB/day of market snapshots
+(30-day retention). At the current rate the 35 GB of headroom lasts about 9 months, so
+revisit revival retention (`research_briefs`) before then rather than expanding the disk.
+
 ## Not changed
 
 Nothing has been modified on the VPS so far. The audit only reads, with one exception:

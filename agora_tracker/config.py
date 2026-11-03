@@ -56,6 +56,8 @@ class AlertConfig:
     leaderboard_alerts: bool = True     # rank/PnL change alerts (snapshots are always recorded)
     cluster_alerts: bool = True         # cluster-buy alerts (signals are always recorded)
     token_image: bool = True            # show the token's picture above the alert card
+    disk_free_pct: float = 0.15         # alert when the host disk has less free space than this
+    disk_free_gb: float = 8.0           # ... or less than this many GB
     rank_change: int = 10
     pnl_change: float = 5000.0          # in leaderboard.value_unit
     cluster_window_s: int = 3600
@@ -118,6 +120,7 @@ class UiConfig:
     min_age_h: float = 1.0                   # gainers/losers: minimum token age
     min_observations: int = 2                # snapshot-based returns need this many points
     candle_fallback_tokens: int = 30         # custom ranges <=7d: tokens checked via candles
+    disk_warn_pct: float = 0.15              # health page warns below this free share
 
 
 @dataclass

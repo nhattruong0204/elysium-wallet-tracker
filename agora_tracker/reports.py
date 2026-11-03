@@ -719,6 +719,8 @@ class Reports:
                 heads = self._kv(c, "rpc_heads") or {}
                 ui_hb = self._kv(c, "ui_heartbeat")
                 coll = self._kv(c, "collector_last") or {}
+                disk = self._kv(c, "disk") or {}
+                dbsize = c.execute(sa.text("SELECT pg_database_size(current_database())")).scalar()
                 ok = True
         except Exception as e:  # noqa: BLE001 - the health page must render anyway
             log.warning("health query failed: %s", e)
@@ -731,11 +733,15 @@ class Reports:
             warnings.append("no market snapshots yet")
         elif now - r["market_at"] > timedelta(seconds=self.collector_interval_s * 3):
             warnings.append("market snapshots are stale")
+        if disk.get("total") and disk["free"] / disk["total"] < self.ui.disk_warn_pct:
+            warnings.append(f"VPS disk {disk['free'] / 1e9:.1f} GB free "
+                            f"({disk['free'] / disk['total']:.0%})")
         if outbox.get("dead"):
             warnings.append(f"{outbox['dead']} alerts dead-lettered")
         return {"db_ok": ok, "db_ms": db_ms, **r, "outbox": outbox, "heads": heads,
                 "ui_heartbeat_age_s": (int(now.timestamp()) - int(ui_hb)) if ui_hb else None,
-                "collector": coll, "coverage": cov, "warnings": warnings}
+                "collector": coll, "coverage": cov, "warnings": warnings, "disk": disk,
+                "db_bytes": dbsize}
 
     # --- Gainers / Losers (P2) -------------------------------------------------------------------
     def _filters(self, info: TokenInfo, vol: float | None, now: float) -> str | None:

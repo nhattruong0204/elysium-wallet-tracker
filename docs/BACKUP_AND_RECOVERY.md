@@ -15,7 +15,8 @@ Secrets (`.env`) are only stored inside the encrypted archive.
 
 ## Off-site backup (`backup` action)
 
-Run it with **Actions → deploy → Run workflow → `backup`**, or push `action=backup`
+It runs **daily at 19:30 UTC (02:30 Bangkok)**, with artifacts kept 14 days, and on
+demand (kept 90 days): **Actions → deploy → Run workflow → `backup`**, or push `action=backup`
 to `deploy/OPS_REQUEST` on the `ops` branch. It requires the repository secret
 `BACKUP_PASSPHRASE` (at least 20 characters). **Keep a copy of the passphrase in your
 password manager: without it the backups cannot be decrypted.**
@@ -38,6 +39,12 @@ The run fails, and no artifact is stored, if any restore check fails.
 > 90-day artifacts are an interim off-site copy. For long-term retention, add a durable
 > destination such as Backblaze B2 or Cloudflare R2 via `rclone`, with credentials as
 > repository secrets. See "Next steps".
+
+### Verification record
+
+| Run | Created (UTC) | Elysium PostgreSQL | Revival SQLite | Artifact |
+|---|---|---|---|---|
+| 41587908853 | 2026-11-03 06:07 | restored into postgres:16: 23 tables, 56,691 rows, Alembic 0003 | rebuilt: integrity ok, user_version 7, 17 tables, **1,574,217 rows identical** to the snapshot | `offsite-backup-20261103T060747Z`, 487 MB, 90 days |
 
 ## Restore
 
@@ -89,10 +96,11 @@ tar -xzf config.tar.gz -C /tmp/restore   # inspect, then copy the needed files i
 
 * `elysium-backup` container: daily `pg_dump -Fc` into `/root/elysium-wallet-tracker/backups`
   (verified with `pg_restore --list`, 14 days kept, about 44 KB each).
-* `onchainflow-backup.timer` (revival DB): full SQLite copy to
-  `/root/onchainflow-backups/daily`, 7 kept. **This job writes the new 3.4 GB copy
-  before deleting the oldest one. It failed with "disk is full" on 2026-11-03 and will
-  fill the disk on every run until it is fixed.** See the infrastructure audit.
+* `onchainflow-backup.timer` (revival DB, full local copy): **paused on 2026-11-03**
+  (it wrote the new 3.4 GB copy before pruning and filled the disk). The daily off-site
+  backup replaces it. The newest local copy (2026-11-01) is kept at
+  `/root/onchainflow-backups/daily/`. Re-enable it only with prune-first and a free-space
+  check, keeping at most 1–2 copies.
 
 ## Rollback of the retirement work
 

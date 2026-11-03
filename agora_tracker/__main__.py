@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import shutil
 import signal
 import sys
 import time
@@ -50,6 +51,7 @@ class Tracker:
         self._warned_idle = False
         self._next_lb = 0.0
         self._next_heads = 0.0
+        self._next_disk = 0.0
         self._stop = False
 
     def render_alert(self, row: dict) -> tuple[str, dict | None, str | None]:
@@ -79,6 +81,30 @@ class Tracker:
         if not any(r == "ok" for r in results.values()):
             raise RpcError("no RPC endpoint reachable")
         self.check_heads()
+
+    def check_disk(self) -> None:
+        """The container shares the host filesystem: warn on Telegram when it runs low.
+        One alert per 6 h while the condition lasts; usage is also recorded for /health."""
+        self._next_disk = time.monotonic() + 600
+        try:
+            du = shutil.disk_usage("/")
+        except OSError as e:
+            log.warning("disk check failed: %s", e)
+            return
+        free_pct = du.free / du.total
+        try:
+            self.store.set_kv("disk", json.dumps({"at": int(time.time()), "total": du.total,
+                                                  "free": du.free}))
+        except Exception as e:  # noqa: BLE001
+            log.debug("recording disk usage failed: %s", e)
+        a = self.cfg.alerts
+        if free_pct < a.disk_free_pct or du.free < a.disk_free_gb * 1e9:
+            self.store.enqueue_now(
+                f"disk:{int(time.time()) // 21600}",
+                f"⚠️ <b>VPS disk low</b>: {du.free / 1e9:.1f} GB free of {du.total / 1e9:.0f} GB "
+                f"({free_pct:.0%}). Check backups, logs and Docker build cache before databases "
+                "fill up.", severity="high")
+            log.warning("disk low: %.1f GB free (%.0f%%)", du.free / 1e9, free_pct * 100)
 
     def check_heads(self) -> None:
         self._next_heads = time.monotonic() + self.cfg.chain.head_check_s
@@ -211,6 +237,8 @@ class Tracker:
                     raise SystemExit("lost the indexer lock (database connection dropped)")
                 if time.monotonic() >= self._next_lb:
                     self.refresh_leaderboard()
+                if time.monotonic() >= self._next_disk:
+                    self.check_disk()
                 if time.monotonic() >= self._next_heads:
                     self.check_heads()
                 behind = self.scan_step()
