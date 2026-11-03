@@ -67,7 +67,7 @@ def test_buy_card_layout_links_and_buttons():
                 pos_basis="known", notes=[])
     text, kb = cards.render_trade(p, L, info, hype_usd=85.9, now=NOW)
     hrefs = parse(text).hrefs
-    for url in (f"https://www.agoradex.app/token/{TOKEN}", f"https://www.thekleos.xyz/token/{TOKEN}",
+    for url in (f"https://www.agoradex.app/token/{TOKEN}", f"https://www.thekleos.pro/token/{TOKEN}",
                 f"https://boxa.club/token?address={TOKEN}", f"https://elysp.com/#/token/{TOKEN}",
                 f"https://elyscan.live/tx/{TX}", f"https://elyscan.live/address/{WALLET}",
                 f"https://www.agoradex.app/trader/{WALLET}", FIX["links"]["x"],
