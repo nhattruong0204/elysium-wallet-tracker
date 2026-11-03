@@ -153,6 +153,12 @@ def activity_api(base: str) -> None:
         if code != 200 and not (label == "search" and code == 404):  # no match is a 404 page by design
             bad.append(f"{code} {label} {path.split('?')[0][:40]}{'?' + path.split('?', 1)[1][:60] if '?' in path else ''}")
     check(not bad, "every load-test URL answers 200", "; ".join(bad[:6]))
+    if probe:
+        tok_path = next(pth for k, pth in probe if k == "token")
+        with urllib.request.urlopen(base + tok_path, timeout=30) as r:
+            html = r.read().decode("utf-8", "replace")
+        check("thekleos.pro/token/" in html and "thekleos.xyz" not in html,
+              "token page links Kleos at thekleos.pro (not the flagged .xyz)")
     toks = api_json(base, "/api/v1/tokens?range=30d&sort=mcap&dir=desc")
     items = (toks.get("page") or {}).get("items") or []
     usd = [(i.get("market") or {}).get("usd") or {} for i in items]
