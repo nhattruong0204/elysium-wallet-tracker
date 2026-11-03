@@ -115,6 +115,12 @@ def sample(container: str, db_container: str, tracker: str) -> dict:
     out["db_conns"] = int(n) if n.isdigit() else -1
     h = sh(["docker", "inspect", "-f", "{{.State.Health.Status}}", tracker])
     out["tracker_health"] = h or "unknown"
+    # behavioural liveness: the indexer's heartbeat age (the docker flag can be stale/unrelated,
+    # e.g. a schema-version mismatch after a migration, while the bot itself works)
+    hb = sh(["docker", "exec", db_container, "psql", "-U", "tracker", "-d", "tracker", "-Atc",
+             "select round(extract(epoch from now() - updated_at)) from service_state "
+             "where key = 'heartbeat'"])
+    out["heartbeat_age"] = int(float(hb)) if hb.replace(".", "", 1).isdigit() else -1
     return out
 
 
@@ -137,6 +143,7 @@ def main() -> int:
     ap.add_argument("--max-error-rate", type=float, default=0.02)
     ap.add_argument("--max-web-mem-mb", type=float, default=230.0)
     ap.add_argument("--min-host-avail-mb", type=float, default=150.0)
+    ap.add_argument("--max-heartbeat-age", type=int, default=180)
     ap.add_argument("--seed", type=int, default=7)
     a = ap.parse_args()
     random.seed(a.seed)
@@ -172,10 +179,13 @@ def main() -> int:
             print(f"  t+{s['t'] - t_start:4.0f}s web={s.get('web_mem_mb', 0):5.0f}MB "
                   f"cpu={s.get('web_cpu', 0):5.1f}% load1={s['load1']:.2f} "
                   f"avail={s['host_avail_mb']}MB swap={s['swap_used_mb']}MB "
-                  f"db_conns={s['db_conns']} tracker={s['tracker_health']} "
+                  f"db_conns={s['db_conns']} tracker={s['tracker_health']} hb={s['heartbeat_age']}s "
                   f"recent_err={err:.1%} n={len(results)}", flush=True)
-            if s["tracker_health"] not in ("healthy", "unknown", "starting"):
-                abort_reason.append(f"tracker health {s['tracker_health']}")
+            if s["tracker_health"] != base_sample["tracker_health"] and \
+                    s["tracker_health"] not in ("healthy", "unknown", "starting"):
+                abort_reason.append(f"tracker health changed to {s['tracker_health']}")
+            if s["heartbeat_age"] > a.max_heartbeat_age:
+                abort_reason.append(f"tracker heartbeat {s['heartbeat_age']} s old")
             if s.get("web_mem_mb", 0) > a.max_web_mem_mb:
                 abort_reason.append(f"web memory {s['web_mem_mb']:.0f} MB")
             if s["host_avail_mb"] < a.min_host_avail_mb:
@@ -242,7 +252,9 @@ def main() -> int:
           f"after={end_sample.get('web_mem_mb', 0):.0f}MB (limit 256MB); peak cpu={peak_cpu:.0f}%")
     print(f"host: peak load1={peak_load:.2f}, min available={min_avail}MB; "
           f"peak dashboard_ro connections={peak_db} (limit 5); "
-          f"tracker health before/after: {base_sample['tracker_health']}/{end_sample['tracker_health']}")
+          f"tracker health before/after: {base_sample['tracker_health']}/{end_sample['tracker_health']}; "
+          f"heartbeat age before/after/max: {base_sample['heartbeat_age']}/"
+          f"{end_sample['heartbeat_age']}/{max((x['heartbeat_age'] for x in samples), default=0)} s")
     if abort_reason:
         print("ABORTED EARLY: " + "; ".join(sorted(set(abort_reason))))
         return 3
