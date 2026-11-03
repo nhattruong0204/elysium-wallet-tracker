@@ -19,6 +19,9 @@ on:
   push:
     branches: [ops]
     paths: [deploy/OPS_REQUEST]
+  schedule:
+    # Daily verified off-site backup of both databases, 02:30 Bangkok (kept 14 days).
+    - cron: "30 19 * * *"
   workflow_dispatch:
     inputs:
       action:
@@ -60,6 +63,9 @@ jobs:
           IN_DIR: ${{ inputs.deploy_dir }}
           IN_INSTALL: ${{ inputs.install_docker }}
         run: |
+          if [ "${{ github.event_name }}" = schedule ]; then
+            IN_ACTION=backup; IN_DIR=""; IN_INSTALL=false
+          fi
           if [ "${{ github.event_name }}" = push ]; then
             # deploy/OPS_REQUEST: lines of key=value (action, deploy_dir, install_docker)
             get() { grep -E "^$1=" deploy/OPS_REQUEST | head -1 | cut -d= -f2- | tr -d '[:space:]'; }
@@ -206,6 +212,6 @@ jobs:
         with:
           name: offsite-backup-${{ env.BACKUP_STAMP }}
           path: ${{ runner.temp }}/offsite/upload/
-          retention-days: 90
+          retention-days: ${{ github.event_name == 'schedule' && 14 || 90 }}
           compression-level: 0
           if-no-files-found: error

@@ -563,3 +563,26 @@ def test_smoke_check_renders_everything_and_delivers_a_report(bot):
     assert len(out["results"]) >= 20
     assert bot.api.docs and bot.api.docs[0]["name"].startswith("elysium_complete_report_")
     assert "checks passed" in bot.api.of("sendMessage")[-2]["text"]
+
+
+def test_disk_low_alert_and_health_line(store, monkeypatch):
+    import collections
+
+    from agora_tracker import __main__ as cli
+    from tests.test_p0_regressions import make_tracker
+    t = make_tracker(store, monkeypatch)
+    du = collections.namedtuple("du", "total used free")
+    monkeypatch.setattr(cli.shutil, "disk_usage", lambda p: du(50e9, 46e9, 4e9))
+    t.check_disk()
+    t._next_disk = 0
+    t.check_disk()                                       # same 6 h bucket: one alert only
+    alerts = [r["text"] for r in store.pending_alerts(10) if "disk low" in r["text"]]
+    assert len(alerts) == 1 and "4.0 GB free of 50 GB (8%)" in alerts[0]
+    rep = Reports(store.engine, 99901, ui_cfg(), market=None)
+    h = rep.health()
+    assert any("VPS disk 4.0 GB free" in w for w in h["warnings"])
+    assert "💾 Disk: ⚠️ 4.0 GB free of 50 GB (8%)" in V.health(h, VN)[0]
+    monkeypatch.setattr(cli.shutil, "disk_usage", lambda p: du(50e9, 10e9, 40e9))
+    t._next_disk = 0
+    t.check_disk()
+    assert len([r for r in store.pending_alerts(10) if "disk low" in r["text"]]) == 1
