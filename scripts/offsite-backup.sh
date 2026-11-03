@@ -52,6 +52,9 @@ docker run -d --name pgverify -e POSTGRES_PASSWORD=verify -e POSTGRES_USER=track
 # the final server is the one listening on TCP.
 for _ in $(seq 1 90); do docker exec pgverify pg_isready -h 127.0.0.1 -U tracker -d tracker >/dev/null 2>&1 && break; sleep 1; done
 sleep 2
+# The dump carries GRANTs to the dashboard role (migration 0004); a scratch cluster has no such
+# role, and --exit-on-error would abort. A NOLOGIN stand-in keeps the restore strict.
+docker exec pgverify psql -X -q -U tracker -d tracker -c "CREATE ROLE dashboard_ro NOLOGIN"
 docker exec -i pgverify pg_restore -U tracker -d tracker --no-owner --exit-on-error < work/elysium-tracker.pgdump
 docker exec pgverify psql -X -A -t -U tracker -d tracker -c "SELECT version_num FROM alembic_version" > work/pg-alembic.txt
 tables=$(docker exec pgverify psql -X -A -t -U tracker -d tracker -c "SELECT tablename FROM pg_tables WHERE schemaname='public' ORDER BY 1")
