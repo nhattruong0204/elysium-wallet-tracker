@@ -103,7 +103,7 @@ def to_usd(mcap_hype: Any, rate: Any, rate_at: datetime | None, snap_at: datetim
     if cap < 0:
         out["market_cap_status"] = "invalid"
         return out
-    if quality == "unavailable":
+    if quality == "unavailable" or fx is None:
         return out
     out["market_cap_usd"] = (cap * fx).quantize(USD_QUANT, rounding=ROUND_HALF_EVEN)
     too_old = out["snapshot_age_s"] is not None and out["snapshot_age_s"] > p.snapshot_max_age_s

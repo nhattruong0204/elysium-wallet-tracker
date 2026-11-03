@@ -132,8 +132,9 @@ class _BasePublicReports(Reports):
             r = self._one(c, "SELECT hype_usd, observed_at FROM hype_usd_rates "
                              "ORDER BY observed_at DESC LIMIT 1")
         now = datetime.now(UTC)
-        u = to_usd(mcap_hype, r and r["hype_usd"], r and r["observed_at"], now,
-                   self.fx_policy, now)
+        rate = r["hype_usd"] if r else None
+        rate_at = r["observed_at"] if r else None
+        u = to_usd(mcap_hype, rate, rate_at, now, self.fx_policy, now)
         return format_usd(u["market_cap_usd"]) if u["market_cap_usd"] is not None \
             else "USD value unavailable"
 
