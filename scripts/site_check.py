@@ -160,6 +160,13 @@ def activity_api(base: str) -> None:
     check(bool(have), "tokens expose market_cap_usd", f"{len(have)}/{len(items)} with a USD value")
     check(all(m.get("market_cap_status") in ("valid", "stale") for m in have), "USD values carry a valid/stale status")
     check(all(m.get("market_cap_usd") is None or float(m["market_cap_usd"]) > 0 for m in usd), "no zero/negative USD market cap")
+    from decimal import Decimal
+    off = [m for m in have if abs(Decimal(str(m["market_cap_hype"])) * Decimal(str(m["hype_usd"])) - Decimal(str(m["market_cap_usd"]))) > Decimal("0.01")]
+    check(not off, "market_cap_usd == market_cap_hype x hype_usd (no double conversion)", f"{len(off)} off of {len(have)}")
+    rates = {str(m["hype_usd"]) for m in have}
+    check(all(0.01 < float(r) < 10000 for r in rates), "HYPE/USD rates are plausible", f"{len(rates)} distinct rates, range {min(map(float, rates)):.2f}-{max(map(float, rates)):.2f}")
+    qual = {m.get("hype_usd_quality") for m in have}
+    print(f"  USD quality mix: {sorted(map(str, qual))}")
     check(all(m.get("market_cap_source") for m in usd if m), "market_cap_source present")
     vals = [float(m["market_cap_usd"]) for m in have]
     check(vals == sorted(vals, reverse=True), "USD sort is descending by USD", f"{len(vals)} values")
