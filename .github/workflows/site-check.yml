@@ -1,0 +1,32 @@
+name: site-check
+
+# Read-only external check of the public site from a GitHub runner (outside the VPS), in a
+# real browser. Triggered by pushing deploy/SITE_CHECK on the `ops` branch (workflow_dispatch
+# is also available). Screenshots are kept as an artifact for 14 days.
+on:
+  push:
+    branches: [ops]
+    paths: [deploy/SITE_CHECK]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install playwright && playwright install --with-deps chromium
+      - name: Check https://onchainflow.app
+        run: python scripts/site_check.py --base https://onchainflow.app --out shots
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: site-check-shots
+          path: shots/
+          retention-days: 14
