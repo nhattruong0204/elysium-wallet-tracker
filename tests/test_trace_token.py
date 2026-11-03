@@ -19,6 +19,7 @@ CREATOR = "0x" + "aa" * 20
 FACTORY = "0x" + "fa" * 20
 CURVE = "0x" + "cc" * 20
 BUYER = "0x" + "bb" * 20
+WHYPE = "0x" + "77" * 20
 TX0, TX1 = "0x" + "01" * 32, "0x" + "02" * 32
 
 
@@ -51,6 +52,8 @@ def handle(method: str, params: list):
         return CODE if params[0] == TOKEN else "0x6000" if params[0] in (FACTORY, CURVE) else "0x"
     if method == "eth_call":
         d = params[0]["data"]
+        if params[0]["to"] != TOKEN and d in ("0x95d89b41", "0x313ce567", "0x18160ddd", "0x06fdde03"):
+            d = "other"
         if d == "0x95d89b41":
             return "0x" + "20".rjust(64, "0") + "3".rjust(64, "0") + b"TST".hex().ljust(64, "0")
         if d == "0x06fdde03":
@@ -59,8 +62,25 @@ def handle(method: str, params: list):
             return word(18)
         if d == "0x18160ddd":
             return word(1000 * E18)
-        if d == "0x8da5cb5b":
+        if d == "0x8da5cb5b" and params[0]["to"] == TOKEN:
             return pad(CREATOR)
+        sel, to = params[0]["data"][:10], params[0]["to"]
+        if sel == tt.selector("token0()"):
+            return pad(TOKEN) if to == CURVE else "0x"
+        if sel == tt.selector("token1()"):
+            return pad(WHYPE) if to == CURVE else "0x"
+        if sel == tt.selector("fee()"):
+            return word(10000) if to == CURVE else "0x"
+        if sel == tt.selector("liquidity()"):
+            return word(12345) if to == CURVE else "0x"
+        if sel == tt.selector("slot0()"):
+            return word(int(2**96 * 0.01)) + "0" * 64 if to == CURVE else "0x"
+        if sel == tt.selector("symbol()") and to == WHYPE:
+            return "0x" + "20".rjust(64, "0") + "5".rjust(64, "0") + b"WHYPE".hex().ljust(64, "0")
+        if sel == tt.selector("decimals()") and to == WHYPE:
+            return word(18)
+        if sel == tt.selector("balanceOf(address)"):
+            return word(40 * E18) if to == WHYPE else word(995 * E18)
         return "0x"
     if method == "eth_getStorageAt":
         return word(0)
@@ -121,6 +141,9 @@ def test_full_trace_against_fake_node(capsys, tmp_path):
     assert f"tx.from (creator / caller): {CREATOR}" in out
     assert f"tx.to (factory / launchpad contract): {FACTORY}" in out
     assert f"{CURVE}  " in out and "KNOWN LAUNCHPAD: somepad" in out          # buy tx.to == curve
-    assert "holds 40.0000 HYPE" in out and "(~$3,400)" in out                  # liquidity ceiling
-    assert "99.5%" in out or "99.5 %" in out or "995.00" in out                # curve still holds supply
+    assert f"pool candidate {CURVE}" in out and "pair: TST / WHYPE" in out
+    assert "pool holds 40.0000 WHYPE (~$3,400)" in out                         # liquidity ceiling
+    assert "fee tier 1%" in out and "in-range liquidity 12,345" in out
+    assert "spot price ~ 1.000e-04 WHYPE per TST" in out and "FDV ~ $9" in out
+    assert "wallets that sent tokens INTO a pool" in out and "creator received" in out
     assert "owner(): " + CREATOR in out
