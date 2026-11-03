@@ -25,7 +25,7 @@ on:
         description: What to do on the VPS
         type: choice
         default: status
-        options: [preflight, deploy, status, logs, discover, dry-run, test-telegram, test-card, ui-smoke, restart, stop, audit, backup]
+        options: [preflight, deploy, status, logs, discover, dry-run, test-telegram, test-card, ui-smoke, restart, stop, audit, backup, maint]
       deploy_dir:
         description: Directory on the VPS (relative to the SSH user's home, or absolute)
         type: string
@@ -37,6 +37,7 @@ on:
 
 permissions:
   contents: read
+  actions: read          # maint/delete-copies checks that a verified backup run exists
 
 concurrency:
   group: vps
@@ -63,19 +64,23 @@ jobs:
             # deploy/OPS_REQUEST: lines of key=value (action, deploy_dir, install_docker)
             get() { grep -E "^$1=" deploy/OPS_REQUEST | head -1 | cut -d= -f2- | tr -d '[:space:]'; }
             IN_ACTION="$(get action)"; IN_DIR="$(get deploy_dir)"; IN_INSTALL="$(get install_docker)"
-            IN_SCOPE="$(get scope)"
+            IN_SCOPE="$(get scope)"; IN_STEPS="$(get steps)"; IN_BACKUP_RUN="$(get backup_run)"
           fi
           case "$IN_ACTION" in
-            preflight|deploy|status|logs|discover|dry-run|test-telegram|test-card|ui-smoke|restart|stop|audit|backup) ;;
+            preflight|deploy|status|logs|discover|dry-run|test-telegram|test-card|ui-smoke|restart|stop|audit|backup|maint) ;;
             *) echo "invalid action '$IN_ACTION'"; exit 1 ;;
           esac
           [ "$IN_INSTALL" = true ] || IN_INSTALL=false
           case "${IN_SCOPE:-full}" in full|deep) ;; *) echo "invalid scope"; exit 1 ;; esac
+          [[ "${IN_STEPS:-}" =~ ^[a-z,-]*$ ]] || { echo "invalid steps"; exit 1; }
+          [[ "${IN_BACKUP_RUN:-}" =~ ^[0-9]*$ ]] || { echo "invalid backup_run"; exit 1; }
           {
             echo "ACTION=$IN_ACTION"
             echo "DIR=${IN_DIR:-elysium-wallet-tracker}"
             echo "INSTALL_DOCKER=$IN_INSTALL"
             echo "AUDIT_SCOPE=${IN_SCOPE:-full}"
+            echo "MAINT_STEPS=${IN_STEPS:-}"
+            echo "BACKUP_RUN=${IN_BACKUP_RUN:-}"
           } >> "$GITHUB_ENV"
 
       - name: Check inputs and secrets
@@ -124,6 +129,7 @@ jobs:
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
           TG_ADMIN_IDS: ${{ secrets.TG_ADMIN_IDS }}
           BACKUP_PASSPHRASE: ${{ secrets.BACKUP_PASSPHRASE }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           ssh_() {
             if [ -n "${USE_SSHPASS:-}" ]; then
@@ -156,6 +162,21 @@ jobs:
             # Telegram secrets, written with 0600; POSTGRES_PASSWORD is generated on the VPS
             printf 'TG_BOT_TOKEN=%s\nTG_CHAT_ID=%s\nTG_ADMIN_IDS=%s\n' "$TG_BOT_TOKEN" "$TG_CHAT_ID" "$TG_ADMIN_IDS" | \
               ssh_ "umask 077 && cat > '$DIR/.env.incoming'"
+          fi
+          if [ "$ACTION" = maint ]; then
+            [ -n "$MAINT_STEPS" ] || { echo "maint needs steps=..."; exit 1; }
+            if [[ ",$MAINT_STEPS," == *",delete-copies,"* ]]; then
+              # Interlock: deletions only after a successful off-site backup run whose
+              # encrypted artifact still exists.
+              [ -n "$BACKUP_RUN" ] || { echo "delete-copies needs backup_run=<run id of a successful backup>"; exit 1; }
+              api() { curl -fsS -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" "https://api.github.com/repos/$GITHUB_REPOSITORY/$1"; }
+              concl=$(api "actions/runs/$BACKUP_RUN" | jq -r .conclusion)
+              arts=$(api "actions/runs/$BACKUP_RUN/artifacts" | jq '[.artifacts[] | select(.name|startswith("offsite-backup-")) | select(.expired|not)] | length')
+              echo "backup run $BACKUP_RUN: conclusion=$concl, live encrypted artifacts=$arts"
+              [ "$concl" = success ] && [ "$arts" -ge 1 ] || { echo "no verified backup: refusing to delete"; exit 1; }
+            fi
+            ssh_ "bash -s -- '$MAINT_STEPS'" < scripts/vps-maint.sh
+            exit 0
           fi
           if [ "$ACTION" = backup ]; then
             # Off-site backup: streamed to this runner, restore-tested, encrypted with the
