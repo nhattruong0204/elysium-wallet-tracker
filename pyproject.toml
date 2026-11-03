@@ -23,3 +23,4 @@ exclude = ["^tests/"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+faulthandler_timeout = 120   # dump every thread's stack if one test hangs (CI shows where)
