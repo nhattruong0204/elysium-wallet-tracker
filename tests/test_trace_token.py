@@ -20,6 +20,7 @@ FACTORY = "0x" + "fa" * 20
 CURVE = "0x" + "cc" * 20
 BUYER = "0x" + "bb" * 20
 WHYPE = "0x" + "77" * 20
+NFT = "0x" + "99" * 20
 TX0, TX1 = "0x" + "01" * 32, "0x" + "02" * 32
 
 
@@ -69,6 +70,8 @@ def handle(method: str, params: list):
             return pad(TOKEN) if to == CURVE else "0x"
         if sel == tt.selector("token1()"):
             return pad(WHYPE) if to == CURVE else "0x"
+        if sel == tt.selector("ownerOf(uint256)"):
+            return pad(CREATOR)
         if sel == tt.selector("fee()"):
             return word(10000) if to == CURVE else "0x"
         if sel == tt.selector("liquidity()"):
@@ -94,7 +97,9 @@ def handle(method: str, params: list):
             return {"from": CREATOR, "to": FACTORY, "value": "0x0"}
         return {"from": BUYER, "to": CURVE, "value": hex(6 * E18)}
     if method == "eth_getTransactionReceipt":
-        return {"logs": [{"address": TOKEN}, {"address": FACTORY}], "contractAddress": None}
+        return {"logs": [{"address": TOKEN}, {"address": FACTORY},
+                         {"address": NFT, "topics": [tt.TRANSFER, pad(tt.ZERO), pad(CREATOR), word(7)], "data": "0x"}],
+                "contractAddress": None}
     if method == "eth_getBalance":
         return hex(40 * E18) if params[0] == CURVE else hex(2 * E18)
     raise AssertionError(method)
@@ -145,5 +150,7 @@ def test_full_trace_against_fake_node(capsys, tmp_path):
     assert "pool holds 40.0000 WHYPE (~$3,400)" in out                         # liquidity ceiling
     assert "fee tier 1%" in out and "in-range liquidity 12,345" in out
     assert "spot price ~ 1.000e-04 WHYPE per TST" in out and "FDV ~ $9" in out
+    assert "LP position NFT 0x999999…9999 #7" in out and "a normal wallet (can remove liquidity)" in out
+    assert "== the creator" in out and "launcher 0xfafafa…fafa" in out
     assert "wallets that sent tokens INTO a pool" in out and "creator received" in out
     assert "owner(): " + CREATOR in out
