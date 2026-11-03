@@ -126,6 +126,34 @@ PY
       journalctl -u revival-health.service -n 5 --no-pager 2>&1 | sed 's/^/  /'
       echo "old website health timer: $(systemctl is-enabled onchainflow-health.timer 2>&1)/$(systemctl is-active onchainflow-health.timer 2>&1) (must stay disabled)"
       ;;
+    audit-activity-fx)
+      say "read-only audit for the Activity monitor and USD market cap (aggregates only)"
+      docker exec -i elysium-postgres psql -U tracker -d tracker -X <<'SQL' 2>&1 | sed 's/^/  /'
+\pset footer off
+\echo -- trades by kind / confidence
+SELECT kind, confidence, count(*) AS n FROM trades GROUP BY 1,2 ORDER BY 1,2;
+\echo -- trades: rows, null block_time, time span, table + index sizes
+SELECT count(*) AS rows, count(*) FILTER (WHERE block_time IS NULL) AS null_time, min(block_time) AS first, max(block_time) AS last, pg_size_pretty(pg_total_relation_size('trades')) AS total_size FROM trades;
+SELECT indexrelname AS index, pg_size_pretty(pg_relation_size(indexrelid)) AS size FROM pg_stat_user_indexes WHERE relname = 'trades' ORDER BY 1;
+\echo -- one tx with several legs?
+SELECT count(*) AS txs_with_multiple_legs FROM (SELECT tx_hash FROM trades GROUP BY tx_hash HAVING count(*) > 1) x;
+\echo -- leaderboard snapshots: does the stored payload carry hypeUsd?
+SELECT count(*) AS snapshots, min(captured_at) AS first, max(captured_at) AS last, count(*) FILTER (WHERE raw_payload ? 'hypeUsd') AS with_hypeusd, count(*) FILTER (WHERE status = 'ok') AS ok FROM leaderboard_snapshots;
+SELECT min((raw_payload->>'hypeUsd')::numeric) AS min_rate, max((raw_payload->>'hypeUsd')::numeric) AS max_rate, (SELECT (raw_payload->>'hypeUsd')::numeric FROM leaderboard_snapshots WHERE raw_payload ? 'hypeUsd' ORDER BY captured_at DESC LIMIT 1) AS latest_rate FROM leaderboard_snapshots WHERE raw_payload ? 'hypeUsd';
+SELECT jsonb_typeof(raw_payload->'hypeUsd') AS hypeusd_type, count(*) FROM leaderboard_snapshots WHERE raw_payload IS NOT NULL GROUP BY 1;
+\echo -- snapshot cadence (seconds between consecutive ok snapshots)
+SELECT round(avg(d)) AS avg_s, round(max(d)) AS max_s, count(*) AS gaps_over_900s FROM (SELECT extract(epoch FROM captured_at - lag(captured_at) OVER (ORDER BY captured_at)) AS d FROM leaderboard_snapshots WHERE status = 'ok') g WHERE d IS NOT NULL AND (d > 900 OR true);
+\echo -- market snapshots
+SELECT count(*) AS rows, count(DISTINCT token) AS tokens, count(DISTINCT captured_at) AS rounds, min(captured_at) AS first, max(captured_at) AS last, count(*) FILTER (WHERE mcap_hype IS NULL) AS null_mcap, pg_size_pretty(pg_total_relation_size('token_market_snapshots')) AS size FROM token_market_snapshots;
+\echo -- keyset query plan on the public view (newest 50)
+EXPLAIN (ANALYZE, TIMING OFF, SUMMARY ON) SELECT id, block_time FROM public_api.trades ORDER BY block_time DESC NULLS LAST, id DESC LIMIT 50;
+EXPLAIN (ANALYZE, TIMING OFF, SUMMARY ON) SELECT count(*) FROM public_api.trades WHERE block_time >= now() - interval '7 days';
+SQL
+      echo "container health flags:"
+      docker ps --format '    {{.Names}}: {{.Status}}' | sort
+      echo "tracker --health: $(docker exec elysium-wallet-tracker python -m agora_tracker --health 2>&1 | tail -1)"
+      echo "ui image vs latest: $(docker inspect -f '{{.Image}}' elysium-ui | cut -c8-19) vs $(docker image inspect -f '{{.Id}}' elysium-wallet-tracker:latest | cut -c8-19)"
+      ;;
     caddy-show)
       say "Caddy: structure of the live Caddyfile (long token-like strings redacted)"
       ls -la "$CADDYFILE" "$CADDY_BAK" 2>&1 | sed 's/^/  /'
