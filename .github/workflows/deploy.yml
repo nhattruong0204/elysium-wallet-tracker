@@ -63,16 +63,19 @@ jobs:
             # deploy/OPS_REQUEST: lines of key=value (action, deploy_dir, install_docker)
             get() { grep -E "^$1=" deploy/OPS_REQUEST | head -1 | cut -d= -f2- | tr -d '[:space:]'; }
             IN_ACTION="$(get action)"; IN_DIR="$(get deploy_dir)"; IN_INSTALL="$(get install_docker)"
+            IN_SCOPE="$(get scope)"
           fi
           case "$IN_ACTION" in
             preflight|deploy|status|logs|discover|dry-run|test-telegram|test-card|ui-smoke|restart|stop|audit) ;;
             *) echo "invalid action '$IN_ACTION'"; exit 1 ;;
           esac
           [ "$IN_INSTALL" = true ] || IN_INSTALL=false
+          case "${IN_SCOPE:-full}" in full|deep) ;; *) echo "invalid scope"; exit 1 ;; esac
           {
             echo "ACTION=$IN_ACTION"
             echo "DIR=${IN_DIR:-elysium-wallet-tracker}"
             echo "INSTALL_DOCKER=$IN_INSTALL"
+            echo "AUDIT_SCOPE=${IN_SCOPE:-full}"
           } >> "$GITHUB_ENV"
 
       - name: Check inputs and secrets
@@ -159,7 +162,7 @@ jobs:
             # printed; only the holder of the matching private key can read it.
             umask 077
             out="$RUNNER_TEMP/audit.txt"
-            ssh_ "bash -s" < scripts/vps-audit.sh > "$out" 2>&1 || echo "(audit exited $?)" >> "$out"
+            ssh_ "bash -s -- '$AUDIT_SCOPE'" < scripts/vps-audit.sh > "$out" 2>&1 || echo "(audit exited $?)" >> "$out"
             echo "audit captured: $(wc -c < "$out") bytes (plaintext not shown)"
             openssl cms -encrypt -aes256 -binary -in "$out" -outform PEM deploy/ops-recipient.pem > "$RUNNER_TEMP/audit.pem"
             shred -u "$out"

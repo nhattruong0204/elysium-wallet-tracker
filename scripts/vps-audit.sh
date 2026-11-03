@@ -8,6 +8,7 @@
 #   ssh vps 'bash -s' < scripts/vps-audit.sh            (run as root for full visibility)
 set -u
 export LC_ALL=C
+SCOPE="${1:-full}"   # full | deep (targeted follow-up, still read-only)
 SLOW="nice -n 19 ionice -c3"
 T() { timeout "${1}" "${@:2}"; }
 
@@ -20,6 +21,52 @@ redact() {
     -e 's#((PASS|PASSWD|PASSWORD|SECRET|TOKEN|API_?KEY|PRIVATE|MNEMONIC|SEED|COOKIE|SALT|AUTH|CREDENTIAL|BEARER)[A-Za-z0-9_]*["]?[[:space:]]*[:=][[:space:]]*["]?)[^"[:space:],}]+#\1***#Ig' \
     -e 's#(Authorization:[[:space:]]*)[^"]+#\1***#Ig'
 }
+
+if [ "$SCOPE" = deep ]; then
+  sec "DEEP: per-table sizes of the revival SQLite DB, measured on the newest STATIC daily copy"
+  latest=$(ls -1 /root/onchainflow-backups/daily/daily-*.db 2>/dev/null | sort | tail -1)
+  echo "copy: $latest"
+  [ -n "$latest" ] && T 1200 nice -n 19 ionice -c3 python3 - "$latest" <<'PY2' 2>&1
+import sqlite3, sys
+c = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro&immutable=1", uri=True)
+owner = {n: t for n, t in c.execute("SELECT name, tbl_name FROM sqlite_master WHERE type IN ('table','index')")}
+try:
+    rows = c.execute("SELECT name, SUM(pgsize) FROM dbstat GROUP BY name").fetchall()
+except sqlite3.OperationalError as e:
+    sys.exit(f"dbstat unavailable: {e}")
+agg = {}
+for name, size in rows:
+    t = owner.get(name, name)
+    a = agg.setdefault(t, [0, 0]); a[0 if name == t else 1] += size
+total = sum(x + y for x, y in agg.values())
+print(f"{'table':32} {'data MB':>9} {'index MB':>9} {'share':>6}")
+for t, (d, i) in sorted(agg.items(), key=lambda kv: -sum(kv[1])):
+    print(f"{t:32} {d/1e6:9.1f} {i/1e6:9.1f} {(d+i)/total:6.1%}")
+print(f"{'TOTAL':32} {total/1e6:9.1f}")
+for t in ("web_sessions", "web_previews", "web_commands", "research_briefs", "research_brief_publications",
+          "research_alert_facts", "research_checkpoint_facts", "research_delivery_receipts", "alerts", "scan_runs"):
+    try:
+        print(t, "rows:", c.execute(f"SELECT count(*) FROM {t}").fetchone()[0])
+    except sqlite3.Error as e:
+        print(t, e)
+print("state keys:", ", ".join(sorted({k.split(':')[0] + (':' + k.split(':')[1] if ':' in k else '') for (k,) in c.execute('SELECT key FROM state')}))[:1500])
+PY2
+  sec "DEEP: did the 2026-11-02 19:00 UTC disk-full hit the services?"
+  for c in elysium-postgres gmgn-revival-radar-radar-1 gmgn-revival-radar-web-1; do
+    sub "$c 18:55-19:20 UTC (errors only)"
+    docker logs --since 2026-11-02T18:55:00Z --until 2026-11-02T19:20:00Z "$c" 2>&1 | grep -iE 'error|fatal|panic|space|full|fail' | redact | tail -20
+  done
+  sub "revival bot: last 15 log lines"; docker logs --tail 15 gmgn-revival-radar-radar-1 2>&1 | redact | cut -c1-220
+  sec "DEEP: copy directories (full listing)"
+  for d in /root/onchainflow-backups /root/onchainflow-releases /root/onchainflow-stage /opt/gmgn-revival-radar-backups /opt/gmgn-revival-radar/data; do
+    sub "$d"; find "$d" -maxdepth 3 -printf '%y %10s %TY-%Tm-%Td %TH:%TM %p\n' 2>/dev/null | sort -k5 | awk '{printf "%s %8.1f MB %s %s %s\n", $1, $2/1048576, $3, $4, $5}' | head -80
+  done
+  sec "DEEP: tools for off-server streaming"
+  for b in python3 sqlite3 gzip zstd pigz pv rsync rclone restic borg aws b2 openssl age gpg; do printf '%-8s %s\n' "$b" "$(command -v $b || echo -)"; done
+  python3 -c "import sqlite3; print('python sqlite', sqlite3.sqlite_version)"
+  echo; echo "audit complete"
+  exit 0
+fi
 
 sec "HOST"
 date -u +"audit time (UTC): %F %T"
