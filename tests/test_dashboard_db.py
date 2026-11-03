@@ -38,7 +38,7 @@ def ago(**kw) -> int:
 
 
 @pytest.fixture
-def seeded(store):
+def seeded(store, role_ready):
     store.sync_manual_watchlist({PRIV: PRIVATE_LABEL})
     sid = store.record_snapshot([Trader(address=PUB1, rank=1, pnl=500.0),
                                  Trader(address=PUB2, rank=2, pnl=300.0)],

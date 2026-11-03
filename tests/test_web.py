@@ -91,7 +91,7 @@ class Live:
 
 
 @pytest.fixture
-def make_live(pg_engine):
+def make_live(pg_engine, role_ready):
     started: list[Live] = []
 
     def factory(cfg: Config | None = None, url: str | None = None) -> Live:

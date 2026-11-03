@@ -30,6 +30,13 @@ def role_url() -> str:
 CHAIN = 99901
 
 
+@pytest.fixture
+def role_ready(pg_engine):
+    """The dashboard role can log in. Needed per test, not once per session: other tests run
+    the full migration down/up, which drops and recreates the role without a password."""
+    set_dashboard_password(pg_engine, ROLE_PASSWORD)
+
+
 @pytest.fixture(scope="session")
 def pg_engine():
     if not TEST_URL:
