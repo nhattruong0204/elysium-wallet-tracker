@@ -149,7 +149,7 @@ web_smoke() {
   log "security headers on /"
   curl -sI -m 10 http://127.0.0.1:8100/ | tr -d '\r' | grep -iE '^(content-security-policy|x-content-type-options|x-frame-options|referrer-policy|cache-control):' | cut -c1-160 | sed 's/^/  /'
   log "public health document (public by design; sanitised)"
-  curl -s -m 20 http://127.0.0.1:8100/api/v1/health | python3 -c 'import json,sys; d=json.load(sys.stdin); print("  status:", d.get("status"), "| reasons:", d.get("reasons")); print("  checks:", [(c.get("name"), c.get("state")) for c in d.get("checks", [])][:12])' 2>&1 || true
+  curl -s -m 20 http://127.0.0.1:8100/api/v1/health | python3 -c 'import json,sys; d=json.load(sys.stdin).get("health", {}); print("  status:", d.get("status"), "| reasons:", d.get("reasons")); print("  checks:", [(c.get("name"), c.get("state")) for c in d.get("checks", [])][:12])' 2>&1 || true
 }
 
 web_db_checks() {
@@ -184,11 +184,15 @@ PY
 }
 
 tracker_alive() {
+  # Never aborts the action (set -e): this is a report. Judge the bots by behaviour (cursor and
+  # heartbeat advancing), not only by the container flag.
   log "tracker + ui health (must stay healthy)"
-  docker exec elysium-wallet-tracker python -m agora_tracker --health 2>&1 | tail -1 | sed 's/^/  tracker: /'
-  docker exec elysium-ui python -m agora_tracker --health-ui 2>&1 | tail -1 | sed 's/^/  ui: /'
-  psql_admin -Atc "SELECT 'cursor block ' || block_number || ' updated ' || to_char(updated_at, 'HH24:MI:SS') FROM indexer_checkpoints ORDER BY updated_at DESC LIMIT 1" | sed 's/^/  /'
-  docker ps --format '  {{.Names}}: {{.Status}}' | sort
+  echo "  docker health: tracker=$(docker inspect -f '{{.State.Health.Status}}' elysium-wallet-tracker 2>&1) ui=$(docker inspect -f '{{.State.Health.Status}}' elysium-ui 2>&1)"
+  docker exec elysium-wallet-tracker python -m agora_tracker --health 2>&1 | tail -1 | sed 's/^/  tracker --health: /' || true
+  docker exec elysium-ui python -m agora_tracker --health-ui 2>&1 | tail -1 | sed 's/^/  ui --health-ui: /' || true
+  psql_admin -Atc "SELECT 'cursor block ' || block_number || ', checkpoint updated ' || to_char(updated_at, 'HH24:MI:SS') || ' UTC (now ' || to_char(now(), 'HH24:MI:SS') || ')' FROM indexer_checkpoints ORDER BY updated_at DESC LIMIT 1" | sed 's/^/  /' || true
+  psql_admin -Atc "SELECT 'heartbeat age ' || round(extract(epoch FROM now() - updated_at)) || ' s' FROM service_state WHERE key = 'heartbeat'" | sed 's/^/  tracker /' || true
+  docker ps --format '  {{.Names}}: {{.Status}}' | sort || true
 }
 
 resources() {
