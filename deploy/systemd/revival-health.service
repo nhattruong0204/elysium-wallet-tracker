@@ -1,0 +1,17 @@
+[Unit]
+Description=Revival Radar scan health check (read-only, alerts via Telegram)
+Documentation=https://github.com/nhattruong0204/elysium-wallet-tracker/blob/main/docs/OPERATIONS.md
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/elysium-ops/revival-health.py
+StateDirectory=elysium-ops
+TimeoutStartSec=90
+Nice=10
+IOSchedulingClass=idle
+# The script opens the Revival SQLite file read-only; these only limit collateral damage.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectHome=read-only
+ProtectKernelModules=yes

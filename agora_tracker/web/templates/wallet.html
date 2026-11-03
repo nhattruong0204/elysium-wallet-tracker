@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% from "_macros.html" import range_bar, freshness, kpi, badge, token, copy, ext_links, trades_table, pager_simple, empty with context %}
+{% set a = d.activity %}
+{% block body %}
+<h1>Wallet <span class="mono h1-sub">{{ d.wallet|short(8, 6) }}</span></h1>
+<p class="lead"><span class="addr mono">{{ d.wallet }}{{ copy(d.wallet) }}</span>
+  {% if d.rank %} · Agora rank <b>#{{ d.rank }}</b>{% endif %}
+  {% if d.qualified %} {{ badge('ok', 'qualified') }}{% endif %}</p>
+{{ ext_links(links.trader(d.wallet)) }}
+<div class="spacer"></div>
+{{ range_bar(tr, qs, query) }}
+{{ freshness(d.meta, d.universe) }}
+<div class="kpis">
+  {{ kpi('Agora PnL (all-time)', (d.agora_pnl|signed if d.agora_pnl is not none else '–'), 'Agora-reported, their accounting', 'HYPE') }}
+  {{ kpi('Trades in window', a.legs|number, (a.buys or 0) ~ ' buys · ' ~ (a.sells or 0) ~ ' sells · ' ~ (a.transfers or 0) ~ ' transfers') }}
+  {{ kpi('Verified bought', d.buy|hype, '', 'HYPE') }}
+  {{ kpi('Verified sold', d.sell|hype, '', 'HYPE') }}
+  {% set me = d.realized.get('measured') %}
+  {{ kpi('Measured realized PnL', (me.pnl|signed if me else '–'), ((me.n ~ ' closing trades') if me else 'none measured in window') ~ ' · separate from Agora PnL', 'HYPE') }}
+  {{ kpi('First tracked trade', d.last.first_at|ts, (d.last.n|number) ~ ' trades ever · last ' ~ (d.last.last_at|ts)) }}
+</div>
+<div class="grid g2">
+  <section class="panel flush"><h2 class="ph">Tokens in this window</h2>
+    {% if d.tokens %}<div class="tw"><table><thead><tr><th>Token</th><th class="r">Legs</th><th class="r">Bought</th><th class="r">Sold</th></tr></thead>
+      <tbody>{% for r in d.tokens %}<tr><td>{{ token(r) }}</td><td class="r">{{ r.legs }}</td><td class="r">{{ r.buy|hype }}</td><td class="r">{{ r.sell|hype }}</td></tr>{% endfor %}</tbody></table></div>
+    {% else %}{{ empty('No trades in this window') }}{% endif %}
+  </section>
+  <section class="panel flush"><h2 class="ph">Open positions <span class="sub">tracker's own accounting</span></h2>
+    {% if d.positions %}<div class="tw"><table><thead><tr><th>Token</th><th class="r">Quantity</th><th class="r">Cost (HYPE)</th><th>Basis</th></tr></thead>
+      <tbody>{% for r in d.positions %}<tr><td>{{ token(r) }}</td><td class="r">{{ r.qty_units|hype(2) }}</td><td class="r">{{ r.cost|hype(3) }}</td><td>{% if r.basis == 'known' %}{{ badge('ok', 'known') }}{% else %}{{ badge('warn', r.basis|replace('_', ' ')) }}{% endif %}</td></tr>{% endfor %}</tbody></table></div>
+    {% else %}{{ empty('No open positions recorded') }}{% endif %}
+  </section>
+</div>
+<section class="panel flush"><h2 class="ph">Trades <span class="sub">newest first</span></h2>
+  {{ trades_table(d.trades['items'], qs, false, true) }}
+  {{ pager_simple(d.trades, qs) }}
+</section>
+{% endblock %}

@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% from "_macros.html" import range_bar, freshness, pager, th, token, badge, empty, taddr with context %}
+{% set pg = d.page %}
+{% block body %}
+<h1>Projects</h1>
+<p class="lead">Every token the tracked wallets traded in the window. Flow columns count <b>verified</b> HYPE of <b>qualified</b> wallets; market columns are the collector's last stored snapshot, not live prices.</p>
+{{ range_bar(tr, qs, query) }}
+<form class="controls" method="get" action="/tokens">
+  {% for k, v in query.items() if k not in ('q', 'page') %}<input type="hidden" name="{{ k }}" value="{{ v }}">{% endfor %}
+  <input class="grow" type="search" name="q" value="{{ d.query }}" placeholder="Filter by symbol, name or address" maxlength="80" aria-label="Filter tokens">
+  <button type="submit">Filter</button>
+  {% if d.query %}<a class="btn" href="{{ qs(q=None, page=None) }}">Clear</a>{% endif %}
+  <span class="win">{{ d.totals.matching }} of {{ d.totals.tokens }} tokens</span>
+</form>
+{{ freshness(d.meta, d.universe) }}
+<div class="panel flush">
+{% if pg['items'] %}
+<div class="tw"><table>
+  <thead><tr>
+    {{ th('Token', 'symbol', d.sort, d.desc, qs) }}<th>Launchpad</th><th>Contract</th>
+    {{ th('First seen', 'first', d.sort, d.desc, qs) }}{{ th('Last activity', 'last', d.sort, d.desc, qs) }}
+    {{ th('Q. buyers', 'buyers', d.sort, d.desc, qs, true) }}{{ th('Q. sellers', 'sellers', d.sort, d.desc, qs, true) }}
+    {{ th('Verified net (HYPE)', 'net', d.sort, d.desc, qs, true) }}{{ th('Market cap (HYPE)', 'mcap', d.sort, d.desc, qs, true) }}<th class="r">24h change</th>
+  </tr></thead>
+  <tbody>
+  {% for r in pg['items'] %}
+  <tr>
+    <td>{{ token(r) }}{% if r.new_in_window %} {{ badge('est', 'new') }}{% endif %}</td>
+    <td>{{ r.launchpad or '–' }}</td>
+    <td>{{ taddr(r.token) }}</td>
+    <td>{{ r.first_ever|ts }}</td>
+    <td>{{ r.last_at|ts }}</td>
+    <td class="r">{{ r.q_buyers }}</td><td class="r">{{ r.q_sellers }}</td>
+    <td class="r {{ r.q_net|tone }}">{{ r.q_net|signed }}</td>
+    {% if r.market %}
+    <td class="r" title="Snapshot {{ r.market.at|ts }}">{{ r.market.mcap_hype|hype(0) }}</td>
+    <td class="r {{ r.market.change_24h|tone }}" title="Agora's 24h change at the snapshot">{{ r.market.change_24h|pct }}</td>
+    {% else %}<td class="r faint">no snapshot</td><td class="r faint">–</td>{% endif %}
+  </tr>
+  {% endfor %}
+  </tbody>
+</table></div>
+{{ pager(pg, qs) }}
+{% else %}
+{{ empty('No tokens match', 'Nothing was traded by tracked wallets in this window' ~ (' for “' ~ d.query ~ '”' if d.query else '') ~ '. Try a longer range.') }}
+{% endif %}
+</div>
+{% endblock %}

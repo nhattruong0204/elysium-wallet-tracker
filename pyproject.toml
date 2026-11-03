@@ -11,6 +11,9 @@ target-version = "py310"
 select = ["E", "F", "W", "B", "UP", "I"]
 ignore = ["B904", "E501"]  # long SQL/f-strings; formatting is not a correctness issue
 
+[tool.ruff.lint.per-file-ignores]
+"tests/test_web.py" = ["F811"]  # pytest fixtures imported from test_dashboard_db
+
 [tool.mypy]
 python_version = "3.10"
 ignore_missing_imports = true
@@ -20,3 +23,4 @@ exclude = ["^tests/"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+faulthandler_timeout = 120   # dump every thread's stack if one test hangs (CI shows where)

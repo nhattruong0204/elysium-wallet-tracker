@@ -35,7 +35,10 @@ services:
     build: .
     image: elysium-wallet-tracker:latest
     command: ["--migrate"]
-    environment: *db-url
+    environment:
+      <<: *db-url
+      # optional: when set, --migrate (re)sets the dashboard_ro password (scram-sha-256)
+      DASHBOARD_DB_PASSWORD: ${DASHBOARD_DB_PASSWORD:-}
     depends_on:
       postgres:
         condition: service_healthy
@@ -80,6 +83,39 @@ services:
       retries: 3
     stop_grace_period: 30s
     mem_limit: 384m
+    logging: *logging
+
+  # Public research dashboard (onchainflow.app, via the reverse proxy on the host).
+  # Connects ONLY as the read-only `dashboard_ro` role (views in schema public_api): no
+  # env_file, so no Telegram or admin credentials exist inside this container.
+  web:
+    image: elysium-wallet-tracker:latest
+    container_name: elysium-web
+    command: ["--web", "--host", "0.0.0.0", "--port", "8100"]
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql+psycopg://dashboard_ro:${DASHBOARD_DB_PASSWORD:-unset}@postgres:5432/tracker
+    ports:
+      - "127.0.0.1:8100:8100"      # loopback only; the host reverse proxy is the public edge
+    volumes:
+      - ./config:/config:ro
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8100/healthz', timeout=4).status == 200 else 1)"]
+      interval: 30s
+      timeout: 6s
+      start_period: 30s
+      retries: 3
+    stop_grace_period: 15s
+    mem_limit: 256m
     logging: *logging
 
   # Daily pg_dump (custom format), verified with pg_restore --list, pruned after N days.

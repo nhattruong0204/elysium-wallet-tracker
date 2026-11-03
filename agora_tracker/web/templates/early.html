@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% from "_macros.html" import range_bar, freshness, token, waddr, badge, empty with context %}
+{% block body %}
+<h1>Early plays</h1>
+<p class="lead">New and increasingly active projects, ranked by <b>observed</b> tracked-wallet activity. Each row says why it is listed.</p>
+<div class="banner warn"><b>Statistics, not advice.</b> This is a record of what qualified wallets did, so it lags them and cannot tell you what happens next. Small markets can be wash-traded or moved by one wallet; flags below call that out. Do your own research.</div>
+{{ range_bar(tr, qs, query) }}
+{{ freshness(d.meta, d.universe) }}
+{% if d.note %}<div class="banner info">{{ d.note }}{% if d.live %} <span class="faint">(market inputs come from the collector's stored snapshot, not a live call)</span>{% endif %}</div>{% endif %}
+
+<section class="panel flush" aria-labelledby="sc"><h2 id="sc" class="ph">Scored candidates
+  <span class="sub">sort:
+  {% for s, lbl in [('score', 'score'), ('smart', 'qualified buyers'), ('buying', 'buy volume')] %}<a href="{{ qs(sort=s) }}"{% if d.sort == s %} aria-current="true" class="warnc"{% endif %}>{{ lbl }}</a>{{ ' · ' if not loop.last }}{% endfor %}</span></h2>
+  {% if d.trending %}
+  <div class="tw"><table>
+    <thead><tr><th class="r">Score</th><th>Token</th><th class="r">Qualified buyers</th><th class="r">Qualified net (HYPE)</th><th class="r">Market cap (HYPE)</th><th>Why it is listed</th></tr></thead>
+    <tbody>{% for r in d.trending %}
+    <tr><td class="r"><span class="score" title="0 to 100; components are fixed and documented">{{ r.score }}</span></td><td>{{ token(r) }}</td>
+      <td class="r">{{ r.q_buyers }}</td><td class="r {{ r.q_net|tone }}">{{ r.q_net|signed }}</td><td class="r">{{ r.mcap|hype(0) if r.mcap is not none else '–' }}</td>
+      <td class="why">{{ r.why|join('; ') if r.why else 'tracked-wallet activity only' }}{% if r.flags %}<br><i>⚠ {{ r.flags|join('; ') }}</i>{% endif %}</td></tr>
+    {% endfor %}</tbody>
+  </table></div>
+  {% else %}{{ empty('No scored candidates', 'No token had qualified-wallet buying in this window.') }}{% endif %}
+</section>
+
+<div class="grid g2">
+  <section class="panel flush" aria-labelledby="nw"><h2 id="nw" class="ph">New to tracked wallets <span class="sub">first tracked trade inside the window</span></h2>
+    {% if d.new %}
+    <div class="tw"><table><thead><tr><th>Token</th><th>First seen</th><th class="r">Buyers</th><th class="r">Qualified</th></tr></thead>
+      <tbody>{% for r in d.new[:15] %}<tr><td>{{ token(r) }}</td><td>{{ r.first_ever|ts }}</td><td class="r">{{ r.buyers }}</td><td class="r">{{ r.q_buyers }}</td></tr>{% endfor %}</tbody></table></div>
+    <p class="faint note note-pad">“New” means new to the tracker, not necessarily newly launched.</p>
+    {% else %}{{ empty('Nothing new', 'Every token traded here had been seen before.') }}{% endif %}
+  </section>
+  <section class="panel" aria-labelledby="ri"><h2 id="ri">Increasing participation</h2>
+    {% if d.rising %}<ul class="plain">{% for r in d.rising %}<li>{{ token(r) }} <span class="muted">buyers {{ r.prev_buyers }} → {{ r.buyers }} versus the previous window</span></li>{% endfor %}</ul>
+    {% else %}<p class="muted">No token gained buyers versus the previous window.</p>{% endif %}
+    <h3 class="mt">Two or more qualified buyers</h3>
+    {% if d.multi_qualified %}<ul class="plain">{% for r in d.multi_qualified %}<li>{{ token(r) }} <span class="muted">{{ r.q_buyers }} wallets, {{ r.q_buy|hype }} HYPE</span></li>{% endfor %}</ul>
+    {% else %}<p class="muted">None in this window.</p>{% endif %}
+  </section>
+</div>
+
+<section class="panel flush" aria-labelledby="cl"><h2 id="cl" class="ph">Cluster buys <span class="sub">3+ tracked wallets buying the same token within an hour</span></h2>
+  {% if d.clusters %}
+  <div class="tw"><table><thead><tr><th>Raised (UTC)</th><th>Token</th><th class="r">Wallets</th></tr></thead>
+    <tbody>{% for r in d.clusters %}<tr><td>{{ r.created_at|ts }}</td><td>{{ token(r) }}</td><td class="r">{{ r.n_wallets }}</td></tr>{% endfor %}</tbody></table></div>
+  {% else %}{{ empty('No cluster signals in this window') }}{% endif %}
+</section>
+{% endblock %}
