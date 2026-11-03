@@ -1,2 +1,3 @@
-action=web-smoke
-requested=2026-11-03T08:21:14Z
+action=maint
+steps=caddy-show,caddy-backup
+requested=2026-11-03T08:22:08Z
