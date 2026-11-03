@@ -141,6 +141,18 @@ def activity_api(base: str) -> None:
             code = e.code
         i = probe.index((kind, path))
         check(code == 200, f"detail link #{i} ({kind}) resolves", str(code))
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import loadtest  # the load-test URL mix: each URL must answer 200 once
+    bad = []
+    for label, path, _w in loadtest.build_mix(base):
+        try:
+            with urllib.request.urlopen(base + path, timeout=30) as r:
+                code = r.status
+        except urllib.error.HTTPError as e:
+            code = e.code
+        if code != 200:
+            bad.append(f"{code} {label} {path.split('?')[0][:40]}{'?' + path.split('?', 1)[1][:60] if '?' in path else ''}")
+    check(not bad, "every load-test URL answers 200", "; ".join(bad[:6]))
     toks = api_json(base, "/api/v1/tokens?range=30d&sort=mcap&dir=desc")
     items = (toks.get("page") or {}).get("items") or []
     usd = [(i.get("market") or {}).get("usd") or {} for i in items]
