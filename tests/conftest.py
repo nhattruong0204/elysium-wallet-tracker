@@ -15,9 +15,18 @@ import sqlalchemy as sa
 
 from agora_tracker import schema
 from agora_tracker.db import Store, make_engine
-from agora_tracker.migrate import upgrade
+from agora_tracker.migrate import set_dashboard_password, upgrade
 
 TEST_URL = os.environ.get("TEST_DATABASE_URL")
+# The role is created WITHOUT a password (migration 0004); like production, the tests provision
+# one. CI's Postgres uses scram-sha-256 over TCP, so a passwordless login cannot work there.
+ROLE_PASSWORD = "test-dashboard-password-0123456789"
+
+
+def role_url() -> str:
+    """URL that logs in as the read-only dashboard role."""
+    return sa.engine.make_url(TEST_URL).set(
+        username="dashboard_ro", password=ROLE_PASSWORD).render_as_string(hide_password=False)
 CHAIN = 99901
 
 
@@ -34,6 +43,7 @@ def pg_engine():
         c.execute(sa.text("CREATE SCHEMA public"))
         c.execute(sa.text("GRANT USAGE ON SCHEMA public TO PUBLIC"))   # as in a fresh PG16
     upgrade(eng)
+    set_dashboard_password(eng, ROLE_PASSWORD)
     yield eng
     eng.dispose()
 

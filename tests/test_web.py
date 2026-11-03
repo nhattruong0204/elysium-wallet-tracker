@@ -17,7 +17,7 @@ import pytest
 import requests
 import sqlalchemy as sa
 import uvicorn
-from conftest import CHAIN, TEST_URL, truncate_all
+from conftest import CHAIN, TEST_URL, role_url, truncate_all
 from test_dashboard_db import (  # noqa: F401  (fixtures + seed constants)
     NOW,
     PRIV,
@@ -49,8 +49,7 @@ from agora_tracker.web.run import build
 
 UTC = timezone.utc
 E18 = 10 ** 18
-DASH_URL = str(sa.engine.make_url(TEST_URL).set(username="dashboard_ro", password=None)
-               .render_as_string(hide_password=False)) if TEST_URL else ""
+DASH_URL = role_url() if TEST_URL else ""
 PRIVATE_MARKERS = (PRIV, TOK_PRIV, PRIVATE_LABEL, SECRET_TEXT, "HIDDEN", "123456789",
                    "987654321", "tg_offset")
 

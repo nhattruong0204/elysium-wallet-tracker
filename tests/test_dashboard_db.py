@@ -12,14 +12,14 @@ from decimal import Decimal
 
 import pytest
 import sqlalchemy as sa
-from conftest import CHAIN, TEST_URL
+from conftest import CHAIN, ROLE_PASSWORD, role_url
 from sqlalchemy import exc as sa_exc
 
 from agora_tracker import schema as t
 from agora_tracker.classify import TradeEvent
 from agora_tracker.config import UiConfig
 from agora_tracker.leaderboard import Trader
-from agora_tracker.migrate import current_revision, downgrade, upgrade
+from agora_tracker.migrate import current_revision, downgrade, set_dashboard_password, upgrade
 from agora_tracker.reports import Reports
 from agora_tracker.timerange import preset_range
 
@@ -113,7 +113,7 @@ def seeded(store):
 
 @pytest.fixture
 def dash(pg_engine, seeded):
-    url = sa.engine.make_url(TEST_URL).set(username="dashboard_ro", password=None)
+    url = role_url()
     eng = sa.create_engine(url)
     yield eng
     eng.dispose()
@@ -308,7 +308,7 @@ def test_statement_timeout_cancels_slow_queries(dash):
 
 
 def test_connection_limit_is_enforced(pg_engine, seeded):
-    url = sa.engine.make_url(TEST_URL).set(username="dashboard_ro", password=None)
+    url = role_url()
     conns = []
     try:
         for _ in range(5):
@@ -339,3 +339,4 @@ def test_migration_is_reversible_and_repeatable(pg_engine):
     upgrade(pg_engine)
     assert current_revision(pg_engine) == "0004"
     upgrade(pg_engine)                                     # idempotent
+    set_dashboard_password(pg_engine, ROLE_PASSWORD)       # a recreated role has no password
