@@ -23,13 +23,13 @@ if [ "$ACTION" = preflight ]; then
   else
     echo "docker: not installed"
   fi
-  for u in https://rpc.thekleos.xyz/rpc https://www.agoradex.app/traders https://api.telegram.org \
+  for u in https://rpc.thekleos.pro/rpc https://www.agoradex.app/traders https://api.telegram.org \
            https://registry-1.docker.io/v2/ https://pypi.org/simple/; do
     code=$(curl -s -o /dev/null -m 10 -w '%{http_code}' "$u" || echo "fail")
     echo "reach $u -> $code"
   done
   chain=$(curl -s -m 10 -H 'content-type: application/json' \
-    -d '{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}' https://rpc.thekleos.xyz/rpc || true)
+    -d '{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}' https://rpc.thekleos.pro/rpc || true)
   echo "kleos eth_chainId: $chain"
   [ -d "$DIR" ] && echo "deploy dir: exists" || echo "deploy dir: not created yet"
   exit 0

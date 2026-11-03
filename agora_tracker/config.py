@@ -80,7 +80,7 @@ class LinksConfig:
     """Base URLs used to make every alert detail clickable (formats verified 2026-11-02)."""
     explorer: str = "https://elyscan.live"          # /tx/<hash>, /address/<a>, /token/<a>
     agora: str = "https://www.agoradex.app"         # /token/<a>, /trader/<a>
-    kleos: str = "https://www.thekleos.xyz"         # /token/<a>
+    kleos: str = "https://www.thekleos.pro"         # /token/<a>
     boxa: str = "https://boxa.club"                 # /token?address=<a> (any Elysium token)
     elyspump: str = "https://elysp.com"             # /#/token/<a>
     # "Trade in wallet" buttons: open the trade page inside the wallet app's browser.
