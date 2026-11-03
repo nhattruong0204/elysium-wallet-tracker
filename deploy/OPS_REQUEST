@@ -1,3 +1,2 @@
-action=maint
-steps=caddy-show,caddy-backup
-requested=2026-11-03T08:22:08Z
+action=loadtest
+requested=2026-11-03T08:25:47Z
