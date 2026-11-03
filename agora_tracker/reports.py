@@ -688,6 +688,12 @@ class Reports:
         return {"kind": "none", "symbol": sym}
 
     # --- health ----------------------------------------------------------------------------------
+    def _outbox_counts(self, c: Connection) -> dict[str, int]:
+        """Alert queue size per status. The public dashboard overrides this to read the
+        message-free `outbox_status` view instead of the raw table."""
+        return {x["status"]: x["n"] for x in self._all(c, """
+            SELECT status, count(*) AS n FROM notification_outbox GROUP BY status""")}
+
     def health(self, now: datetime | None = None) -> dict[str, Any]:
         now = now or datetime.now(UTC)
         t0 = time.monotonic()
@@ -714,8 +720,7 @@ class Reports:
                         WHERE chain_id = :c) AS market_since,
                       (SELECT max(block_time) FROM trades WHERE chain_id = :c) AS last_trade
                     """) or {}
-                outbox = {x["status"]: x["n"] for x in self._all(c, """
-                    SELECT status, count(*) AS n FROM notification_outbox GROUP BY status""")}
+                outbox = self._outbox_counts(c)
                 heads = self._kv(c, "rpc_heads") or {}
                 ui_hb = self._kv(c, "ui_heartbeat")
                 coll = self._kv(c, "collector_last") or {}

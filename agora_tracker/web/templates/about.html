@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block body %}
+<h1>Method and limits</h1>
+<div class="panel narrow">
+<h2>Who is “tracked”</h2>
+<p>The tracker follows wallets on Agora's public top-PnL leaderboard on Elysium (chain {{ cfg.chain.chain_id }}), refreshed every few minutes. Everything on this site describes <b>those wallets only</b>, not the whole chain. A wallet is <b>qualified</b> when the latest leaderboard snapshot before the window ends shows positive Agora-reported PnL. Wallets followed privately by the operator are never shown, counted or used in any number here: the database role behind this site cannot read them.</p>
+<h2>Verified, estimated, unknown</h2>
+<p><b>Verified</b> HYPE amounts were measured on-chain from the transaction itself. <b>Estimated</b> amounts come from a model when the HYPE leg could not be measured. They are listed next to the verified numbers and never added to them. Transfers between wallets are not purchases. Where nothing could be determined the value is shown as unknown.</p>
+<h2>Two kinds of PnL</h2>
+<p><b>Agora PnL</b> is the figure Agora reports for a wallet since it began trading. <b>Measured PnL</b> is realized profit the tracker computed from sells with a known cost basis inside the selected window. They answer different questions and are never combined.</p>
+<h2>Market data</h2>
+<p>Prices, market caps and changes are Agora's numbers captured by a collector about every ten minutes and stored. This site never queries Agora or the chain when you load a page, so figures carry the snapshot time and can be minutes old. Market caps are in HYPE; USD conversion is not stored.</p>
+<h2>Time</h2>
+<p>All times are UTC. A window is half-open, <span class="mono">[start, end)</span>: it includes the start instant and excludes the end instant. Rolling presets end at the page-load time rounded down to 30 seconds. Results are cached for 30 seconds.</p>
+<h2>Limits</h2>
+<ul><li>Coverage starts when the tracker started; earlier activity is not backfilled. Windows reaching back past that say so.</li>
+<li>Observed activity lags the wallets it describes. Nothing here is a recommendation to buy or sell.</li>
+<li>Small markets can be wash-traded or dominated by one wallet. Flags call this out when the data shows it.</li></ul>
+<h2>API</h2>
+<p>JSON versions of each page live under <a href="/api/v1/meta">/api/v1/</a> with the same parameters (<span class="mono">range</span>, <span class="mono">start</span>, <span class="mono">end</span>, <span class="mono">page</span>, <span class="mono">sort</span>). Decimals are strings to keep exact values.</p>
+</div>
+{% endblock %}

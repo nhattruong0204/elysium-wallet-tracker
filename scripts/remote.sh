@@ -73,6 +73,10 @@ write_env() {
     # bot updates, so the deploy workflow can no longer auto-detect the chat id each time.
     : > .env.tmp
     echo "POSTGRES_PASSWORD=$pg" >> .env.tmp
+    # the dashboard's read-only DB password (created by the `web` action) must survive a deploy
+    if [ -f .env ] && grep -qE '^DASHBOARD_DB_PASSWORD=.+' .env; then
+      grep -E '^DASHBOARD_DB_PASSWORD=' .env | head -1 >> .env.tmp
+    fi
     while IFS= read -r line; do
       key="${line%%=*}"; val="${line#*=}"
       if [ -z "$val" ] && [ -f .env ]; then
@@ -114,6 +118,87 @@ wait_healthy() {
   return 1
 }
 
+ensure_dashboard_password() {
+  # Generated once on the VPS, kept in .env (0600), never printed. `--migrate` applies it to
+  # the dashboard_ro role (scram-sha-256); the web container reads it from the environment.
+  (
+    umask 077
+    if grep -qE '^DASHBOARD_DB_PASSWORD=.{24,}' .env 2>/dev/null; then
+      echo "DASHBOARD_DB_PASSWORD already present in .env (kept)"
+    else
+      pw="$(openssl rand -hex 24)"
+      grep -vE '^DASHBOARD_DB_PASSWORD=' .env > .env.tmp 2>/dev/null || : > .env.tmp
+      echo "DASHBOARD_DB_PASSWORD=$pw" >> .env.tmp
+      mv .env.tmp .env
+      echo "generated DASHBOARD_DB_PASSWORD (stored only in $DIR/.env, mode 0600)"
+    fi
+    chmod 600 .env
+  )
+}
+
+psql_admin() { docker compose exec -T postgres psql -U tracker -d tracker -X -v ON_ERROR_STOP=0 "$@"; }
+
+web_smoke() {
+  log "dashboard smoke test on the loopback port (status, seconds, bytes)"
+  local p out code t size
+  for p in /healthz / "/?range=7d" /tokens /smart-money /early /scanner /about /robots.txt \
+           /api/v1/meta /api/v1/overview /api/v1/tokens /api/v1/early /api/v1/health /static/app.css; do
+    out=$(curl -s -o /dev/null -w '%{http_code} %{time_total} %{size_download}' -m 30 "http://127.0.0.1:8100$p" || echo "000 0 0")
+    printf '  %-22s %s\n' "$p" "$out"
+  done
+  log "security headers on /"
+  curl -sI -m 10 http://127.0.0.1:8100/ | tr -d '\r' | grep -iE '^(content-security-policy|x-content-type-options|x-frame-options|referrer-policy|cache-control):' | cut -c1-160 | sed 's/^/  /'
+  log "public health document (public by design; sanitised)"
+  curl -s -m 20 http://127.0.0.1:8100/api/v1/health | python3 -c 'import json,sys; d=json.load(sys.stdin); print("  status:", d.get("status"), "| reasons:", d.get("reasons")); print("  checks:", [(c.get("name"), c.get("state")) for c in d.get("checks", [])][:12])' 2>&1 || true
+}
+
+web_db_checks() {
+  log "dashboard_ro role attributes and boundary (admin view)"
+  psql_admin -c "SELECT rolcanlogin, rolsuper, rolcreatedb, rolcreaterole, rolreplication, rolconnlimit, (rolpassword IS NOT NULL) AS has_password FROM pg_roles WHERE rolname='dashboard_ro'" 2>&1 | sed 's/^/  /'
+  psql_admin -c "SELECT (SELECT count(*) FROM public.trades) AS trades_all, (SELECT count(*) FROM public_api.trades) AS trades_public, (SELECT count(*) FROM public.wallet_watchlist WHERE status='active') AS watchlist_all, (SELECT count(*) FROM public_api.wallet_watchlist WHERE status='active') AS watchlist_public, (SELECT count(*) FROM public_api.public_wallets) AS public_wallets, (SELECT count(*) FROM public_api.public_tokens) AS public_tokens" 2>&1 | sed 's/^/  /'
+  log "public_wallets view cost on production-size data (EXPLAIN ANALYZE)"
+  psql_admin -c "EXPLAIN (ANALYZE, BUFFERS, TIMING OFF) SELECT count(*) FROM public_api.public_wallets" 2>&1 | grep -E 'Execution Time|Planning Time' | sed 's/^/  /'
+  psql_admin -c "EXPLAIN (ANALYZE, BUFFERS, TIMING OFF) SELECT count(*) FROM public_api.trades" 2>&1 | grep -E 'Execution Time' | sed 's/^/  trades view: /'
+  log "real login as dashboard_ro from inside the web container (no secrets printed)"
+  docker exec -i elysium-web python - <<'PY' 2>&1 | sed 's/^/  /'
+import os, sqlalchemy as sa
+e = sa.create_engine(os.environ["DATABASE_URL"])
+def run(label, sql):
+    try:
+        with e.connect() as c:
+            r = c.execute(sa.text(sql)).fetchall()
+            print(f"{label}: OK {r[0][0] if r and len(r[0])==1 else ''}")
+    except Exception as ex:
+        print(f"{label}: DENIED ({type(ex.orig).__name__ if hasattr(ex, 'orig') else type(ex).__name__})")
+run("current_user", "select current_user")
+run("read-only default", "show default_transaction_read_only")
+run("statement_timeout", "show statement_timeout")
+run("search_path", "show search_path")
+run("select public_api.trades", "select count(*) from trades")
+run("select RAW public.trades (must be denied)", "select count(*) from public.trades")
+run("select RAW notification_outbox (must be denied)", "select count(*) from public.notification_outbox")
+run("select service_state (whitelisted keys only)", "select count(*) from service_state")
+run("insert (must be denied)", "insert into trades(id) values (1)")
+run("create temp table (must be denied)", "create temp table x(a int)")
+PY
+}
+
+tracker_alive() {
+  log "tracker + ui health (must stay healthy)"
+  docker exec elysium-wallet-tracker python -m agora_tracker --health 2>&1 | tail -1 | sed 's/^/  tracker: /'
+  docker exec elysium-ui python -m agora_tracker --health-ui 2>&1 | tail -1 | sed 's/^/  ui: /'
+  psql_admin -Atc "SELECT 'cursor block ' || block_number || ' updated ' || to_char(updated_at, 'HH24:MI:SS') FROM indexer_checkpoints ORDER BY updated_at DESC LIMIT 1" | sed 's/^/  /'
+  docker ps --format '  {{.Names}}: {{.Status}}' | sort
+}
+
+resources() {
+  log "resources"
+  free -m | awk 'NR<=3{print "  " $0}'
+  echo "  load: $(cut -d' ' -f1-3 /proc/loadavg) on $(nproc) cpu"
+  df -B1 --output=used,avail / | awk 'NR==2{printf "  disk: used %.2f GB, free %.2f GB\n", $1/1e9, $2/1e9}'
+  docker stats --no-stream --format '  {{.Name}}: mem {{.MemUsage}} cpu {{.CPUPerc}}' elysium-web elysium-wallet-tracker elysium-ui elysium-postgres 2>&1
+}
+
 status() {
   log "containers"
   docker compose ps
@@ -146,6 +231,46 @@ case "$ACTION" in
     wait_healthy || true
     wait_healthy elysium-ui "telegram ui" || true
     status
+    ;;
+  web)
+    # Deploy ONLY the dashboard: tracker, ui and postgres are not restarted or recreated.
+    need_docker
+    [ -f .env ] || { echo ".env missing: run the normal deploy first" >&2; exit 1; }
+    ensure_dashboard_password
+    install_config
+    log "disk before"; df -B1 --output=used,avail / | awk 'NR==2{printf "  used %.2f GB, free %.2f GB\n", $1/1e9, $2/1e9}'
+    log "build the image (retags :latest; running containers keep their current image until recreated)"
+    docker compose build migrate
+    log "migrate: adds schema public_api + role dashboard_ro (idempotent), applies its password"
+    docker compose run --rm migrate
+    log "start the dashboard only"
+    docker compose up -d --no-deps web
+    wait_healthy elysium-web "dashboard" || { docker logs --tail 60 elysium-web 2>&1 | sed 's/^/  web| /'; exit 1; }
+    web_smoke
+    web_db_checks
+    tracker_alive
+    resources
+    ;;
+  web-smoke)
+    web_smoke
+    web_db_checks
+    tracker_alive
+    resources
+    ;;
+  loadtest)
+    tracker_alive
+    log "load test: ~5 req/s for 5 minutes against http://127.0.0.1:8100 (open loop, aborts if the bots degrade)"
+    rc=0
+    python3 scripts/loadtest.py --base http://127.0.0.1:8100 --rps 5 --duration 300 || rc=$?
+    tracker_alive
+    resources
+    exit $rc
+    ;;
+  web-rollback)
+    # Stop serving the dashboard (e.g. after a Caddy rollback). Tracker/ui/postgres untouched;
+    # the dashboard_ro role and views stay (harmless, additive).
+    docker compose stop web
+    docker compose ps web
     ;;
   status)
     status

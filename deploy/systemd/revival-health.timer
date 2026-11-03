@@ -1,0 +1,10 @@
+[Unit]
+Description=Run the Revival Radar scan health check every 5 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+AccuracySec=15s
+
+[Install]
+WantedBy=timers.target
