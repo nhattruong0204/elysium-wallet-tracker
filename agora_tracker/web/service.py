@@ -93,7 +93,8 @@ class Dashboard:
         addrs = sorted({r[token_key] for r in rows if r.get(token_key)})
         usd = self.rep.latest_usd(addrs, now)
         for r in rows:
-            r["market_cap"] = usd.get(r.get(token_key))
+            tk = r.get(token_key)
+            r["market_cap"] = usd.get(tk) if tk else None
         return rows
 
     # --- overview ------------------------------------------------------------------------------

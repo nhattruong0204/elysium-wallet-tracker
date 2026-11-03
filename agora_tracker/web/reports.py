@@ -285,18 +285,18 @@ class PublicReports(_BasePublicReports):
         in-process (bounded, 10 min). Only tokens that appeared in public rows get cached."""
         now = time.monotonic()
         with self._names_lock:
-            hit = {t: v for t in tokens if (v := self._names.get(t)) and v[0] > now}
+            hit = {t: e for t in tokens if (e := self._names.get(t)) and e[0] > now}
         missing = [t for t in tokens if t not in hit]
-        out = {t: v[1] for t, v in hit.items()}
+        out = {t: e[1] for t, e in hit.items()}
         if missing:
             got = self.token_names(c, missing)
             with self._names_lock:
                 if len(self._names) > 4000:
-                    self._names = {k: v for k, v in self._names.items() if v[0] > now}
+                    self._names = {k: e for k, e in self._names.items() if e[0] > now}
                     if len(self._names) > 4000:
                         self._names.clear()
-                for t, v in got.items():
-                    self._names[t] = (now + 600, v)
+                for t, info in got.items():
+                    self._names[t] = (now + 600, info)
             out.update(got)
         return out
 
@@ -339,7 +339,8 @@ class PublicReports(_BasePublicReports):
             n = c.execute(sa.text(f"SELECT count(*) FROM (SELECT 1 FROM trades t WHERE {where} "
                                    "LIMIT :cap) x"), {"c": self.chain_id, "cap": TOTAL_CAP + 1,
                                                       **prm}).scalar()
-        return {"count": min(int(n), TOTAL_CAP), "capped": int(n) > TOTAL_CAP}
+        total = int(n or 0)
+        return {"count": min(total, TOTAL_CAP), "capped": total > TOTAL_CAP}
 
 
 def sort_key(sort: str, item: dict[str, Any]) -> Any:

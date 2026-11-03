@@ -67,7 +67,7 @@ def build(cfg: Config, url: str | None = None) -> tuple[object, Engine]:
     log.info("web: connected as %s", redact_db_url(url))
     ui = dataclasses.replace(cfg.ui, query_timeout_ms=cfg.web.query_timeout_ms)
     market = StoredMarket(engine, cfg.chain.chain_id, cfg.web.market_max_age_s)
-    reports = PublicReports(engine, cfg.chain.chain_id, ui, value_unit="HYPE", market=market,  # type: ignore[arg-type]
+    reports = PublicReports(engine, cfg.chain.chain_id, ui, value_unit="HYPE", market=market,
                             collector_interval_s=cfg.collector.interval_s)
     reports.fx_policy = FxPolicy.from_web(cfg.web)
     return create_app(cfg, Dashboard(reports, cfg), engine), engine
