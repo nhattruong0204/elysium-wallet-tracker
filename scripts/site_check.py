@@ -127,6 +127,20 @@ def activity_api(base: str) -> None:
         head = (newest.get("items") or [{}])[0].get("id")
         inc = api_json(base, f"/api/v1/activity?range=all&since_id={head}")
         check(not inc.get("items"), "since_id at head returns nothing new")
+    # every detail link the lists hand out must resolve (the load test once saw a stray 404)
+    probe = []
+    for it in ((api_json(base, "/api/v1/tokens?range=30d").get("page") or {}).get("items") or [])[:15]:
+        probe.append(("token", f"/tokens/{it['token']}?range=7d"))
+    for it in ((api_json(base, "/api/v1/smart-money?view=traders-agora&range=30d").get("page") or {}).get("items") or [])[:12]:
+        probe.append(("wallet", f"/wallets/{it.get('wallet') or it.get('address')}?range=30d"))
+    for kind, path in probe:
+        try:
+            with urllib.request.urlopen(base + path, timeout=30) as r:
+                code = r.status
+        except urllib.error.HTTPError as e:
+            code = e.code
+        i = probe.index((kind, path))
+        check(code == 200, f"detail link #{i} ({kind}) resolves", str(code))
     toks = api_json(base, "/api/v1/tokens?range=30d&sort=mcap&dir=desc")
     items = (toks.get("page") or {}).get("items") or []
     usd = [(i.get("market") or {}).get("usd") or {} for i in items]
