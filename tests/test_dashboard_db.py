@@ -19,7 +19,13 @@ from agora_tracker import schema as t
 from agora_tracker.classify import TradeEvent
 from agora_tracker.config import UiConfig
 from agora_tracker.leaderboard import Trader
-from agora_tracker.migrate import current_revision, downgrade, set_dashboard_password, upgrade
+from agora_tracker.migrate import (
+    current_revision,
+    downgrade,
+    head_revision,
+    set_dashboard_password,
+    upgrade,
+)
 from agora_tracker.reports import Reports
 from agora_tracker.timerange import preset_range
 
@@ -326,7 +332,7 @@ def test_connection_limit_is_enforced(pg_engine, seeded):
 
 # --- migration lifecycle ----------------------------------------------------------------------
 def test_migration_is_reversible_and_repeatable(pg_engine):
-    assert current_revision(pg_engine) == "0004"
+    assert current_revision(pg_engine) == head_revision()
     downgrade(pg_engine, "0003")
     with pg_engine.connect() as c:
         # roles are cluster-wide: dropped, or (when another database in the cluster still
@@ -337,6 +343,6 @@ def test_migration_is_reversible_and_repeatable(pg_engine):
                                  "'public_api'")).scalar() == 0
         assert c.execute(sa.text("SELECT count(*) FROM trades")).scalar() >= 0   # data intact
     upgrade(pg_engine)
-    assert current_revision(pg_engine) == "0004"
+    assert current_revision(pg_engine) == head_revision()
     upgrade(pg_engine)                                     # idempotent
     set_dashboard_password(pg_engine, ROLE_PASSWORD)       # a recreated role has no password

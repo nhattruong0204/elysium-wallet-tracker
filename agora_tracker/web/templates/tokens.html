@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import range_bar, freshness, pager, th, token, badge, empty, taddr with context %}
+{% from "_macros.html" import range_bar, freshness, pager, th, token, badge, empty, taddr, mcap with context %}
 {% set pg = d.page %}
 {% block body %}
 <h1>Projects</h1>
@@ -20,7 +20,7 @@
     {{ th('Token', 'symbol', d.sort, d.desc, qs) }}<th>Launchpad</th><th>Contract</th>
     {{ th('First seen', 'first', d.sort, d.desc, qs) }}{{ th('Last activity', 'last', d.sort, d.desc, qs) }}
     {{ th('Q. buyers', 'buyers', d.sort, d.desc, qs, true) }}{{ th('Q. sellers', 'sellers', d.sort, d.desc, qs, true) }}
-    {{ th('Verified net (HYPE)', 'net', d.sort, d.desc, qs, true) }}{{ th('Market cap (HYPE)', 'mcap', d.sort, d.desc, qs, true) }}<th class="r">24h change</th>
+    {{ th('Verified net (HYPE)', 'net', d.sort, d.desc, qs, true) }}{{ th('Market cap (USD)', 'mcap', d.sort, d.desc, qs, true) }}<th class="r">24h change</th>
   </tr></thead>
   <tbody>
   {% for r in pg['items'] %}
@@ -33,7 +33,7 @@
     <td class="r">{{ r.q_buyers }}</td><td class="r">{{ r.q_sellers }}</td>
     <td class="r {{ r.q_net|tone }}">{{ r.q_net|signed }}</td>
     {% if r.market %}
-    <td class="r" title="Snapshot {{ r.market.at|ts }}">{{ r.market.mcap_hype|hype(0) }}</td>
+    <td class="r">{{ mcap(r.market.usd) }}</td>
     <td class="r {{ r.market.change_24h|tone }}" title="Agora's 24h change at the snapshot">{{ r.market.change_24h|pct }}</td>
     {% else %}<td class="r faint">no snapshot</td><td class="r faint">–</td>{% endif %}
   </tr>

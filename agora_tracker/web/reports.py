@@ -8,6 +8,8 @@ templates'. This subclass only adds the aggregate shapes the website needs.
 
 from __future__ import annotations
 
+import threading
+import time
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
@@ -16,8 +18,17 @@ import sqlalchemy as sa
 from sqlalchemy.engine import Connection, Engine
 
 from ..market import TokenInfo
-from ..reports import Reports
+from ..reports import Reports, hype
 from ..timerange import TimeRange
+from .activity import (
+    KIND_TO_ACTION,
+    TOTAL_CAP,
+    ActivityParams,
+    dt_to_micros,
+    filter_sql,
+    order_and_cursor,
+)
+from .usd import FX_LATERAL, FxPolicy, format_usd, to_usd
 
 UTC = timezone.utc
 
@@ -87,7 +98,50 @@ class StoredMarket:
         return None        # candles come from Agora live; the website never calls it
 
 
-class PublicReports(Reports):
+class _BasePublicReports(Reports):
+    # Latest stored snapshot per token with the HYPE/USD rate closest in time to it. The rate
+    # lookup runs once per returned row (a few hundred at most), never per stored snapshot.
+    _LATEST_USD = """
+        SELECT d.token, d.captured_at, d.price_hype, d.mcap_hype, d.change_1h, d.change_24h,
+               fx.observed_at AS fx_at, fx.hype_usd AS fx_rate
+        FROM (SELECT DISTINCT ON (token) token, captured_at, price_hype, mcap_hype,
+                     change_1h, change_24h
+              FROM token_market_snapshots
+              WHERE chain_id = :c AND token = ANY(:t) AND captured_at >= :since
+              ORDER BY token, captured_at DESC) d""" + FX_LATERAL.format(ts="d.captured_at")
+
+    fx_policy = FxPolicy()
+
+    def usd(self, row: dict[str, Any], now: datetime) -> dict[str, Any]:
+        """Public USD contract for one snapshot row that carries fx_at / fx_rate."""
+        return to_usd(row.get("mcap_hype"), row.get("fx_rate"), row.get("fx_at"),
+                      row.get("captured_at"), self.fx_policy, now)
+
+    def latest_usd(self, tokens: list[str], now: datetime | None = None,
+                   lookback: timedelta = timedelta(days=2)) -> dict[str, dict[str, Any]]:
+        """token -> USD contract of its newest stored snapshot (tokens without one are absent)."""
+        now = now or datetime.now(UTC)
+        if not tokens:
+            return {}
+        with self.ro() as c:
+            rows = self._all(c, self._LATEST_USD, t=list(tokens), since=now - lookback)
+        return {r["token"]: {**self.usd(r, now), "price_hype": r["price_hype"]} for r in rows}
+
+    def _mcap_text(self, mcap_hype: float) -> str:
+        with self.ro() as c:
+            r = self._one(c, "SELECT hype_usd, observed_at FROM hype_usd_rates "
+                             "ORDER BY observed_at DESC LIMIT 1")
+        now = datetime.now(UTC)
+        u = to_usd(mcap_hype, r and r["hype_usd"], r and r["observed_at"], now,
+                   self.fx_policy, now)
+        return format_usd(u["market_cap_usd"]) if u["market_cap_usd"] is not None \
+            else "USD value unavailable"
+
+    def latest_fx(self) -> dict[str, Any] | None:
+        with self.ro() as c:
+            return self._one(c, "SELECT hype_usd, observed_at, source FROM hype_usd_rates "
+                                "ORDER BY observed_at DESC LIMIT 1")
+
     def _outbox_counts(self, c: Connection) -> dict[str, int]:
         return {x["status"]: x["n"] for x in self._all(c, "SELECT status, n FROM outbox_status")}
 
@@ -95,6 +149,7 @@ class PublicReports(Reports):
     def token_table(self, tr: TimeRange) -> dict[str, Any]:
         """Every token tracked wallets touched in the window, with flows and the latest
         stored market snapshot. Filtering, sorting and paging happen on this list."""
+        now = datetime.now(UTC)
         with self.ro() as c:
             uni = self.universe(c, tr)
             flows = self.token_flows(c, tr, uni.qualified)
@@ -103,13 +158,8 @@ class PublicReports(Reports):
             ever = {r["token"]: r for r in self._all(c, """
                 SELECT token, min(block_time) AS first_ever, max(block_time) AS last_ever
                 FROM trades WHERE chain_id = :c AND token = ANY(:t) GROUP BY token""", t=toks)}
-            snap = {r["token"]: r for r in self._all(c, """
-                SELECT DISTINCT ON (token) token, captured_at, price_hype, mcap_hype,
-                       change_1h, change_24h
-                FROM token_market_snapshots
-                WHERE chain_id = :c AND token = ANY(:t) AND captured_at >= :since
-                ORDER BY token, captured_at DESC""", t=toks,
-                since=datetime.now(UTC) - timedelta(days=2))}
+            snap = {r["token"]: r for r in self._all(c, self._LATEST_USD, t=toks,
+                                                     since=datetime.now(UTC) - timedelta(days=2))}
         for r in flows:
             e, s = ever.get(r["token"], {}), snap.get(r["token"])
             r["first_ever"], r["last_ever"] = e.get("first_ever"), e.get("last_ever")
@@ -117,16 +167,27 @@ class PublicReports(Reports):
             r["market"] = None if not s else {
                 "at": s["captured_at"],
                 "price_hype": s["price_hype"], "mcap_hype": s["mcap_hype"],
-                "change_1h": s["change_1h"], "change_24h": s["change_24h"]}
+                "change_1h": s["change_1h"], "change_24h": s["change_24h"],
+                "usd": self.usd(s, now)}
         return {"rows": flows, "universe": uni, "range": tr}
 
     def snapshot_series(self, token: str, tr: TimeRange, limit: int = 600
                         ) -> list[dict[str, Any]]:
+        """Stored snapshots in the window, each with the USD value at its own time."""
+        now = datetime.now(UTC)
         with self.ro() as c:
-            return self._all(c, """
-                SELECT captured_at, price_hype, mcap_hype FROM token_market_snapshots
-                WHERE chain_id = :c AND token = :t AND captured_at >= :s AND captured_at < :e
-                ORDER BY captured_at LIMIT :n""", t=token, s=tr.start, e=tr.end, n=int(limit))
+            rows = self._all(c, """
+                SELECT d.captured_at, d.price_hype, d.mcap_hype,
+                       fx.observed_at AS fx_at, fx.hype_usd AS fx_rate
+                FROM (SELECT captured_at, price_hype, mcap_hype FROM token_market_snapshots
+                      WHERE chain_id = :c AND token = :t AND captured_at >= :s
+                        AND captured_at < :e
+                      ORDER BY captured_at LIMIT :n) d""" + FX_LATERAL.format(ts="d.captured_at")
+                + " ORDER BY d.captured_at", t=token, s=tr.start, e=tr.end, n=int(limit))
+        for r in rows:
+            u = self.usd(r, now)
+            r["mcap_usd"], r["usd_status"] = u["market_cap_usd"], u["market_cap_status"]
+        return rows
 
     def snapshot_history(self, limit: int = 12) -> list[dict[str, Any]]:
         with self.ro() as c:
@@ -154,3 +215,136 @@ class PublicReports(Reports):
 
 def hype_str(v: Decimal | float | None, places: int = 2) -> str:
     return "–" if v is None else f"{float(v):,.{places}f}"
+
+
+# --- Activity monitor -----------------------------------------------------------------------------
+def _activity_row(r: dict[str, Any], names: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    m = names.get(r["token"], {})
+    dec = m.get("decimals", 18)
+    conf = r["confidence"]
+    return {
+        "id": r["id"], "block_time": r["block_time"], "block_number": r["block_number"],
+        "tx_hash": r["tx_hash"], "wallet": r["wallet"], "token": r["token"],
+        "symbol": m.get("symbol"), "kind": r["kind"], "action": KIND_TO_ACTION.get(r["kind"], "other"),
+        "confidence": conf,
+        "basis": "verified" if conf == "high" else "estimated" if conf == "estimated" else "unknown",
+        "amount_hype": None if r["hype_wei"] is None else hype(r["hype_wei"]),
+        "hype_method": r["hype_method"],
+        "_wei": None if r["hype_wei"] is None else int(r["hype_wei"]),
+        "qty_units": Decimal(r["qty"]) / (Decimal(10) ** int(dec if dec is not None else 18)),
+    }
+
+
+class PublicReports(_BasePublicReports):
+    """The dashboard's reports: the shared analytics plus the public Activity queries."""
+
+    def __init__(self, *a: Any, **kw: Any) -> None:
+        super().__init__(*a, **kw)
+        self._names: dict[str, tuple[float, dict[str, Any]]] = {}
+        self._names_lock = threading.Lock()
+
+    _ACT_COLS = ("t.id, t.block_number, t.block_time, t.tx_hash, t.wallet, t.token, t.kind, "
+                 "t.confidence, t.hype_method, t.qty, t.hype_wei")
+
+    def activity_head(self, now: datetime) -> dict[str, Any]:
+        """Cheap freshness facts: newest leg id and time, indexer cursor, heartbeat, retention.
+
+        LIMIT-1 index probes, not max()/min() over the view: an aggregate has to read every
+        public trade (240 ms at 1M rows), a probe reads a handful of index entries."""
+        with self.ro() as c:
+            newest = self._one(c, """SELECT id, block_time FROM trades WHERE chain_id = :c
+                                     ORDER BY id DESC LIMIT 1""") or {}
+            latest = self._one(c, """SELECT block_time FROM trades WHERE chain_id = :c
+                                     ORDER BY block_time DESC, id DESC LIMIT 1""") or {}
+            first = self._one(c, """SELECT block_time FROM trades WHERE chain_id = :c
+                                    ORDER BY block_time ASC, id ASC LIMIT 1""") or {}
+            r = self._one(c, """
+                SELECT (SELECT block_number FROM indexer_checkpoints
+                         WHERE chain_id = :c AND name = 'indexer') AS cursor,
+                       (SELECT updated_at FROM indexer_checkpoints
+                         WHERE chain_id = :c AND name = 'indexer') AS cursor_at""") or {}
+            heads = self._kv(c, "rpc_heads") or {}
+            hb = self._kv(c, "heartbeat")
+        r["head_id"] = newest.get("id")
+        r["last_trade_at"] = latest.get("block_time")
+        r["first_trade_at"] = first.get("block_time")
+        best = heads.get("best") if isinstance(heads, dict) else None
+        cur = r.get("cursor")
+        r["chain_head"] = best
+        r["lag_blocks"] = (best - cur) if (best is not None and cur is not None) else None
+        try:
+            r["heartbeat_age_s"] = max(0, int(now.timestamp()) - int(hb)) if hb not in (None, "") else None
+        except (TypeError, ValueError):
+            r["heartbeat_age_s"] = None
+        return r
+
+    def _activity_names(self, c: Connection, tokens: list[str]) -> dict[str, dict[str, Any]]:
+        """Symbols for the tokens on a page. They almost never change, and resolving them
+        through the public views costs a full pass over the public trades, so they are cached
+        in-process (bounded, 10 min). Only tokens that appeared in public rows get cached."""
+        now = time.monotonic()
+        with self._names_lock:
+            hit = {t: v for t in tokens if (v := self._names.get(t)) and v[0] > now}
+        missing = [t for t in tokens if t not in hit]
+        out = {t: v[1] for t, v in hit.items()}
+        if missing:
+            got = self.token_names(c, missing)
+            with self._names_lock:
+                if len(self._names) > 4000:
+                    self._names = {k: v for k, v in self._names.items() if v[0] > now}
+                    if len(self._names) > 4000:
+                        self._names.clear()
+                for t, v in got.items():
+                    self._names[t] = (now + 600, v)
+            out.update(got)
+        return out
+
+    def activity_page(self, p: ActivityParams) -> dict[str, Any]:
+        """One keyset page. Fetches size+1 rows to learn whether more exist in that direction."""
+        where, prm = filter_sql(p)
+        order, cur_sql, cprm = order_and_cursor(p)
+        if cur_sql:
+            where += " AND " + cur_sql
+            prm.update(cprm)
+        with self.ro() as c:
+            rows = self._all(c, f"""
+                SELECT {self._ACT_COLS} FROM trades t WHERE {where}
+                ORDER BY {order} LIMIT :lim""", lim=p.size + 1, **prm)
+            more = len(rows) > p.size
+            rows = rows[:p.size]
+            if p.direction == "prev":
+                rows.reverse()
+            names = self._activity_names(c, sorted({r["token"] for r in rows}))
+        items = [_activity_row(r, names) for r in rows]
+        return {"items": items, "more": more}
+
+    def activity_since(self, p: ActivityParams, limit: int) -> dict[str, Any]:
+        """Rows inserted after `since_id` that match the filters, newest first."""
+        where, prm = filter_sql(p)
+        with self.ro() as c:
+            rows = self._all(c, f"""
+                SELECT {self._ACT_COLS} FROM trades t WHERE {where} AND t.id > :since
+                ORDER BY t.id DESC LIMIT :lim""", since=p.since_id, lim=limit + 1, **prm)
+            overflow = len(rows) > limit
+            rows = rows[:limit]
+            names = self._activity_names(c, sorted({r["token"] for r in rows}))
+        items = [_activity_row(r, names) for r in rows]
+        items.sort(key=lambda i: (i["block_time"], i["id"]), reverse=True)
+        return {"items": items, "overflow": overflow}
+
+    def activity_total(self, p: ActivityParams) -> dict[str, Any]:
+        where, prm = filter_sql(p)
+        with self.ro() as c:
+            n = c.execute(sa.text(f"SELECT count(*) FROM (SELECT 1 FROM trades t WHERE {where} "
+                                   "LIMIT :cap) x"), {"c": self.chain_id, "cap": TOTAL_CAP + 1,
+                                                      **prm}).scalar()
+        return {"count": min(int(n), TOTAL_CAP), "capped": int(n) > TOTAL_CAP}
+
+
+def sort_key(sort: str, item: dict[str, Any]) -> Any:
+    """The cursor key of an item for the given sort."""
+    if sort in ("newest", "oldest"):
+        return dt_to_micros(item["block_time"])
+    return str(item["_wei"])                 # exact wei, as an integer string
+
+

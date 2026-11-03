@@ -15,9 +15,13 @@ from typing import Any
 
 from ..config import Config
 from ..timerange import TimeRange
+from .activity import (
+    ActivityParams,
+    encode_cursor,
+)
 from .cache import Hit, TTLCache
 from .params import ListParams, paginate, range_dict, range_key
-from .reports import PublicReports
+from .reports import PublicReports, sort_key
 
 UTC = timezone.utc
 
@@ -51,6 +55,10 @@ class Dashboard:
         self.cache = cache or TTLCache(self.w.cache_ttl_s, self.w.cache_max_entries,
                                        self.w.cache_stale_s)
         self._sem = threading.BoundedSemaphore(self.w.max_concurrent_builds)
+        # Activity is polled by every open tab, so it has its own short-lived, single-flight
+        # cache: N tabs asking the same question cost one query per few seconds.
+        self.act_cache = TTLCache(self.w.activity_cache_ttl_s, 512, 60.0)
+        self.links: Any = None        # set by create_app (needs the Links helper)
 
     # --- plumbing ----------------------------------------------------------------------------
     def _cached(self, key: tuple, fn: Callable[[], Any]) -> Hit:
@@ -63,10 +71,30 @@ class Dashboard:
                 self._sem.release()
         return self.cache.get(key, guarded)
 
+    def _acached(self, key: tuple, fn: Callable[[], Any]) -> Hit:
+        def guarded() -> Any:
+            if not self._sem.acquire(timeout=8):
+                raise Busy("too many page builds in flight")
+            try:
+                return fn()
+            finally:
+                self._sem.release()
+        return self.act_cache.get(key, guarded)
+
     @staticmethod
     def _meta(hit: Hit, tr: TimeRange | None, now: datetime) -> dict[str, Any]:
         return {"generated_at": now - timedelta(seconds=hit.age_s), "age_s": round(hit.age_s),
                 "stale": hit.stale, "range": range_dict(tr) if tr else None}
+
+    def _attach_market(self, rows: list[dict[str, Any]], now: datetime,
+                       token_key: str = "token") -> list[dict[str, Any]]:
+        """Add `market_cap` (the public USD contract of each token's newest stored snapshot,
+        or None) to rows that carry a token address. One query for the whole list."""
+        addrs = sorted({r[token_key] for r in rows if r.get(token_key)})
+        usd = self.rep.latest_usd(addrs, now)
+        for r in rows:
+            r["market_cap"] = usd.get(r.get(token_key))
+        return rows
 
     # --- overview ------------------------------------------------------------------------------
     def overview(self, tr: TimeRange, now: datetime) -> dict[str, Any]:
@@ -75,7 +103,7 @@ class Dashboard:
             return {
                 "totals": o["totals"], "prev": o["prev"], "summary": o["summary"],
                 "universe": o["universe"], "launchpads": o["launchpads"],
-                "top_tokens": o["top_tokens"], "rising": o["rising"], "selling": o["selling"],
+                "top_tokens": self._attach_market(list(o["top_tokens"]), now), "rising": o["rising"], "selling": o["selling"],
                 "multi_qualified": o["multi_qualified"],
                 "concentration_top3": o["concentration_top3"],
                 "coverage": self.rep.coverage(tr, now),
@@ -103,7 +131,8 @@ class Dashboard:
             "sellers": lambda r: r["q_sellers"], "net": lambda r: r["q_net"],
             "buy": lambda r: r["buy"], "sell": lambda r: r["sell"],
             "symbol": lambda r: (r.get("symbol") or "").lower(),
-            "mcap": lambda r: (r["market"] or {}).get("mcap_hype"),
+            # USD on a single scale; tokens without a valid USD value sort last either way
+            "mcap": lambda r: ((r["market"] or {}).get("usd") or {}).get("market_cap_usd"),
         }[lp.sort]
         have = [r for r in rows if keyf(r) is not None]
         missing = [r for r in rows if keyf(r) is None]          # None sorts last either way
@@ -121,7 +150,8 @@ class Dashboard:
             d = self.rep.token_detail(addr, tr)
             series = self.rep.snapshot_series(addr, tr)
             return {"detail": d, "buyers": self.rep.token_buyers(addr, tr)["rows"],
-                    "series": downsample(series, 120), "seen": seen}
+                    "series": downsample(series, 120), "seen": seen,
+                    "market_cap": self.rep.latest_usd([addr], now).get(addr)}
         hit = self._cached(("token", addr, range_key(tr)), build)
         trades = self._cached(("token_trades", addr, range_key(tr), page), lambda: self._trades(
             tr, page, token=addr))
@@ -129,7 +159,8 @@ class Dashboard:
         return {"token": addr, "meta_token": v["detail"]["meta"], "flow": v["detail"]["flow"],
                 "info": v["detail"]["info"], "perf": v["detail"]["perf"],
                 "universe": v["detail"]["universe"], "buyers": v["buyers"], "series": v["series"],
-                "seen": v["seen"], "trades": trades.value, "meta": self._meta(hit, tr, now)}
+                "seen": v["seen"], "market_cap": v["market_cap"], "trades": trades.value,
+                "meta": self._meta(hit, tr, now)}
 
     def _trades(self, tr: TimeRange, page: int, **kw: Any) -> dict[str, Any]:
         size = self.w.page_size
@@ -147,6 +178,8 @@ class Dashboard:
                 return {"kind": "wallets", "rows": d["rows"], "universe": d["universe"],
                         "note": d["note"]}
             d = self.rep.smart_money(tr, view)
+            if view != "clusters":
+                self._attach_market(d["rows"], now)
             return {"kind": "clusters" if view == "clusters" else "tokens", "rows": d["rows"],
                     "universe": d["universe"], "note": d["note"]}
         hit = self._cached(("smart", view, range_key(tr)), build)
@@ -177,6 +210,9 @@ class Dashboard:
 
         def build() -> dict[str, Any]:
             t = self.rep.trending(tr, sort, now=now)
+            for r in t["rows"]:
+                r.pop("mcap", None)          # HYPE-denominated; the USD contract replaces it
+            self._attach_market(t["rows"][:30], now)
             new = [r for r in tbl["rows"] if r["new_in_window"]]
             new.sort(key=lambda r: (-r["q_buyers"], -r["buyers"], r["first_ever"], r["token"]))
             clusters = self.rep.smart_money(tr, "clusters")["rows"][:15]
@@ -186,6 +222,62 @@ class Dashboard:
                     "window": t["window"]}
         hit = self._cached(("early", sort, range_key(tr)), build)
         return {"sort": sort, **hit.value, "meta": self._meta(hit, tr, now)}
+
+    # --- activity ----------------------------------------------------------------------------------
+    def activity(self, p: ActivityParams, now: datetime) -> dict[str, Any]:
+        """A keyset page (or, with since_id, only the rows added since) plus freshness."""
+        head_hit = self._acached(("act_head",), lambda: self.rep.activity_head(datetime.now(UTC)))
+        head = head_hit.value
+        fresh = activity_freshness(head, now, head_hit.age_s)
+        base = {"filters": activity_filters(p), "freshness": fresh,
+                "meta": {"generated_at": now, "age_s": round(head_hit.age_s),
+                         "stale": head_hit.stale,
+                         "timezone": "UTC", "interval": "[start, end)"}}
+        if p.since_id is not None:
+            hit = self._acached(("act_since", p.cache_key()), lambda: self.rep.activity_since(
+                p, self.w.activity_since_limit))
+            items = [self._finish(i) for i in hit.value["items"]]
+            new_head = max([head["head_id"] or 0, p.since_id] + [i["id"] for i in items])
+            return {**base, "items": items, "count": len(items),
+                    "overflow": hit.value["overflow"], "head_id": new_head,
+                    "meta": {**base["meta"], "age_s": round(max(hit.age_s, head_hit.age_s)),
+                             "stale": hit.stale or head_hit.stale}}
+        page_hit = self._acached(("act_page", p.cache_key()), lambda: self.rep.activity_page(p))
+        total_key = ("act_total", (p.action, p.range, p.start and int(p.start.timestamp()),
+                                   p.end and int(p.end.timestamp()), p.basis, p.wallet, p.token,
+                                   p.tx, p.q, p.sort in ("largest_buy", "largest_sell")))
+        total_hit = self._acached(total_key, lambda: self.rep.activity_total(p))
+        raw = page_hit.value["items"]
+        more = page_hit.value["more"]
+        nxt = prv = None
+        if raw:
+            first, last = raw[0], raw[-1]
+            has_next = more if p.direction == "next" else True
+            has_prev = (p.cursor is not None) if p.direction == "next" else more
+            if has_next:
+                nxt = encode_cursor(p.sort, sort_key(p.sort, last), last["id"])
+            if has_prev:
+                prv = encode_cursor(p.sort, sort_key(p.sort, first), first["id"])
+        items = [self._finish(i) for i in raw]
+        window = {"range": p.range, "start": p.start, "end": p.end,
+                  "retention_start": head["first_trade_at"], "coverage": "full", "note": None}
+        if p.start is not None and head["first_trade_at"] and p.start < head["first_trade_at"]:
+            window["coverage"] = "partial"
+            window["note"] = (f"tracking began {head['first_trade_at']:%Y-%m-%d %H:%M} UTC; "
+                              "earlier activity was not observed")
+        return {**base, "items": items,
+                "page": {"size": p.size, "sort": p.sort, "next_cursor": nxt, "prev_cursor": prv,
+                         "has_next": nxt is not None, "has_prev": prv is not None},
+                "total": total_hit.value, "window": window, "head_id": head["head_id"],
+                "live": p.live,
+                "meta": {**base["meta"], "age_s": round(max(page_hit.age_s, head_hit.age_s)),
+                         "stale": page_hit.stale or head_hit.stale}}
+
+    def _finish(self, item: dict[str, Any]) -> dict[str, Any]:
+        out = {k: v for k, v in item.items() if not k.startswith("_")}
+        if self.links is not None:
+            out["tx_url"] = self.links.tx(item["tx_hash"])
+        return out
 
     # --- scanner health ----------------------------------------------------------------------------------
     def health(self, now: datetime) -> dict[str, Any]:
@@ -200,7 +292,49 @@ class Dashboard:
     def search(self, q: str) -> dict[str, Any]:
         if not q.strip():
             return {"kind": "none"}
-        return self._cached(("search", q.strip().lower()), lambda: self.rep.search(q)).value
+        def build() -> dict[str, Any]:
+            res = self.rep.search(q)
+            if res.get("kind") == "tokens":
+                self._attach_market(res["rows"], datetime.now(UTC), "address")
+            return res
+        return self._cached(("search", q.strip().lower()), build).value
+
+
+def activity_filters(p: ActivityParams) -> dict[str, Any]:
+    """Echo of the filters that were applied, so a client can see how its input was read."""
+    return {"action": p.action, "range": p.range, "start": p.start, "end": p.end,
+            "sort": p.sort, "basis": p.basis, "wallet": p.wallet, "token": p.token, "tx": p.tx,
+            "q": p.q or None, "limit": p.size}
+
+
+def activity_freshness(head: dict[str, Any], now: datetime, age_s: float = 0) -> dict[str, Any]:
+    """Browser time, scanner heartbeat, indexed block and last observed transaction, kept apart.
+    `scanner_status` is "live" only when the indexer heartbeat AND its checkpoint are recent
+    and it is not far behind the chain: a stopped scanner can never read as live."""
+    hb, lag = head.get("heartbeat_age_s"), head.get("lag_blocks")
+    cur_at, last = head.get("cursor_at"), head.get("last_trade_at")
+    cur_age = None if cur_at is None else max(0, int((now - cur_at).total_seconds()))
+    if hb is None or cur_age is None:
+        status, note = "unknown", "no indexer heartbeat or checkpoint recorded"
+    elif hb > 300 or cur_age > 900:
+        status = "stale"
+        note = f"the indexer has not reported for {max(hb, cur_age)}s; new activity is not being recorded"
+    elif hb > 120 or cur_age > 300 or (lag is not None and lag > 120):
+        status = "delayed"
+        note = (f"{lag} blocks behind the chain head" if lag and lag > 120
+                else f"heartbeat {hb}s old, checkpoint {cur_age}s old")
+    else:
+        status, note = "live", "indexer heartbeat and checkpoint are current"
+    return {"server_time": now, "scanner_status": status, "scanner_note": note,
+            "indexer_heartbeat_age_s": hb,
+            "indexer_heartbeat_at": None if hb is None else now - timedelta(seconds=hb),
+            "last_indexed_block": head.get("cursor"),
+            "indexer_checkpoint_at": cur_at, "indexer_checkpoint_age_s": cur_age,
+            "chain_head_block": head.get("chain_head"), "lag_blocks": lag,
+            "last_observed_transaction_at": last,
+            "last_observed_transaction_age_s": None if last is None
+            else max(0, int((now - last).total_seconds())),
+            "head_id": head.get("head_id"), "data_age_s": round(age_s)}
 
 
 # --- helpers -------------------------------------------------------------------------------------------------

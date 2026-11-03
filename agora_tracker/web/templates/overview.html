@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import kpi, range_bar, freshness, coverage, badge, token, trades_table, empty with context %}
+{% from "_macros.html" import kpi, range_bar, freshness, coverage, badge, token, trades_table, empty, mcap with context %}
 {% set t = d.totals %}{% set p = d.prev %}{% set h = d.health %}
 {% block body %}
 <h1>Overview</h1>
@@ -35,8 +35,8 @@
   <section class="panel flush" aria-labelledby="top"><h2 id="top" class="ph">Most traded tokens <span class="sub">by verified HYPE volume</span></h2>
     {% if d.top_tokens %}
     <div class="tw"><table>
-      <thead><tr><th>Token</th><th class="r">Buyers</th><th class="r">Sellers</th><th class="r">Net HYPE</th></tr></thead>
-      <tbody>{% for r in d.top_tokens %}<tr><td>{{ token(r) }}</td><td class="r">{{ r.buyers }}</td><td class="r">{{ r.sellers }}</td><td class="r {{ r.net|tone }}">{{ r.net|signed }}</td></tr>{% endfor %}</tbody>
+      <thead><tr><th>Token</th><th class="r">Buyers</th><th class="r">Sellers</th><th class="r">Net HYPE</th><th class="r">Market cap (USD)</th></tr></thead>
+      <tbody>{% for r in d.top_tokens %}<tr><td>{{ token(r) }}</td><td class="r">{{ r.buyers }}</td><td class="r">{{ r.sellers }}</td><td class="r {{ r.net|tone }}">{{ r.net|signed }}</td><td class="r">{{ mcap(r.market_cap) }}</td></tr>{% endfor %}</tbody>
     </table></div>
     {% else %}{{ empty('No verified volume', 'No measured buys or sells in this window.') }}{% endif %}
   </section>
@@ -66,7 +66,9 @@
   </section>
 </div>
 
-<section class="panel flush" aria-labelledby="rec"><h2 id="rec" class="ph">Recent activity <span class="sub">newest 15 in this window</span></h2>
+<section class="panel flush" aria-labelledby="rec"><h2 id="rec" class="ph">Recent activity <span class="sub">newest 15 in this window</span>
+    {% set amap = {'15m': '15m', '1h': '1h', '6h': '12h', '24h': '24h', '7d': '7d', '30d': '30d'} %}
+    <a class="btn primary right" href="/activity?{{ ('range=' ~ amap[tr.preset]) if tr.preset else ('range=custom&start=' ~ tr.start.strftime('%Y-%m-%dT%H:%M') ~ '&end=' ~ tr.end.strftime('%Y-%m-%dT%H:%M')) }}">View All Activity →</a></h2>
   {{ trades_table(d.recent, qs) }}
 </section>
 {% endblock %}

@@ -1,12 +1,12 @@
 {% extends "base.html" %}
-{% from "_macros.html" import taddr, empty with context %}
+{% from "_macros.html" import taddr, empty, mcap with context %}
 {% block body %}
 <h1>Search</h1>
 {% if d.kind == 'tokens' %}
 <p class="lead">Several tokens share the symbol <b>{{ d.symbol }}</b>. Pick the contract you mean.</p>
 <div class="panel flush tw"><table>
-  <thead><tr><th>Token</th><th>Launchpad</th><th>Contract</th><th class="r">Tracked trades</th></tr></thead>
-  <tbody>{% for r in d.rows %}<tr><td><b>{{ r.symbol }}</b> <span class="muted">{{ r.name or '' }}</span></td><td>{{ r.launchpad or '–' }}</td><td>{{ taddr(r.address) }}</td><td class="r">{{ r.tracked_legs|number }}</td></tr>{% endfor %}</tbody>
+  <thead><tr><th>Token</th><th>Launchpad</th><th>Contract</th><th class="r">Market cap (USD)</th><th class="r">Tracked trades</th></tr></thead>
+  <tbody>{% for r in d.rows %}<tr><td><b>{{ r.symbol }}</b> <span class="muted">{{ r.name or '' }}</span></td><td>{{ r.launchpad or '–' }}</td><td>{{ taddr(r.address) }}</td><td class="r">{{ mcap(r.market_cap) }}</td><td class="r">{{ r.tracked_legs|number }}</td></tr>{% endfor %}</tbody>
 </table></div>
 {% else %}
 <div class="panel">{{ empty('Nothing found for “' ~ d.q ~ '”', 'Only tokens and wallets that public leaderboard wallets traded are listed. Paste a full 0x address or a token symbol.') }}</div>

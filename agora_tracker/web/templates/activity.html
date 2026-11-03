@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+{% from "_macros.html" import act_row, empty with context %}
+{% set f = d.freshness %}{% set pg = d.page %}{% set p = d.p %}
+{% block head %}<script src="/static/activity.js?v={{ asset_v }}" defer></script>{% endblock %}
+{% block body %}
+<h1>Activity</h1>
+<p class="lead">Every transaction the tracked wallets made, newest first. A <b>transfer</b> moves tokens without a HYPE payment and is never counted as a buy or a sell. <b>Verified</b> amounts were measured on-chain; <b>estimated</b> ones are shown apart.</p>
+
+<form class="controls act-filters" method="get" action="/activity" id="act-form">
+  <label>Action <select name="action">{% for k, label in d.action_labels.items() %}<option value="{{ k }}"{% if p.action == k %} selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
+  <label>Range <select name="range">{% for k, label in d.range_labels.items() %}<option value="{{ k }}"{% if p.range == k %} selected{% endif %}>{{ label }}</option>{% endfor %}<option value="custom"{% if p.range == 'custom' %} selected{% endif %}>Custom range</option></select></label>
+  <label>From (UTC) <input type="datetime-local" name="start" value="{{ p.start.strftime('%Y-%m-%dT%H:%M') if p.range == 'custom' and p.start else '' }}"></label>
+  <label>To (UTC, exclusive) <input type="datetime-local" name="end" value="{{ p.end.strftime('%Y-%m-%dT%H:%M') if p.range == 'custom' and p.end else '' }}"></label>
+  <label>Basis <select name="basis">{% for b in d.bases %}<option value="{{ b }}"{% if p.basis == b %} selected{% endif %}>{{ b|capitalize }}</option>{% endfor %}</select></label>
+  <label>Sort <select name="sort">{% for k, label in d.sort_labels.items() %}<option value="{{ k }}"{% if p.sort == k %} selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
+  <label>Per page <select name="limit">{% for n in (25, 50, 100) %}<option value="{{ n }}"{% if p.size == n %} selected{% endif %}>{{ n }}</option>{% endfor %}</select></label>
+  <input class="grow" type="search" name="q" value="{{ p.q }}" placeholder="Symbol, token or wallet address, tx hash (full or partial)" maxlength="80" aria-label="Search activity" autocomplete="off" spellcheck="false">
+  {% if p.wallet %}<input type="hidden" name="wallet" value="{{ p.wallet }}">{% endif %}
+  {% if p.token %}<input type="hidden" name="token" value="{{ p.token }}">{% endif %}
+  {% if p.tx %}<input type="hidden" name="tx" value="{{ p.tx }}">{% endif %}
+  <button class="btn primary" type="submit">Apply</button>
+  <a class="btn" href="/activity">Reset</a>
+</form>
+{% if p.wallet or p.token or p.tx %}
+<p class="chips">Filtered to
+  {% if p.wallet %}<span class="badge est">wallet {{ p.wallet|short }}</span>{% endif %}
+  {% if p.token %}<span class="badge est">token {{ p.token|short }}</span>{% endif %}
+  {% if p.tx %}<span class="badge est">tx {{ p.tx|short(8, 4) }}</span>{% endif %}
+  <a href="/activity">clear</a></p>
+{% endif %}
+
+<section id="activity" class="panel flush" aria-labelledby="act-h"
+  data-api="/api/v1/activity" data-live="{{ 1 if d.live else 0 }}" data-head-id="{{ d.head_id or 0 }}"
+  data-poll="{{ d.poll_s }}" data-hidden-poll="{{ d.hidden_poll_s }}"
+  data-next="{{ pg.next_cursor or '' }}" data-sort="{{ p.sort }}">
+  <h2 id="act-h" class="ph">Transactions
+    <span class="sub">{% if d.total.capped %}{{ d.total.count|number }}+{% else %}{{ d.total.count|number }}{% endif %} matching{% if d.window.range != 'custom' and d.window.range != 'all' %} in the last {{ d.range_labels[d.window.range] }}{% elif d.window.range == 'all' %} in all retained history{% else %} in the custom range{% endif %}</span></h2>
+
+  <div class="act-status" id="act-status" role="status" aria-live="polite">
+    <span class="sdot {{ f.scanner_status }}" id="act-dot" aria-hidden="true"></span>
+    <b id="act-scanner" title="{{ f.scanner_note }}">Scanner: {{ f.scanner_status }}</b>
+    <span class="faint" id="act-note">{{ f.scanner_note }}</span>
+    <span class="sep"></span>
+    <span>Last indexed block <b id="act-block">{{ f.last_indexed_block|number if f.last_indexed_block is not none else '–' }}</b>{% if f.lag_blocks is not none %} <span class="faint">(lag {{ f.lag_blocks }})</span>{% endif %}</span>
+    <span>Heartbeat <b id="act-hb" data-at="{{ f.indexer_heartbeat_at.strftime('%Y-%m-%dT%H:%M:%SZ') if f.indexer_heartbeat_at else '' }}">{{ (f.indexer_heartbeat_age_s ~ 's ago') if f.indexer_heartbeat_age_s is not none else '–' }}</b></span>
+    <span>Last observed transaction <b id="act-last" data-at="{{ f.last_observed_transaction_at.strftime('%Y-%m-%dT%H:%M:%SZ') if f.last_observed_transaction_at else '' }}">{{ f.last_observed_transaction_at|ago(now) if f.last_observed_transaction_at else 'none yet' }}</b></span>
+  </div>
+  <div class="act-tools">
+    {% if d.live %}
+    <button type="button" id="act-auto" aria-pressed="true" title="Check for new activity every {{ d.poll_s }} s while this tab is visible">Auto-refresh: <b>ON</b></button>
+    <span class="faint" id="act-refreshed">Browser refreshed <b>just now</b></span>
+    {% else %}
+    <span class="faint">Auto-refresh applies to “newest first” on the first page of an open range. <a href="/activity">Go to live view</a></span>
+    {% endif %}
+    <label class="faint"><input type="checkbox" id="act-local"> show times in my time zone</label>
+    <span class="err" id="act-err" hidden></span>
+  </div>
+  <div class="banner info" id="act-new" hidden><b id="act-new-n">0</b> <span id="act-new-t">new activities</span> <button type="button" id="act-show">Show newest</button></div>
+  {% if d.window.note %}<div class="banner warn">{{ d.window.note }}</div>{% endif %}
+  {% if f.scanner_status in ('stale', 'unknown') %}<div class="banner bad" id="act-stale"><b>The scanner is not reporting.</b> {{ f.scanner_note }}. New activity will not appear until it recovers.</div>{% endif %}
+
+  {% if d['items'] %}
+  <div class="tw"><table id="act-table">
+    <thead><tr><th>Time (UTC)</th><th>Wallet</th><th>Token</th><th>Action</th><th class="r">HYPE</th><th>Basis</th><th class="r">Block</th><th>Tx</th></tr></thead>
+    <tbody id="act-body">{% for t in d['items'] %}{{ act_row(t) }}{% endfor %}</tbody>
+  </table></div>
+  {% else %}
+  <div id="act-empty">{{ empty('No matching activity', 'Nothing matched these filters in this range. Widen the range or clear the search.') }}</div>
+  <div class="tw" hidden><table id="act-table"><thead><tr><th>Time (UTC)</th><th>Wallet</th><th>Token</th><th>Action</th><th class="r">HYPE</th><th>Basis</th><th class="r">Block</th><th>Tx</th></tr></thead><tbody id="act-body"></tbody></table></div>
+  {% endif %}
+
+  <div class="pager">
+    <span>{{ d['items']|length }} shown · {{ d.sort_labels[p.sort] }}</span>
+    <span class="btns">
+      {% if pg.has_prev %}<a href="{{ qs(cursor=pg.prev_cursor, dir='prev') }}" rel="prev">← Newer</a>{% else %}<span class="dis">← Newer</span>{% endif %}
+      {% if pg.has_next %}<a href="{{ qs(cursor=pg.next_cursor, dir='next') }}" rel="next" id="act-older-link">Older →</a>{% else %}<span class="dis">Older →</span>{% endif %}
+      {% if pg.has_next %}<button type="button" id="act-older" hidden>Load older here</button>{% endif %}
+    </span>
+  </div>
+</section>
+<p class="faint note">Times are exact block times in UTC. Counts cover wallets on Agora's public leaderboard only. <a href="/api/v1/activity">JSON API</a> · polling is paused while the tab is hidden.</p>
+{% endblock %}

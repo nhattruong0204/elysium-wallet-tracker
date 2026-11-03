@@ -139,8 +139,8 @@ buttons, pagination of 25 rows.
 ### Runtime behaviour
 
 * Responses are built from stored data only; market numbers come from stored
-  `token_market_snapshots` (max age 30 min) and are labelled "stored, not live". Market cap is
-  in HYPE (no USD value is stored).
+  `token_market_snapshots` (max age 30 min) and are labelled "stored, not live". Market caps are
+  shown in USD (see "Activity monitor and USD market cap" below); `mcap_hype` stays as evidence.
 * Cache: 30 s TTL, single-flight per key, 256 entries, stale-on-error up to 300 s; rolling
   presets end on a 30 s grid so visitors share cache entries. At most 3 page builds run at
   once (8 s wait, then 503 + `Retry-After`). Per-IP token bucket (10 rps, burst 40; loopback
@@ -217,10 +217,85 @@ Rollback options, fastest first:
 
 ### Known limits and follow-ups
 
-* Market cap is in HYPE; storing `mcap_usd` in the collector would allow USD.
+* USD market cap is derived from the stored Agora `hypeUsd` series (not an independent price
+  feed); see the methodology section for limits.
 * The tracker connects as the Postgres superuser; splitting that into a least-privilege
   writer role is a separate hardening step.
 * Revival `research_briefs` retention and the undecided BOXA WHYPE option are tracked in #44.
+
+## Activity monitor and USD market cap (migration 0005)
+
+### Activity monitor: `/activity`, `GET /api/v1/activity`
+
+Nav: Overview | Activity | Projects | Smart Money | Early Plays | Scanner Health. Overview keeps
+the newest-15 preview with a "View All Activity" link (range carried over, 6h maps to 12h).
+
+* **Rows** are individual `trades` legs (never aggregated): timestamp (UTC, optional local time),
+  wallet (link + copy), token (link), action, HYPE amount when known, basis
+  (verified / estimated / unknown), tx hash, block, explorer link. Transfers are never shown as
+  buys or sells; several legs of one tx stay separate rows.
+* **Filters (server-side):** `action` = all | buy | sell | transfer_in | transfer_out | swap |
+  multi_other; `range` = 15m | 1h | 4h | 12h | 24h | 7d | 30d | all, or `start`+`end` (UTC,
+  half-open); `basis`; `q` (token address, symbol, wallet address, tx hash; exact or partial, hex
+  prefixes need >= 6 digits; LIKE wildcards are escaped and everything is bound); `wallet`,
+  `token`; `sort` = newest | oldest | largest_buy | largest_sell. Invalid input returns 400, an
+  exhausted rate limit 429 (JSON with `Retry-After` under `/api/`).
+* **Pagination:** keyset, never OFFSET. Cursor = opaque base64 JSON bound to the sort:
+  `(block_time, id)` for newest/oldest, `(hype_wei, id)` for largest_*. `dir=next|prev`, size 50
+  (max 100); the query fetches size+1 for `has_next` / `has_prev`. Total is counted with a cap
+  of 10,000 (`total_capped`). Coverage (first/last indexed time in the filter) is returned.
+* **Auto-update:** `static/activity.js` polls `GET /api/v1/activity?since_id=<watermark>`
+  every `activity_poll_s` (default 20 s, config `web.activity_poll_s`, hidden tab
+  `activity_hidden_poll_s` = 120 s, 0 pauses). Single in-flight request, 10 s abort timeout,
+  exponential backoff with jitter, `Retry-After` honoured, `ETag` / `If-None-Match` (304).
+  The watermark is the insertion id, so late-indexed rows from old blocks are caught; if more
+  than `activity_since_limit` (100) rows are new the response sets `overflow` and the UI shows
+  "N+ new". New rows never move the viewport: a fixed "N new - Show newest" pill appears and
+  flushes only on click. ON/OFF toggle (kept in localStorage), last refresh, error state.
+  Only text nodes are written to the DOM (CSP has no inline script or eval).
+* **Freshness is shown separately:** browser refresh time, scanner heartbeat, last indexed
+  block, last observed tx. `scanner_status` = live | delayed | stale | unknown from heartbeat
+  age (> 120 s delayed, > 300 s stale), checkpoint age (> 300 s delayed, > 900 s stale) and lag
+  (> 120 blocks); the page never shows a green "Live" unless the scanner is live.
+* **Caching:** short-TTL (5 s) single-flight cache separate from the page cache; responses are
+  `Cache-Control: private, no-cache` with an ETag.
+
+### USD market cap
+
+* **Units:** Agora quotes everything in HYPE and attaches `hypeUsd` (USD per 1 HYPE) to each
+  leaderboard payload. Trade sizes and net flows stay in HYPE and are never relabelled.
+* **Rate store:** `hype_usd_rates(observed_at, hype_usd numeric(24,8), source, UNIQUE(source,
+  observed_at), CHECK hype_usd > 0)`. Filled by (1) an idempotent backfill from
+  `leaderboard_snapshots.raw_payload` in the migration and (2) trigger
+  `trg_leaderboard_hype_usd` (AFTER INSERT/UPDATE OF raw_payload) which catches every exception,
+  so a bad payload can never break the tracker's insert; rates must be > 0 and < 1e6. No
+  collector, tracker or ui change is needed, hence no container recreation. Nothing calls a price
+  provider from the request path.
+* **Derivation at read time:** `market_cap_usd = mcap_hype x nearest rate` in `Decimal`
+  (quantised to 0.01), via two index probes (one rate on each side of the snapshot time). It is
+  the rate valid at the snapshot's own time, not today's.
+* **Provenance** by gap between snapshot and rate: `exact` <= 60 s, `aligned` <= 600 s,
+  `stale` <= 3600 s (value produced, flagged), `unavailable` beyond that or with no rate (no value,
+  never `$0`). `web.fx_exact_s` / `fx_aligned_s` / `fx_max_gap_s` configure the bounds.
+* **API fields** (units explicit): `market_cap_usd`, `market_cap_hype`, `market_cap_source`
+  (`stored_snapshot`), `market_cap_as_of`, `market_cap_status` (valid | stale | unavailable |
+  invalid), `hype_usd`, `hype_usd_as_of`, `hype_usd_gap_s`, `hype_usd_quality`,
+  `snapshot_age_s`. `/api/v1/meta` has a `units` block. The `public_api.hype_usd_rates` view
+  exposes only `observed_at, hype_usd, source`.
+* **Formatting / sorting:** one `format_usd` ($830, $12.5K, $1.28M, $3.45B; `-` when missing;
+  rollover at unit edges); the token table sorts mcap by USD; sparklines use USD.
+* **Limits:** the rate is Agora's own `hypeUsd`, not an independent oracle; if Agora stops
+  sending it, USD turns `stale` then `unavailable` rather than being extrapolated; market cap
+  itself is Agora's stored snapshot (<= 30 min old or flagged).
+
+### Performance notes (1M-trade synthetic DB, 1 vCPU)
+
+`public_wallets` and `public_tokens` were `SELECT DISTINCT` over large inputs (~160 ms / ~500 ms
+at 1M trades). Migration 0005 replaces them with recursive skip-scans returning the same rows
+(~6 ms / ~15 ms). Activity page p50 6-8 ms for any range / filter, tx search 3-8 ms, symbol
+search ~15 ms, `since_id` poll 1.5-8 ms; the only slow case is `largest_buy` over all history
+(~220 ms, 5 s timeout). At ~2,100 trades/day 1M rows is ~1.3 years away. Symbols are cached in
+process (10 min). Downgrade of 0005 restores the previous views.
 
 ## Acceptance
 
