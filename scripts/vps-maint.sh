@@ -154,6 +154,28 @@ except Exception: print("reject")')
         echo "  site ${u%$tok}<token> -> $r"
       done
       ;;
+    trace-token)
+      say "read-only on-chain trace of one token (public chain data; wallets limited to the public leaderboard)"
+      T=$(head -1 "$REPO/deploy/TRACE_TOKEN" 2>/dev/null | tr 'A-F' 'a-f' | tr -d '[:space:]')
+      [[ "$T" =~ ^0x[0-9a-f]{40}$ ]] || { echo "deploy/TRACE_TOKEN must hold one 0x token address"; continue; }
+      echo "token: $T"
+      PSQL="docker exec -i elysium-postgres psql -U tracker -d tracker -X -A -F |"
+      echo "-- what our tracker knows (public_api views only)"
+      $PSQL -c "SELECT 'profile', launchpad, name, symbol, launched_at FROM public_api.token_profiles WHERE address='$T'" 2>&1 | sed 's/^/  /'
+      $PSQL -c "SELECT 'metadata', symbol, decimals, source FROM public_api.token_metadata WHERE address='$T'" 2>&1 | sed 's/^/  /'
+      $PSQL -c "SELECT 'market', captured_at, source, price_hype, mcap_hype, vol_24h_hype, buys_24h FROM public_api.token_market_snapshots WHERE token='$T' ORDER BY captured_at DESC LIMIT 3" 2>&1 | sed 's/^/  /'
+      echo "  trades by public wallets (time | kind | confidence | HYPE | wallet | tx):"
+      $PSQL -c "SELECT block_time, kind, confidence, round(hype_wei/1e18, 4), left(wallet, 10)||'..', tx_hash FROM public_api.trades WHERE token='$T' ORDER BY id LIMIT 25" 2>&1 | sed 's/^/    /'
+      HU=$($PSQL -t -c "SELECT hype_usd FROM public_api.hype_usd_rates ORDER BY observed_at DESC LIMIT 1" 2>/dev/null | tr -d '[:space:]')
+      TXS=$($PSQL -t -c "SELECT tx_hash FROM public_api.trades WHERE token='$T' ORDER BY id LIMIT 8" 2>/dev/null | tr -d ' ')
+      $PSQL -t -c "SELECT p.launchpad, x.tx_hash FROM (SELECT launchpad, address, row_number() OVER (PARTITION BY launchpad ORDER BY launched_at DESC NULLS LAST) rn FROM public_api.token_profiles WHERE launchpad IS NOT NULL) p JOIN LATERAL (SELECT tx_hash FROM public_api.trades t WHERE t.token=p.address ORDER BY id DESC LIMIT 1) x ON true WHERE p.rn <= 3" 2>/dev/null | tr '|' ' ' > /tmp/known-venues.tsv
+      echo "  known-launchpad fingerprints: $(wc -l < /tmp/known-venues.tsv) sample txs; HYPE/USD ${HU:-n/a}"
+      ARGS=""; for h in $TXS; do ARGS="$ARGS --tx $h"; done
+      echo "-- on-chain trace"
+      python3 "$REPO/scripts/trace_token.py" "$T" --rpc https://rpc.thekleos.pro/rpc --rpc https://rpc.thekleos.xyz/rpc \
+        --rpc https://rpc-live.boxa.club $ARGS --known /tmp/known-venues.tsv --hype-usd "${HU:-0}" 2>&1 | sed 's/^/  /'
+      rm -f /tmp/known-venues.tsv
+      ;;
     audit-activity-fx)
       say "read-only audit for the Activity monitor and USD market cap (aggregates only)"
       docker exec -i elysium-postgres psql -U tracker -d tracker -X <<'SQL' 2>&1 | sed 's/^/  /'
