@@ -165,6 +165,9 @@ def activity_api(base: str) -> None:
     check(not off, "market_cap_usd == market_cap_hype x hype_usd (no double conversion)", f"{len(off)} off of {len(have)}")
     rates = {str(m["hype_usd"]) for m in have}
     check(all(0.01 < float(r) < 10000 for r in rates), "HYPE/USD rates are plausible", f"{len(rates)} distinct rates, range {min(map(float, rates)):.2f}-{max(map(float, rates)):.2f}")
+    newest = max((m.get("hype_usd_as_of") or "" for m in have), default="")
+    print(f"  newest HYPE/USD rate used: {newest}; newest market snapshot: {max((m.get('market_cap_as_of') or '' for m in have), default='')}")
+    check(newest >= "2026-11-03T11:40", "rates recorded after the migration (trigger is live)", newest)
     qual = {m.get("hype_usd_quality") for m in have}
     print(f"  USD quality mix: {sorted(map(str, qual))}")
     check(all(m.get("market_cap_source") for m in usd if m), "market_cap_source present")
