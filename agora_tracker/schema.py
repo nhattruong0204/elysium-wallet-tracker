@@ -348,6 +348,20 @@ token_market_snapshots = sa.Table(
     sa.Index("ix_token_market_snapshots_time", "chain_id", "captured_at"),
 )
 
+# HYPE/USD rate observations (migration 0005). Filled from the leaderboard payload by a
+# trigger; read by the dashboard to turn the provider's HYPE market caps into USD at the time
+# each snapshot was taken.
+hype_usd_rates = sa.Table(
+    "hype_usd_rates", metadata,
+    sa.Column("id", sa.BigInteger, sa.Identity(), primary_key=True),
+    sa.Column("observed_at", TS, nullable=False),
+    sa.Column("hype_usd", sa.Numeric(24, 8), nullable=False),
+    sa.Column("source", sa.Text, nullable=False),
+    sa.UniqueConstraint("source", "observed_at", name="uq_hype_usd_rates_obs"),
+    sa.CheckConstraint("hype_usd > 0", name="positive"),
+    sa.Index("ix_hype_usd_rates_observed_at", "observed_at"),
+)
+
 # Telegram UI state per user: selected period, pending conversational input. Survives
 # restarts, so a half-finished custom-range or export flow resumes where it was.
 ui_sessions = sa.Table(

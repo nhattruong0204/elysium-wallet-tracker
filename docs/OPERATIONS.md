@@ -59,6 +59,17 @@ Design, boundary and verification record: [infra/ONCHAINFLOW_DASHBOARD.md](infra
   start**. The `web` action deliberately does not recreate them. Bring them level with
   `action=deploy` (recreates tracker and ui, resumes from the stored cursor, no replay) at a
   moment you accept a few seconds of downtime. Any future migration needs the same step.
+* **Migration 0005** (USD market cap, activity monitor) adds `hype_usd_rates`, a never-failing
+  trigger on `leaderboard_snapshots`, `public_api.hype_usd_rates`, and skip-scan rewrites of
+  `public_api.public_wallets` / `public_tokens`. It is additive; the tracker keeps writing
+  normally. The `web` action takes a backup (`backup_run`), runs the migrate image, then
+  `up -d --no-deps web`. Rollback of the schema: `alembic downgrade 0004`; of the site:
+  `action=web-rollback`. Activity polling cadence: `web.activity_poll_s` (20 s) in
+  `deploy/config.yaml`.
+* **Recreating tracker/ui (needs explicit owner approval).** Safe procedure: confirm a fresh
+  backup, `action=deploy`, then verify `heartbeat` age < 60 s, cursor advancing, `docker ps`
+  healthy, and a Telegram test. Impact: a few seconds without notifications; indexing resumes from
+  the stored cursor with no replay.
 * External check of the public site: push `requested=<time>` to `deploy/SITE_CHECK` on `ops`.
 * Revival scan-health monitor: `revival-health.timer` (every 5 min) runs
   `/opt/elysium-ops/revival-health.py`, read-only on the Revival SQLite file. Alerts via

@@ -52,7 +52,9 @@ jobs:
             | sudo tee /etc/apt/sources.list.d/pgdg.list
           sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client-16
           echo "/usr/lib/postgresql/16/bin" >> "$GITHUB_PATH"
-      - run: pip install -r requirements.txt pytest
+      - run: pip install -r requirements.txt pytest playwright
+      - name: Chromium for the Activity browser tests
+        run: python -m playwright install --with-deps chromium
       - run: python -m pytest -v -rs
 
   docker:

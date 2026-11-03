@@ -166,3 +166,33 @@ dl.kv dt { color: var(--muted); } dl.kv dd { margin: 0; min-width: 0; overflow-w
   .bar-row { grid-template-columns: 90px 1fr 60px; }
 }
 @media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; transition: none !important; } }
+
+/* activity monitor */
+.act-filters label { display: inline-flex; flex-direction: column; gap: 2px; font-size: 12px; color: var(--muted); }
+.act-filters label select, .act-filters label input { font-size: 14px; }
+.chips { margin: 0 0 12px; color: var(--muted); display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.act-status { display: flex; flex-wrap: wrap; gap: 6px 16px; align-items: center; padding: 10px 14px; border-bottom: 1px solid var(--line); font-size: 12.5px; color: var(--muted); }
+.act-status b { color: var(--text); font-weight: 600; }
+.act-status .sep { flex: 1; }
+.sdot { width: 9px; height: 9px; border-radius: 50%; background: var(--faint); display: inline-block; }
+.sdot.live { background: var(--pos); box-shadow: 0 0 0 3px rgba(61,220,151,.18); }
+.sdot.delayed { background: var(--warn); } .sdot.stale { background: var(--neg); } .sdot.unknown { background: var(--faint); }
+.act-tools { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; padding: 8px 14px; font-size: 12.5px; border-bottom: 1px solid var(--line); }
+.act-tools button { min-height: 28px; padding: 3px 10px; }
+.act-tools .err { color: var(--warn); }
+/* a floating pill, not a block: showing it must never move the content the user is reading */
+#act-new { position: fixed; top: 64px; left: 50%; transform: translateX(-50%); z-index: 6; display: flex; gap: 8px;
+  align-items: center; margin: 0; box-shadow: 0 6px 24px rgba(0,0,0,.5); background: var(--panel-2); border-radius: 99px; padding: 6px 8px 6px 16px; }
+#act-new[hidden] { display: none; }
+#act-new button { min-height: 28px; padding: 2px 10px; border-color: var(--accent-2); color: var(--accent-2); }
+.nw { white-space: nowrap; }
+.act { display: inline-block; padding: 1px 8px; border-radius: 6px; font-size: 12px; font-weight: 700; letter-spacing: .02em; border: 1px solid var(--line-2); }
+.act-buy { color: var(--pos); border-color: rgba(61,220,151,.45); background: rgba(61,220,151,.09); }
+.act-sell { color: var(--neg); border-color: rgba(255,107,107,.45); background: rgba(255,107,107,.09); }
+.act-swap { color: var(--accent-2); border-color: rgba(90,169,255,.45); background: rgba(90,169,255,.09); }
+.act-transfer_in, .act-transfer_out { color: var(--muted); }
+.act-other { color: var(--warn); border-color: rgba(245,185,66,.4); }
+tr.fresh-row { animation: freshrow 2.2s ease-out; }
+@keyframes freshrow { from { background: rgba(56,212,196,.22); } to { background: transparent; } }
+@media (prefers-reduced-motion: reduce) { tr.fresh-row { animation: none; } }
+h2.ph .right { float: right; padding: 3px 10px; font-size: 12.5px; font-weight: 500; }

@@ -9,6 +9,8 @@ from typing import Any
 from markupsafe import Markup, escape
 
 from ..config import LinksConfig
+from .activity import ACTION_LABELS
+from .usd import format_usd
 
 UTC = timezone.utc
 
@@ -49,6 +51,36 @@ def price(v: Any) -> str:
     if abs(f) >= 1:
         return f"{f:,.4f}"
     return f"{f:.3g}" if abs(f) >= 1e-4 else f"{f:.2e}"
+
+
+def usd(v: Any) -> str:
+    """$830 / $12.5K / $1.28M / $3.45B; missing is an en dash, never $0."""
+    return format_usd(v)
+
+
+def tstext(v: datetime | None) -> str:
+    return "–" if v is None else v.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+
+def mcap_title(m: Any) -> str:
+    """Plain-text tooltip that explains where a USD market cap came from (or why it is absent)."""
+    if not m:
+        return "No stored market snapshot for this token."
+    st = m.get("market_cap_status")
+    if st == "unavailable":
+        if m.get("market_cap_hype") is None:
+            return "The stored snapshot has no market cap."
+        return ("No HYPE/USD rate was stored close enough to this snapshot; "
+                "nothing is estimated.")
+    if st == "invalid":
+        return "The stored market cap is not a valid number."
+    bits = [f"{format(m['market_cap_hype'].normalize(), 'f') if m.get('market_cap_hype') is not None else '?'} HYPE "
+            f"(provider, snapshot {tstext(m.get('market_cap_as_of'))})",
+            f"× {price(m.get('hype_usd'))} USD per HYPE (rate {tstext(m.get('hype_usd_as_of'))}, "
+            f"{m.get('hype_usd_quality')}, {m.get('hype_usd_gap_s'):+d}s from snapshot)"]
+    if st == "stale":
+        bits.append("STALE: the snapshot or the rate is older than the freshness limit")
+    return "; ".join(bits)
 
 
 def short_addr(a: str | None, head: int = 6, tail: int = 4) -> str:
@@ -120,6 +152,6 @@ def tone(v: Any) -> str:
 
 
 def register(env: Any, links: Links) -> None:
-    env.filters.update(hype=hype, signed=signed, pct=pct, number=number, price=price,
+    env.filters.update(usd=usd, tstext=tstext, mcap_title=mcap_title, hype=hype, signed=signed, pct=pct, number=number, price=price,
                        short=short_addr, ts=ts, ago=ago, duration=duration, tone=tone)
-    env.globals.update(links=links, esc=escape)
+    env.globals.update(links=links, esc=escape, action_labels=ACTION_LABELS)
