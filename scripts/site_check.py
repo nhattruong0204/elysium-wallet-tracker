@@ -150,7 +150,7 @@ def activity_api(base: str) -> None:
                 code = r.status
         except urllib.error.HTTPError as e:
             code = e.code
-        if code != 200:
+        if code != 200 and not (label == "search" and code == 404):  # no match is a 404 page by design
             bad.append(f"{code} {label} {path.split('?')[0][:40]}{'?' + path.split('?', 1)[1][:60] if '?' in path else ''}")
     check(not bad, "every load-test URL answers 200", "; ".join(bad[:6]))
     toks = api_json(base, "/api/v1/tokens?range=30d&sort=mcap&dir=desc")
