@@ -179,6 +179,10 @@ def hx(v: str | None) -> int:
     return int(v, 16) if v and v != "0x" else 0
 
 
+def pad_arg(a: str) -> str:
+    return "0" * 24 + a[2:].lower()
+
+
 def short(a: str) -> str:
     return a[:8] + "…" + a[-4:]
 
@@ -364,20 +368,83 @@ def main(argv: list[str] | None = None) -> int:
         if names:
             print(f"      recognised functions: {', '.join(names[:12])}")
 
-    # F. liquidity ceiling -----------------------------------------------------------------
-    print("\n## F. Where the liquidity is")
+    # F. pool / liquidity ------------------------------------------------------------------
+    print("\n## F. The pool (the contract that actually sends tokens to buyers) and exit liquidity")
+    senders: Counter = Counter()
+    for lg in logs:
+        f = "0x" + lg["topics"][1][-40:]
+        if f != ZERO:
+            senders[f] += 1
+
+    def ccall(to: str, sig: str, arg: str = "") -> str | None:
+        r = rpc.maybe("eth_call", [{"to": to, "data": selector(sig) + arg}, "latest"])
+        return r if r and r != "0x" else None
+
+    def caddr(to: str, sig: str) -> str | None:
+        r = ccall(to, sig)
+        return "0x" + r[-40:] if r and len(r) >= 66 else None
+
+    def bal_of(tok: str, holder: str) -> int:
+        return hx(ccall(tok, "balanceOf(address)", pad_arg(holder)))
+
+    pools = []
+    for addr, n in senders.most_common(8):
+        c = rpc.maybe("eth_getCode", [addr, "latest"]) or "0x"
+        if c != "0x" and addr != (to or "").lower():
+            pools.append((addr, n))
+    for addr, n in pools[:3]:
+        t0, t1 = caddr(addr, "token0()"), caddr(addr, "token1()")
+        print(f"  pool candidate {addr}: sent tokens in {n} transfers; token0={t0} token1={t1}")
+        fee, liq = ccall(addr, "fee()"), ccall(addr, "liquidity()")
+        if fee:
+            print(f"    fee tier {hx(fee) / 10000:g}%   in-range liquidity {hx(liq):,}" if liq else f"    fee tier {hx(fee) / 10000:g}%")
+        if t0 and t1 and token in (t0.lower(), t1.lower()):
+            other = t1 if t0.lower() == token else t0
+            osym = decode_str(ccall(other, "symbol()")) or "?"
+            odec = hx(ccall(other, "decimals()")) or 18
+            ob, tb = bal_of(other, addr) / 10**odec, bal_of(token, addr) / 10**dec
+            print(f"    pair: {sym} / {osym} ({other})")
+            usd = f" (~${ob * a.hype_usd:,.0f})" if a.hype_usd and osym.upper() in ("WHYPE", "HYPE", "WETH") else ""
+            print(f"    pool holds {ob:,.4f} {osym}{usd} and {tb:,.2f} {sym}  <-- {osym} balance is the ceiling on what sellers can take out")
+            s0 = ccall(addr, "slot0()")
+            if s0 and len(s0) >= 66:
+                sq = hx("0x" + s0[2:66]) / 2**96
+                px = sq * sq * 10 ** ((dec if t0.lower() == token else odec) - (odec if t0.lower() == token else dec))
+                p_hype = px if t0.lower() == token else (1 / px if px else 0)
+                line = f"    spot price ~ {p_hype:.3e} {osym} per {sym}"
+                if a.hype_usd and osym.upper() in ("WHYPE", "HYPE", "WETH"):
+                    line += f"  =  ${p_hype * a.hype_usd:.3e};  FDV ~ ${p_hype * a.hype_usd * ts_total / 10**dec:,.0f}"
+                print(line)
+        elif t0 is None:
+            print(f"    not a v2/v3 pool (no token0/token1): native balance {hx(rpc.maybe('eth_getBalance', [addr, 'latest'])) / 1e18:,.4f} HYPE")
     for v, _ in venues.most_common(3):
-        b = hx(rpc.maybe("eth_getBalance", [v, "latest"])) / 1e18
-        held = bal.get(v, 0) / 10**dec
-        usd = f" (~${b * a.hype_usd:,.0f})" if a.hype_usd else ""
-        print(f"  {short(v)} holds {b:,.4f} HYPE{usd} natively and {held:,.2f} {sym or 'tokens'} "
-              f"({100 * bal.get(v, 0) / ts_total if ts_total else 0:.1f}% of supply)")
-    big = [x for x, k in labels.items() if k.startswith("CONTRACT") and x not in venues]
-    for x in big[:3]:
-        b = hx(rpc.maybe("eth_getBalance", [x, "latest"])) / 1e18
-        print(f"  other contract holder {short(x)}: {b:,.4f} HYPE natively, "
-              f"{100 * bal[x] / ts_total if ts_total else 0:.1f}% of supply  (possible pool / vesting / locker)")
-    print("  If a sell would pay out of the venue's native balance, that balance is the most you can exit with.")
+        w9, fc = caddr(v, "WETH9()"), caddr(v, "factory()")
+        own2 = caddr(v, "owner()")
+        extra = ", ".join(x for x in (f"WETH9={w9}" if w9 else "", f"dex factory={fc}" if fc else "", f"owner={own2}" if own2 else "") if x)
+        print(f"  router {short(v)}: {extra or 'no WETH9/factory/owner getters'}")
+    for label, c in (("creation contract (tx.to)", to),):
+        if c:
+            o = caddr(c, "owner()")
+            print(f"  {label} {short(c)}: owner={o or 'n/a'}" + ("  (same as creator)" if o and frm and o.lower() == frm.lower() else ""))
+
+    # F2. sells and creator behaviour -----------------------------------------------------
+    print("\n## F2. Observed sells and the creator's behaviour")
+    pool_set = {x for x, _ in pools[:3]}
+    sold: dict[str, int] = defaultdict(int)
+    for lg in logs:
+        f, t = "0x" + lg["topics"][1][-40:], "0x" + lg["topics"][2][-40:]
+        if t in pool_set and f not in pool_set and f != ZERO:
+            sold[f] += hx(lg["data"])
+    cr = (frm or "").lower()
+    print(f"wallets that sent tokens INTO a pool (= sold or added liquidity): {len(sold)}; "
+          f"total {sum(sold.values()) / 10**dec:,.2f} {sym}")
+    print("  (successful sells by many different wallets is evidence the token can be sold; it is not a guarantee for later sells)")
+    got = sum(hx(lg["data"]) for lg in logs if "0x" + lg["topics"][2][-40:] == cr)
+    out = sum(hx(lg["data"]) for lg in logs if "0x" + lg["topics"][1][-40:] == cr)
+    print(f"creator received {got / 10**dec:,.2f}, sent out {out / 10**dec:,.2f}, holds {bal.get(cr, 0) / 10**dec:,.2f} "
+          f"({100 * bal.get(cr, 0) / ts_total if ts_total else 0:.1f}% of supply)")
+    if cr in sold:
+        print(f"creator SOLD into a pool: {sold[cr] / 10**dec:,.2f} {sym}")
 
     # G. recent activity -------------------------------------------------------------------
     print("\n## G. Recent activity")
