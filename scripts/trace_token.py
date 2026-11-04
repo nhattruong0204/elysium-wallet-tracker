@@ -179,6 +179,15 @@ def hx(v: str | None) -> int:
     return int(v, 16) if v and v != "0x" else 0
 
 
+def clone_target(code_hex: str) -> str | None:
+    """Implementation address of an EIP-1167 style minimal proxy (short code with PUSH20 + DELEGATECALL)."""
+    b = bytes.fromhex(code_hex[2:]) if code_hex and code_hex != "0x" else b""
+    if not (20 < len(b) <= 64) or 0xF4 not in b:
+        return None
+    i = b.find(0x73)
+    return "0x" + b[i + 1: i + 21].hex() if i >= 0 and i + 21 <= len(b) else None
+
+
 def pad_arg(a: str) -> str:
     return "0" * 24 + a[2:].lower()
 
@@ -259,12 +268,18 @@ def main(argv: list[str] | None = None) -> int:
     if owner:
         print(f"owner(): {owner}" + ("  (renounced)" if owner in DEAD else ""))
     impl = rpc.maybe("eth_getStorageAt", [token, EIP1967_IMPL, "latest"])
+    logic_code = code
+    tgt = clone_target(code)
     if impl and hx(impl):
         print(f"EIP-1967 PROXY -> implementation 0x{impl[-40:]}  (logic can be swapped by the admin)")
+        logic_code = rpc.maybe("eth_getCode", ["0x" + impl[-40:], "latest"]) or code
+    elif tgt:
+        print(f"minimal-proxy CLONE (EIP-1167) of {tgt}: fixed logic, analysing the implementation")
+        logic_code = rpc.maybe("eth_getCode", [tgt, "latest"]) or code
 
     # B. owner powers ----------------------------------------------------------------------
     print("\n## B. Powers present in the bytecode (dispatcher selectors)")
-    sels = push4s(code) if code != "0x" else set()
+    sels = push4s(logic_code) if logic_code != "0x" else set()
     found = [(SELECTORS[s][0], SELECTORS[s][1]) for s in sorted(sels) if s in SELECTORS]
     risky = [f for f in found if f[0] in RISK]
     for n, why in risky:
