@@ -1,2 +1,3 @@
-action=status
-requested=2026-11-04T10:00:45Z
+action=maint
+steps=audit-drains
+requested=2026-11-04T14:44:02Z

@@ -154,6 +154,49 @@ except Exception: print("reject")')
         echo "  site ${u%$tok}<token> -> $r"
       done
       ;;
+    audit-drains)
+      say "drain audit: tracked wallets that sent several tokens to one address within 30 min, no HYPE back (7 days)"
+      echo "(public leaderboard wallets are printed; private watchlist wallets only as a count. Native-HYPE-only drains are not indexed.)"
+      PSQL="docker exec -i elysium-postgres psql -U tracker -d tracker -X -A -F |"
+      Q_OUTS="WITH pub AS (SELECT address FROM public_api.public_wallets),
+        outs AS (SELECT t.wallet, tt.to_address AS dst, t.token, t.block_time, t.tx_hash,
+                        tx.from_address AS signer, (t.wallet IN (SELECT address FROM pub)) AS public
+                 FROM trades t
+                 JOIN token_transfers tt ON tt.chain_id=t.chain_id AND tt.tx_hash=t.tx_hash
+                      AND tt.token=t.token AND tt.from_address=t.wallet
+                 JOIN transactions tx ON tx.chain_id=t.chain_id AND tx.tx_hash=t.tx_hash
+                 WHERE t.kind='TRANSFER_OUT' AND t.block_time > now() - interval '7 days'),
+        grp AS (SELECT wallet, dst, public, count(DISTINCT token) toks, count(*) n,
+                       min(block_time) t0, max(block_time) t1, bool_and(signer=wallet) self_signed
+                FROM outs GROUP BY wallet, dst, public),
+        sinks AS (SELECT dst, count(DISTINCT wallet) victims FROM outs GROUP BY dst)"
+      echo "-- hourly TRANSFER_OUT legs by tracked wallets, last 48 h (baseline vs spikes)"
+      $PSQL -c "SELECT date_trunc('hour', block_time) h, count(*) legs, count(DISTINCT wallet) wallets FROM trades WHERE kind='TRANSFER_OUT' AND block_time > now()-interval '48 hours' GROUP BY 1 ORDER BY 1" 2>&1 | sed 's/^/  /'
+      echo "-- suspected drains: >=2 tokens to one address within 30 min (signer=victim => key leak; else approval/transferFrom)"
+      echo "   wallet | dst | tokens | legs | first | last | signed_by_victim | wallets_sending_to_dst | tokens_now_empty"
+      $PSQL -t -c "$Q_OUTS
+        SELECT CASE WHEN g.public THEN g.wallet ELSE 'private-watchlist' END, g.dst, g.toks, g.n, g.t0, g.t1, g.self_signed, s.victims,
+               (SELECT count(*) FROM wallet_positions p WHERE p.wallet=g.wallet AND p.qty=0
+                  AND p.token IN (SELECT token FROM outs o WHERE o.wallet=g.wallet AND o.dst=g.dst))
+        FROM grp g JOIN sinks s USING (dst)
+        WHERE g.toks >= 2 AND g.t1 - g.t0 < interval '30 minutes'
+        ORDER BY s.victims DESC, g.toks DESC, g.t0 DESC LIMIT 40" 2>&1 | sed 's/^/  /'
+      echo "-- addresses receiving TRANSFER_OUT from >=2 tracked wallets (possible sinks / shared owner)"
+      $PSQL -t -c "$Q_OUTS
+        SELECT s.dst, s.victims, count(*) FILTER (WHERE NOT o.public) private_senders, min(o.block_time), max(o.block_time),
+               string_agg(DISTINCT CASE WHEN o.public THEN left(o.wallet,10) END, ',')
+        FROM sinks s JOIN outs o USING (dst) WHERE s.victims >= 2
+        GROUP BY s.dst, s.victims ORDER BY s.victims DESC, max(o.block_time) DESC LIMIT 25" 2>&1 | sed 's/^/  /'
+      echo "-- live check of the top suspects: native HYPE left and destination type"
+      SUS=$($PSQL -t -c "$Q_OUTS SELECT DISTINCT g.wallet, g.dst FROM grp g WHERE g.public AND g.toks >= 2 AND g.t1-g.t0 < interval '30 minutes' LIMIT 12" 2>/dev/null)
+      rpc() { curl -s -m 10 -H 'content-type: application/json' -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"$1\",\"params\":$2}" https://rpc.thekleos.pro/rpc | sed -n 's/.*"result":"\([^"]*\)".*/\1/p'; }
+      echo "$SUS" | while IFS='|' read -r w d; do
+        [ -n "$w" ] || continue
+        b=$(rpc eth_getBalance "[\"$w\",\"latest\"]"); c=$(rpc eth_getCode "[\"$d\",\"latest\"]")
+        bh=$(python3 -c "print(f'{int(\"${b:-0x0}\",16)/1e18:.4f}')" 2>/dev/null)
+        echo "  $w HYPE_now=${bh:-?}  dst $d $([ "${#c}" -gt 2 ] && echo "CONTRACT $(( (${#c}-2)/2 ))B" || echo wallet)"
+      done
+      ;;
     launch-report)
       say "launch intelligence: paper-trading results and launch-watcher state (read-only)"
       docker exec elysium-wallet-tracker python -m agora_tracker --config /config/config.yaml --launch-report 2>&1 | sed 's/^/  /'
