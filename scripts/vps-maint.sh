@@ -156,7 +156,7 @@ except Exception: print("reject")')
       ;;
     launch-report)
       say "launch intelligence: paper-trading results and launch-watcher state (read-only)"
-      docker exec elysium-wallet-tracker python -m agora_tracker --launch-report 2>&1 | sed 's/^/  /'
+      docker exec elysium-wallet-tracker python -m agora_tracker --config /config/config.yaml --launch-report 2>&1 | sed 's/^/  /'
       ;;
     trace-token)
       say "read-only on-chain trace of one token (public chain data; wallets limited to the public leaderboard)"
