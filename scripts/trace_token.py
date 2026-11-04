@@ -179,9 +179,13 @@ def hx(v: str | None) -> int:
     return int(v, 16) if v and v != "0x" else 0
 
 
-def caddr_raw(rpc: Rpc, to: str, sig: str, arg_hex: str) -> str | None:
-    r = rpc.maybe("eth_call", [{"to": to, "data": selector(sig) + arg_hex}, "latest"])
-    return "0x" + r[-40:] if r and len(r) >= 66 else None
+def clone_target(code_hex: str) -> str | None:
+    """Implementation address of an EIP-1167 style minimal proxy (short code with PUSH20 + DELEGATECALL)."""
+    b = bytes.fromhex(code_hex[2:]) if code_hex and code_hex != "0x" else b""
+    if not (20 < len(b) <= 64) or 0xF4 not in b:
+        return None
+    i = b.find(0x73)
+    return "0x" + b[i + 1: i + 21].hex() if i >= 0 and i + 21 <= len(b) else None
 
 
 def pad_arg(a: str) -> str:
@@ -264,12 +268,18 @@ def main(argv: list[str] | None = None) -> int:
     if owner:
         print(f"owner(): {owner}" + ("  (renounced)" if owner in DEAD else ""))
     impl = rpc.maybe("eth_getStorageAt", [token, EIP1967_IMPL, "latest"])
+    logic_code = code
+    tgt = clone_target(code)
     if impl and hx(impl):
         print(f"EIP-1967 PROXY -> implementation 0x{impl[-40:]}  (logic can be swapped by the admin)")
+        logic_code = rpc.maybe("eth_getCode", ["0x" + impl[-40:], "latest"]) or code
+    elif tgt:
+        print(f"minimal-proxy CLONE (EIP-1167) of {tgt}: fixed logic, analysing the implementation")
+        logic_code = rpc.maybe("eth_getCode", [tgt, "latest"]) or code
 
     # B. owner powers ----------------------------------------------------------------------
     print("\n## B. Powers present in the bytecode (dispatcher selectors)")
-    sels = push4s(code) if code != "0x" else set()
+    sels = push4s(logic_code) if logic_code != "0x" else set()
     found = [(SELECTORS[s][0], SELECTORS[s][1]) for s in sorted(sels) if s in SELECTORS]
     risky = [f for f in found if f[0] in RISK]
     for n, why in risky:
@@ -306,25 +316,6 @@ def main(argv: list[str] | None = None) -> int:
         print("contracts that emitted events in the creation tx: " +
               ", ".join(f"{short(k)} x{v}" for k, v in emit.most_common(6)))
     print(f"creator native balance now: {hx(rpc.maybe('eth_getBalance', [frm, 'latest'])) / 1e18:,.4f} HYPE" if frm else "")
-
-    # C2. who owns the liquidity (LP NFT) ---------------------------------------------------
-    print("\n## C2. Liquidity ownership (can the pool be pulled?)")
-    nfts = [lg for lg in rc.get("logs", []) if len(lg.get("topics", [])) == 4 and lg["topics"][0] == TRANSFER]
-    if not nfts:
-        print("no ERC-721 (LP position NFT) mint in the creation tx; liquidity ownership is not visible here")
-    for lg in nfts[:3]:
-        nft, tid = lg["address"].lower(), lg["topics"][3]
-        hist = rpc.maybe("eth_getLogs", [{"fromBlock": hex(fb), "toBlock": "latest", "address": nft,
-                                          "topics": [TRANSFER, None, None, tid]}]) or []
-        hist.sort(key=lambda x: (hx(x["blockNumber"]), hx(x["logIndex"])))
-        print(f"  LP position NFT {short(nft)} #{hx(tid)}: " + " -> ".join(
-            ("0x" + h["topics"][2][-40:])[:10] + "…" for h in hist))
-        cur = caddr_raw(rpc, nft, "ownerOf(uint256)", tid[2:])
-        if cur:
-            cc = rpc.maybe("eth_getCode", [cur, "latest"]) or "0x"
-            kind = "BURN/DEAD address (liquidity locked forever)" if cur in DEAD else \
-                f"contract {(len(cc) - 2) // 2}B (locker / launcher?)" if cc != "0x" else "a normal wallet (can remove liquidity)"
-            print(f"    current owner: {cur}  -> {kind}" + ("  == the creator" if frm and cur == frm.lower() else ""))
 
     # D. supply / holders ------------------------------------------------------------------
     print("\n## D. Supply and holders (from Transfer logs)")
@@ -469,40 +460,6 @@ def main(argv: list[str] | None = None) -> int:
           f"({100 * bal.get(cr, 0) / ts_total if ts_total else 0:.1f}% of supply)")
     if cr in sold:
         print(f"creator SOLD into a pool: {sold[cr] / 10**dec:,.2f} {sym}")
-
-    # H. launch feed (how often new tokens appear, and who creates them) -------------------
-    print("\n## H. Launch feed: new pools on this DEX and tokens from this launcher")
-    pc_topic = "0x" + keccak256(b"PoolCreated(address,address,uint24,int24,address)").hex()
-    dexf = None
-    for v, _ in venues.most_common(3):
-        dexf = caddr(v, "factory()")
-        if dexf:
-            break
-    if dexf:
-        pcs = []
-        st, stepn = max(0, head - 60000), 50000
-        while st <= head:
-            en = min(head, st + stepn - 1)
-            try:
-                pcs += rpc.call("eth_getLogs", [{"fromBlock": hex(st), "toBlock": hex(en), "address": dexf,
-                                                 "topics": [pc_topic]}], tries=1)
-                st = en + 1
-            except Exception:  # noqa: BLE001
-                if stepn <= 500:
-                    break
-                stepn //= 2
-        day = sum(1 for x in pcs if hx(x["blockNumber"]) > head - 86400)
-        print(f"DEX factory {short(dexf)}: {len(pcs)} pools created in the last ~60k blocks, {day} in the last ~24h of blocks")
-        for x in pcs[-6:]:
-            t0, t1 = "0x" + x["topics"][1][-40:], "0x" + x["topics"][2][-40:]
-            tk = t0 if t1 == (caddr(v, "WETH9()") or "") else t1
-            sy = decode_str(ccall(tk, "symbol()")) or "?"
-            print(f"  block {hx(x['blockNumber'])}  {sy:<12} {tk}")
-    if to:
-        ev = rpc.maybe("eth_getLogs", [{"fromBlock": hex(max(0, head - 60000)), "toBlock": "latest", "address": to}]) or []
-        txs = {x["transactionHash"] for x in ev}
-        print(f"launcher {short(to)}: {len(txs)} transactions that emitted events in the last ~60k blocks "
-              f"(each launch is one tx); owner={caddr(to, 'owner()')}")
 
     # G. recent activity -------------------------------------------------------------------
     print("\n## G. Recent activity")

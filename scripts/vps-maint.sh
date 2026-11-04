@@ -162,7 +162,7 @@ except Exception: print("reject")')
       PSQL="docker exec -i elysium-postgres psql -U tracker -d tracker -X -A -F |"
       echo "-- what our tracker knows (public_api views only)"
       $PSQL -c "SELECT 'profile', launchpad, name, symbol, launched_at FROM public_api.token_profiles WHERE address='$T'" 2>&1 | sed 's/^/  /'
-      $PSQL -c "SELECT 'metadata', symbol, decimals, source FROM public_api.token_metadata WHERE address='$T'" 2>&1 | sed 's/^/  /'
+      $PSQL -c "SELECT 'metadata', symbol, decimals FROM public_api.token_metadata WHERE address='$T'" 2>&1 | sed 's/^/  /'
       $PSQL -c "SELECT 'market', captured_at, source, price_hype, mcap_hype, vol_24h_hype, buys_24h FROM public_api.token_market_snapshots WHERE token='$T' ORDER BY captured_at DESC LIMIT 3" 2>&1 | sed 's/^/  /'
       echo "  trades by public wallets (time | kind | confidence | HYPE | wallet | tx):"
       $PSQL -c "SELECT block_time, kind, confidence, round(hype_wei/1e18, 4), left(wallet, 10)||'..', tx_hash FROM public_api.trades WHERE token='$T' ORDER BY id LIMIT 25" 2>&1 | sed 's/^/    /'
@@ -175,6 +175,82 @@ except Exception: print("reject")')
       python3 "$REPO/scripts/trace_token.py" "$T" --rpc https://rpc.thekleos.pro/rpc --rpc https://rpc.thekleos.xyz/rpc \
         --rpc https://rpc-live.boxa.club $ARGS --known /tmp/known-venues.tsv --hype-usd "${HU:-0}" 2>&1 | sed 's/^/  /'
       rm -f /tmp/known-venues.tsv
+      ;;
+    audit-early-plays)
+      say "read-only base-rate audit: early smart-money buys vs outcome (public_api only; aggregates + public tokens)"
+      docker exec -i elysium-postgres psql -U tracker -d tracker -X <<'SQL' 2>&1 | sed 's/^/  /'
+\pset footer off
+\pset null '-'
+CREATE TEMP VIEW base AS
+WITH buys AS (SELECT t.id, t.token, t.wallet, t.block_time, t.block_number, t.hype_wei, t.qty, t.confidence
+              FROM public_api.trades t WHERE t.kind = 'BUY'),
+first_any AS (SELECT token, min(block_time) AS first_at, count(*) AS sm_buys, count(DISTINCT wallet) AS sm_wallets
+              FROM buys GROUP BY token),
+first_px AS (SELECT DISTINCT ON (b.token) b.token, b.block_time AS px_at,
+                    (b.hype_wei / 1e18) / (b.qty / power(10::numeric, coalesce(m.decimals, 18))) AS px
+             FROM buys b LEFT JOIN public_api.token_metadata m ON m.address = b.token
+             WHERE b.confidence = 'high' AND b.hype_wei > 0 AND b.qty > 0
+             ORDER BY b.token, b.block_time, b.id),
+outc AS (SELECT f.token, max(s.price_hype) AS max_px,
+                (array_agg(s.price_hype ORDER BY s.captured_at DESC))[1] AS last_px, count(*) AS n_snap
+         FROM first_px f JOIN public_api.token_market_snapshots s
+           ON s.token = f.token AND s.captured_at >= f.px_at AND s.price_hype > 0
+         GROUP BY f.token)
+SELECT a.token, coalesce(p.symbol, md.symbol) AS sym, p.launchpad, p.launched_at, a.first_at, a.sm_buys,
+       a.sm_wallets, extract(epoch FROM a.first_at - p.launched_at) / 60 AS delay_min, f.px,
+       o.n_snap, o.max_px / f.px AS max_x, o.last_px / f.px AS now_x
+FROM first_any a
+LEFT JOIN public_api.token_profiles p ON p.address = a.token
+LEFT JOIN public_api.token_metadata md ON md.address = a.token
+LEFT JOIN first_px f ON f.token = a.token
+LEFT JOIN outc o ON o.token = a.token;
+
+\echo == 1. launchpads seen by Agora (all tokens, not only ones we traded)
+SELECT coalesce(launchpad, '(none)') AS launchpad, count(*) AS tokens, min(launched_at) AS first_launch,
+       max(launched_at) AS last_launch, count(*) FILTER (WHERE launched_at > now() - interval '24 hours') AS last_24h
+FROM public_api.token_profiles GROUP BY 1 ORDER BY 2 DESC;
+
+\echo == 2. outcome after the FIRST smart-money buy, by how soon after launch it came
+\echo    (x = Agora price at/after the buy / price the wallet paid; max is sampled every ~10 min so it understates peaks)
+SELECT CASE WHEN launched_at IS NULL THEN 'z launch unknown' WHEN delay_min < 5 THEN 'a <5m'
+            WHEN delay_min < 30 THEN 'b 5-30m' WHEN delay_min < 120 THEN 'c 30m-2h'
+            WHEN delay_min < 1440 THEN 'd 2-24h' ELSE 'e >24h' END AS first_buy_after_launch,
+       count(*) AS tokens, count(max_x) AS with_outcome,
+       round(percentile_cont(0.5) WITHIN GROUP (ORDER BY max_x)::numeric, 2) AS median_max_x,
+       round(100.0 * avg((max_x >= 2)::int)) AS pct_max_2x, round(100.0 * avg((max_x >= 10)::int)) AS pct_max_10x,
+       round(percentile_cont(0.5) WITHIN GROUP (ORDER BY now_x)::numeric, 2) AS median_now_x,
+       round(100.0 * avg((now_x < 0.5)::int)) AS pct_now_below_half
+FROM base GROUP BY 1 ORDER BY 1;
+
+\echo == 3. same, by launchpad
+SELECT coalesce(launchpad, '(unindexed)') AS launchpad, count(*) AS tokens, count(max_x) AS with_outcome,
+       round(percentile_cont(0.5) WITHIN GROUP (ORDER BY max_x)::numeric, 2) AS median_max_x,
+       round(100.0 * avg((max_x >= 10)::int)) AS pct_max_10x,
+       round(percentile_cont(0.5) WITHIN GROUP (ORDER BY now_x)::numeric, 2) AS median_now_x,
+       round(100.0 * avg((now_x < 0.5)::int)) AS pct_now_below_half
+FROM base GROUP BY 1 ORDER BY 2 DESC;
+
+\echo == 4. does a cluster (>=3 distinct smart wallets buying) predict more? (any time, first 30 min)
+SELECT (sm_wallets >= 3) AS three_plus_wallets, (delay_min < 30) AS within_30m, count(*) AS tokens, count(max_x) AS with_outcome,
+       round(percentile_cont(0.5) WITHIN GROUP (ORDER BY max_x)::numeric, 2) AS median_max_x,
+       round(100.0 * avg((max_x >= 10)::int)) AS pct_max_10x,
+       round(100.0 * avg((now_x < 0.5)::int)) AS pct_now_below_half
+FROM base WHERE launched_at IS NOT NULL GROUP BY 1, 2 ORDER BY 1, 2;
+
+\echo == 5. best and worst outcomes (public tokens)
+SELECT sym, launchpad, to_char(launched_at, 'MM-DD HH24:MI') AS launched, round(delay_min::numeric, 1) AS delay_min,
+       sm_wallets, round(max_x::numeric, 1) AS max_x, round(now_x::numeric, 2) AS now_x, token
+FROM base WHERE max_x IS NOT NULL ORDER BY max_x DESC LIMIT 12;
+SELECT sym, launchpad, to_char(launched_at, 'MM-DD HH24:MI') AS launched, round(delay_min::numeric, 1) AS delay_min,
+       sm_wallets, round(max_x::numeric, 2) AS max_x, round(now_x::numeric, 3) AS now_x, token
+FROM base WHERE now_x IS NOT NULL ORDER BY now_x LIMIT 8;
+
+\echo == 6. same-block buys by >=3 distinct smart wallets (bundles: likely ONE operator, not independent signals)
+WITH b AS (SELECT token, block_number, array_agg(DISTINCT left(wallet, 8) ORDER BY left(wallet, 8)) AS ws
+           FROM public_api.trades WHERE kind = 'BUY' GROUP BY 1, 2 HAVING count(DISTINCT wallet) >= 3)
+SELECT array_to_string(ws, ',') AS wallet_group, count(*) AS bundles, count(DISTINCT token) AS tokens
+FROM b GROUP BY ws ORDER BY 2 DESC LIMIT 10;
+SQL
       ;;
     audit-activity-fx)
       say "read-only audit for the Activity monitor and USD market cap (aggregates only)"
