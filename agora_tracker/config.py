@@ -168,6 +168,37 @@ class WebConfig:
 
 
 @dataclass
+class IntelConfig:
+    """Launch intelligence (alerts only; nothing here signs or sends a transaction)."""
+    # independent-wallet scoring: bundle wallets (same-block multi-wallet buyers) count once
+    independent_min: int = 3            # independent wallets that make the strong signal
+    independent_window_s: int = 1800
+    independent_cooldown_s: int = 86400  # at most one strong signal per token per day
+    bundle_lookback_days: int = 14
+    bundle_min_wallets: int = 3         # distinct wallets buying one token in one block
+    bundle_min_hits: int = 5            # such blocks a wallet must take part in
+    bundle_refresh_s: float = 1800.0
+    # forward measurement of the strong signal (no orders are ever placed)
+    paper_enabled: bool = True
+    paper_slippage_pct: float = 10.0
+    wrapped_native: str = "0xba876237b0f021a6c6d852d6c26e107997cc5e81"   # WHYPE (WETH9 of the DEX router)
+    # read-only due diligence block in alerts
+    dd_enabled: bool = True
+    dd_budget_s: float = 6.0            # RPC time per token, hard cap
+    dd_cache_s: float = 300.0
+    dd_log_blocks: int = 3600           # ~1 h of Transfer logs to see who sold
+    dd_factories: list[str] = field(default_factory=list)   # DEX factories with getPool()
+    # chain-level new pool watcher (venues Agora does not index)
+    launch_watch: bool = True
+    launch_watch_interval_s: float = 60.0
+    launch_factories: list[str] = field(default_factory=list)  # empty = any PoolCreated
+    launch_min_liquidity_hype: float = 300.0
+    launch_delay_s: int = 120
+    # alert when Agora reports a launchpad we have not seen before
+    new_launchpad_alerts: bool = True
+
+
+@dataclass
 class Config:
     chain: ChainConfig
     leaderboard: LeaderboardConfig
@@ -178,6 +209,7 @@ class Config:
     ui: UiConfig = field(default_factory=UiConfig)
     collector: CollectorConfig = field(default_factory=CollectorConfig)
     web: WebConfig = field(default_factory=WebConfig)
+    intel: IntelConfig = field(default_factory=IntelConfig)
     db_path: str = "tracker.db"
     watchlist_file: str | None = None
     exclude_contracts: bool = True
@@ -234,8 +266,12 @@ def load_config(path: str | Path) -> Config:
     ui.admin_ids = _admin_ids(tg.chat_id, os.environ.get(ui.admin_ids_env, ""))
     collector = CollectorConfig(**(raw.get("collector") or {}))
     web = WebConfig(**(raw.get("web") or {}))
+    intel = IntelConfig(**(raw.get("intel") or {}))
+    intel.wrapped_native = _norm_addr(intel.wrapped_native)
+    intel.dd_factories = [_norm_addr(a) for a in intel.dd_factories]
+    intel.launch_factories = [_norm_addr(a) for a in intel.launch_factories]
     return Config(chain=chain, leaderboard=lb, alerts=alerts, telegram=tg, links=links,
-                  market=market, ui=ui, collector=collector, web=web, db_path=db_path,
+                  market=market, ui=ui, collector=collector, web=web, intel=intel, db_path=db_path,
                   watchlist_file=wl,
                   exclude_contracts=raw.get("exclude_contracts", True))
 

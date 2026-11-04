@@ -470,6 +470,144 @@ class Store:
             return {r[0]: r[1] for r in c.execute(
                 sa.select(o.c.status, sa.func.count()).group_by(o.c.status))}
 
+    # --- launch intelligence ------------------------------------------------------------
+    def recent_buyer_blocks(self, c: Connection, token: str, since_ts: int,
+                            min_hype_wei: int = 0) -> list[tuple[str, int, int, int]]:
+        """(wallet, first trade id, block, hype_wei) per distinct wallet with a measured BUY
+        since since_ts, ordered by that first trade. The block/amount are of that first trade."""
+        tr = t.trades
+        rows = c.execute(
+            sa.select(tr.c.wallet, tr.c.id, tr.c.block_number, tr.c.hype_wei)
+            .where(tr.c.chain_id == self.chain_id, tr.c.token == token, tr.c.kind == "BUY",
+                   tr.c.confidence == "high", tr.c.block_time >= utc(since_ts),
+                   tr.c.hype_wei >= min_hype_wei)
+            .order_by(tr.c.id)).all()
+        seen: dict[str, tuple[str, int, int, int]] = {}
+        for w, tid, blk, wei in rows:
+            seen.setdefault(w, (w, tid, int(blk), _int(wei) or 0))
+        return list(seen.values())
+
+    def bundle_wallets(self, *, lookback_days: int, min_wallets: int, min_hits: int) -> set[str]:
+        """Wallets that repeatedly buy a token in the same block as other tracked wallets."""
+        tr = t.trades
+        since = datetime.now(timezone.utc).timestamp() - lookback_days * 86400
+        with self.engine.connect() as c:
+            rows = c.execute(
+                sa.select(tr.c.block_number, tr.c.token, tr.c.wallet).where(
+                    tr.c.chain_id == self.chain_id, tr.c.kind == "BUY",
+                    tr.c.confidence == "high", tr.c.block_time >= utc(int(since)))).all()
+        from .launchintel import find_bundle_wallets
+        return find_bundle_wallets(((int(b), tok, w) for b, tok, w in rows),
+                                   min_wallets=min_wallets, min_hits=min_hits)
+
+    def record_paper_trade(self, c: Connection, *, token: str, signal_id: int | None,
+                           opened_at: int, block: int | None, entry_price_hype: Decimal | None,
+                           n_independent: int, n_raw: int, details: dict) -> bool:
+        """One paper trade per token; True when this call created it."""
+        pt = t.paper_trades
+        got = c.execute(pg_insert(pt).values(
+            chain_id=self.chain_id, token=token, signal_id=signal_id, opened_at=utc(opened_at),
+            block_number=block, entry_price_hype=entry_price_hype, n_independent=n_independent,
+            n_raw=n_raw, details=details)
+            .on_conflict_do_nothing(constraint="uq_paper_trades_token").returning(pt.c.id)
+        ).scalar()
+        return got is not None
+
+    def paper_trades(self, since_days: int | None = None) -> list[dict[str, Any]]:
+        """Paper trades with the market snapshots recorded after each opened."""
+        pt, ms = t.paper_trades, t.token_market_snapshots
+        q = sa.select(pt).where(pt.c.chain_id == self.chain_id).order_by(pt.c.opened_at)
+        if since_days:
+            q = q.where(pt.c.opened_at >= sa.func.now() - sa.text(f"interval '{int(since_days)} days'"))
+        out = []
+        with self.engine.connect() as c:
+            for r in c.execute(q).mappings():
+                snaps = c.execute(
+                    sa.select(ms.c.captured_at, ms.c.price_hype).where(
+                        ms.c.chain_id == self.chain_id, ms.c.token == r["token"],
+                        ms.c.captured_at >= r["opened_at"], ms.c.price_hype.isnot(None))
+                    .order_by(ms.c.captured_at)).all()
+                d = dict(r)
+                d["snapshots"] = [(a.timestamp(), float(p)) for a, p in snaps]
+                d["opened_ts"] = r["opened_at"].timestamp()
+                d["entry"] = float(r["entry_price_hype"]) if r["entry_price_hype"] else None
+                out.append(d)
+        return out
+
+    def launch_venue_add(self, key: str, kind: str, details: dict) -> bool:
+        lv = t.launch_venues
+        with self.engine.begin() as c:
+            got = c.execute(pg_insert(lv).values(
+                chain_id=self.chain_id, key=key, kind=kind, details=details)
+                .on_conflict_do_nothing(constraint="uq_launch_venues_key")
+                .returning(lv.c.id)).scalar()
+        return got is not None
+
+    def launch_factories(self) -> list[str]:
+        """DEX factories that created pools we have seen (for the due-diligence pool lookup)."""
+        lv = t.launch_venues
+        with self.engine.connect() as c:
+            rows = c.execute(sa.select(sa.distinct(lv.c.details["factory"].astext)).where(
+                lv.c.chain_id == self.chain_id, lv.c.kind == "pool")).all()
+        return [r[0] for r in rows if r[0]]
+
+    def launch_pending_pools(self, limit: int = 200) -> list[dict[str, Any]]:
+        lv = t.launch_venues
+        with self.engine.connect() as c:
+            return [dict(r) for r in c.execute(
+                sa.select(lv.c.key, lv.c.details).where(
+                    lv.c.chain_id == self.chain_id, lv.c.kind == "pool",
+                    lv.c.alerted_at.is_(None)).order_by(lv.c.id).limit(limit)).mappings()]
+
+    def launch_venue_done(self, key: str, extra: dict, payload: dict | None = None) -> None:
+        """Mark a venue handled and, in the same transaction, queue its alert (if any)."""
+        lv = t.launch_venues
+        with self.engine.begin() as c:
+            c.execute(sa.update(lv).where(lv.c.chain_id == self.chain_id, lv.c.key == key)
+                      .values(alerted_at=sa.func.now(),
+                              details=lv.c.details.op("||")(sa.cast(extra, t.JSONB))))
+            if payload:
+                self.enqueue(c, f"launch:{key}", f"New launch {payload.get('symbol') or ''}",
+                             severity="high", payload=payload)
+
+    def register_launchpads(self, c: Connection, found: dict[str, list[dict]]
+                            ) -> list[tuple[str, list[dict]]]:
+        """Record launchpad names Agora reports. Returns the ones never seen before.
+
+        The very first call only seeds the table (everything already indexed is not 'new')."""
+        lv = t.launch_venues
+        have = {r[0] for r in c.execute(sa.select(lv.c.key).where(
+            lv.c.chain_id == self.chain_id, lv.c.kind == "launchpad"))}
+        seeding = not have
+        if seeding:   # everything Agora already lists (not just this round's top list) is known
+            for (name,) in c.execute(sa.select(sa.distinct(t.token_profiles.c.launchpad)).where(
+                    t.token_profiles.c.chain_id == self.chain_id,
+                    t.token_profiles.c.launchpad.isnot(None))):
+                found.setdefault(name, [])
+        new = []
+        for name, toks in found.items():
+            if not name:
+                continue
+            key = f"launchpad:{name}"
+            if key in have:
+                continue
+            got = c.execute(pg_insert(lv).values(
+                chain_id=self.chain_id, key=key, kind="launchpad",
+                alerted_at=sa.func.now() if seeding else None,
+                details={"tokens": toks[:5], "seeded": seeding})
+                .on_conflict_do_nothing(constraint="uq_launch_venues_key")
+                .returning(lv.c.id)).scalar()
+            if got is not None and not seeding:
+                new.append((name, toks[:5]))
+        return new
+
+    def token_profile_age_s(self, token: str) -> float | None:
+        p = t.token_profiles
+        with self.engine.connect() as c:
+            ts_ = c.execute(sa.select(p.c.launched_at).where(
+                p.c.chain_id == self.chain_id, p.c.address == token)).scalar()
+        return None if ts_ is None else time.time() - ts_.timestamp()
+
     # --- status -----------------------------------------------------------------------
     def status(self) -> dict[str, Any]:
         tr, p = t.trades, t.wallet_positions

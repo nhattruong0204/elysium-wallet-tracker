@@ -36,7 +36,7 @@ status and read logs from a phone. Credentials live only in GitHub secrets.
 | `restart` / `stop` | As named (`restart` restarts tracker and ui) |
 | `web` | Deploy **only** the dashboard: build, migrate, `up -d --no-deps web`, smoke + role checks. Needs `backup_run=<id of a successful off-site backup run, <= 36 h old>`. Never restarts tracker/ui/postgres |
 | `web-smoke` / `loadtest` / `web-rollback` | Page and role checks on the loopback port; 5 rps x 5 min load test that aborts if the bots degrade; stop the `web` container |
-| `maint` | Allow-listed steps (`steps=a,b`), now also `install-revival-health`, `caddy-show`, `caddy-backup`, `caddy-switch`, `caddy-rollback` |
+| `maint` | Allow-listed steps (`steps=a,b`), now also `launch-report`, `install-revival-health`, `caddy-show`, `caddy-backup`, `caddy-switch`, `caddy-rollback` |
 
 Bot settings are config-as-code: change `deploy/config.yaml` or `deploy/watchlist.txt` in a
 PR and run `deploy`. The first run prints the server's SSH host key fingerprint; save that
