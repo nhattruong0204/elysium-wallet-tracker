@@ -198,7 +198,10 @@ outc AS (SELECT f.token, max(s.price_hype) AS max_px,
          GROUP BY f.token)
 SELECT a.token, coalesce(p.symbol, md.symbol) AS sym, p.launchpad, p.launched_at, a.first_at, a.sm_buys,
        a.sm_wallets, extract(epoch FROM a.first_at - p.launched_at) / 60 AS delay_min, f.px,
-       o.n_snap, o.max_px / f.px AS max_x, o.last_px / f.px AS now_x
+       o.n_snap,
+       CASE WHEN o.max_px / f.px BETWEEN 1e-4 AND 1e4 THEN o.max_px / f.px END AS max_x,  -- outside: unit/decimals mismatch
+       CASE WHEN o.max_px / f.px BETWEEN 1e-4 AND 1e4 THEN o.last_px / f.px END AS now_x,
+       (o.max_px / f.px NOT BETWEEN 1e-4 AND 1e4) AS bad_units
 FROM first_any a
 LEFT JOIN public_api.token_profiles p ON p.address = a.token
 LEFT JOIN public_api.token_metadata md ON md.address = a.token
@@ -244,6 +247,36 @@ FROM base WHERE max_x IS NOT NULL ORDER BY max_x DESC LIMIT 12;
 SELECT sym, launchpad, to_char(launched_at, 'MM-DD HH24:MI') AS launched, round(delay_min::numeric, 1) AS delay_min,
        sm_wallets, round(max_x::numeric, 2) AS max_x, round(now_x::numeric, 3) AS now_x, token
 FROM base WHERE now_x IS NOT NULL ORDER BY now_x LIMIT 8;
+
+\echo == 6b. bundle wallets (in >=5 same-block >=3-wallet buys): are their early buys a better signal?
+CREATE TEMP VIEW bundlers AS
+WITH b AS (SELECT token, block_number, array_agg(DISTINCT wallet) AS ws FROM public_api.trades
+           WHERE kind = 'BUY' GROUP BY 1, 2 HAVING count(DISTINCT wallet) >= 3)
+SELECT w AS wallet FROM b, unnest(ws) w GROUP BY w HAVING count(*) >= 5;
+SELECT (EXISTS (SELECT 1 FROM public_api.trades t JOIN bundlers u ON u.wallet = t.wallet
+                WHERE t.token = base.token AND t.kind = 'BUY' AND t.block_time <= base.first_at + interval '10 minutes'))
+         AS bundler_in_first_10m,
+       count(*) AS tokens, count(max_x) AS with_outcome,
+       round(percentile_cont(0.5) WITHIN GROUP (ORDER BY max_x)::numeric, 2) AS median_max_x,
+       round(100.0 * avg((max_x >= 2)::int)) AS pct_max_2x, round(100.0 * avg((max_x >= 10)::int)) AS pct_max_10x,
+       round(percentile_cont(0.5) WITHIN GROUP (ORDER BY now_x)::numeric, 2) AS median_now_x,
+       round(100.0 * avg((now_x < 0.5)::int)) AS pct_now_below_half
+FROM base WHERE delay_min < 30 GROUP BY 1 ORDER BY 1;
+SELECT count(*) AS bundle_wallets FROM bundlers;
+\echo == 6c. independent wallets (bundle wallets count as one) in the first 30 min after launch
+WITH ind AS (
+  SELECT b.token, count(DISTINCT CASE WHEN u.wallet IS NULL THEN t.wallet ELSE 'BUNDLE' END) AS n_ind
+  FROM base b JOIN public_api.trades t ON t.token = b.token AND t.kind = 'BUY'
+    AND t.block_time <= b.launched_at + interval '30 minutes'
+  LEFT JOIN bundlers u ON u.wallet = t.wallet
+  WHERE b.launched_at IS NOT NULL GROUP BY b.token)
+SELECT CASE WHEN n_ind >= 3 THEN '3+' ELSE n_ind::text END AS independent_wallets_30m, count(*) AS tokens,
+       count(max_x) AS with_outcome,
+       round(percentile_cont(0.5) WITHIN GROUP (ORDER BY max_x)::numeric, 2) AS median_max_x,
+       round(100.0 * avg((max_x >= 2)::int)) AS pct_max_2x, round(100.0 * avg((max_x >= 10)::int)) AS pct_max_10x,
+       round(100.0 * avg((now_x < 0.5)::int)) AS pct_now_below_half
+FROM ind JOIN base USING (token) GROUP BY 1 ORDER BY 1;
+SELECT count(*) FILTER (WHERE bad_units) AS excluded_unit_mismatch FROM base;
 
 \echo == 6. same-block buys by >=3 distinct smart wallets (bundles: likely ONE operator, not independent signals)
 WITH b AS (SELECT token, block_number, array_agg(DISTINCT left(wallet, 8) ORDER BY left(wallet, 8)) AS ws
