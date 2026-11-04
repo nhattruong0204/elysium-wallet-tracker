@@ -277,6 +277,35 @@ SELECT CASE WHEN n_ind >= 3 THEN '3+' ELSE n_ind::text END AS independent_wallet
        round(100.0 * avg((now_x < 0.5)::int)) AS pct_now_below_half
 FROM ind JOIN base USING (token) GROUP BY 1 ORDER BY 1;
 SELECT count(*) FILTER (WHERE bad_units) AS excluded_unit_mismatch FROM base;
+\echo == 6d. no look-ahead: ENTER at the first verified buy after the 3rd independent wallet arrives (<=30 min after launch)
+CREATE TEMP VIEW sig_out AS
+WITH bt AS (SELECT t.token, t.wallet, t.block_time, t.id, t.hype_wei, t.qty, t.confidence,
+                   CASE WHEN u.wallet IS NULL THEN t.wallet ELSE 'BUNDLE' END AS ident
+            FROM public_api.trades t LEFT JOIN bundlers u ON u.wallet = t.wallet WHERE t.kind = 'BUY'),
+firsts AS (SELECT DISTINCT ON (token, ident) token, ident, block_time, id FROM bt ORDER BY token, ident, block_time, id),
+ranked AS (SELECT token, block_time, row_number() OVER (PARTITION BY token ORDER BY block_time, id) AS rn FROM firsts),
+sig AS (SELECT r.token, r.block_time AS sig_at FROM ranked r JOIN base b USING (token)
+        WHERE r.rn = 3 AND b.launched_at IS NOT NULL AND r.block_time <= b.launched_at + interval '30 minutes'),
+entry AS (SELECT DISTINCT ON (s.token) s.token, s.sig_at,
+                 (t.hype_wei / 1e18) / (t.qty / power(10::numeric, coalesce(m.decimals, 18))) AS px
+          FROM sig s JOIN bt t ON t.token = s.token AND t.block_time >= s.sig_at AND t.confidence = 'high'
+            AND t.hype_wei > 0 AND t.qty > 0
+          LEFT JOIN public_api.token_metadata m ON m.address = s.token ORDER BY s.token, t.block_time, t.id)
+SELECT e.token, e.sig_at, max(sn.price_hype) / e.px AS mx,
+       (array_agg(sn.price_hype ORDER BY sn.captured_at DESC))[1] / e.px AS nw
+FROM entry e JOIN public_api.token_market_snapshots sn ON sn.token = e.token AND sn.captured_at >= e.sig_at
+  AND sn.price_hype > 0 GROUP BY 1, 2, e.px;
+SELECT count(*) AS tokens,
+       round(percentile_cont(0.5) WITHIN GROUP (ORDER BY extract(epoch FROM o.sig_at - b.launched_at) / 60)::numeric, 1)
+         AS median_signal_min_after_launch,
+       round(percentile_cont(0.5) WITHIN GROUP (ORDER BY mx)::numeric, 2) AS median_max_x,
+       round(100.0 * avg((mx >= 2)::int)) AS pct_max_2x, round(100.0 * avg((mx >= 10)::int)) AS pct_max_10x,
+       round(percentile_cont(0.5) WITHIN GROUP (ORDER BY nw)::numeric, 2) AS median_now_x,
+       round(100.0 * avg((nw < 1)::int)) AS pct_now_below_entry, round(100.0 * avg((nw < 0.5)::int)) AS pct_now_below_half
+FROM sig_out o JOIN base b USING (token) WHERE mx BETWEEN 1e-4 AND 1e4;
+SELECT b.sym, b.launchpad, round((extract(epoch FROM o.sig_at - b.launched_at) / 60)::numeric, 1) AS signal_min,
+       round(mx::numeric, 2) AS max_x, round(nw::numeric, 2) AS now_x
+FROM sig_out o JOIN base b USING (token) WHERE mx BETWEEN 1e-4 AND 1e4 ORDER BY mx DESC;
 
 \echo == 6. same-block buys by >=3 distinct smart wallets (bundles: likely ONE operator, not independent signals)
 WITH b AS (SELECT token, block_number, array_agg(DISTINCT left(wallet, 8) ORDER BY left(wallet, 8)) AS ws
