@@ -147,3 +147,10 @@ def test_full_trace_against_fake_node(capsys, tmp_path):
     assert "spot price ~ 1.000e-04 WHYPE per TST" in out and "FDV ~ $9" in out
     assert "wallets that sent tokens INTO a pool" in out and "creator received" in out
     assert "owner(): " + CREATOR in out
+
+
+def test_clone_target_detects_eip1167():
+    impl = "be" * 20
+    code = "0x363d3d373d3d3d363d73" + impl + "5af43d82803e903d91602b57fd5bf3"
+    assert tt.clone_target(code) == "0x" + impl
+    assert tt.clone_target("0x6080604052") is None
