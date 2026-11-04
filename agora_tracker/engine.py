@@ -15,8 +15,9 @@ from . import cards
 from .cards import Links
 from .chain import ScanResult, TokenCache
 from .classify import TradeEvent
-from .config import AlertConfig, ChainConfig, LinksConfig
+from .config import AlertConfig, ChainConfig, IntelConfig, LinksConfig
 from .db import BASIS_ESTIMATED, BASIS_KNOWN, BASIS_PARTIAL, Position, Store
+from .launchintel import count_independent, tier_label
 from .leaderboard import Trader
 
 log = logging.getLogger(__name__)
@@ -47,8 +48,11 @@ def short(addr: str) -> str:
 class Engine:
     def __init__(self, store: Store, tokens: TokenCache, chain_cfg: ChainConfig,
                  alert_cfg: AlertConfig, labels: dict[str, str], value_unit: str = "USD",
-                 links: Links | None = None):
+                 links: Links | None = None, intel: IntelConfig | None = None):
         self.store, self.tokens = store, tokens
+        self.intel = intel or IntelConfig()
+        self._bundles_at = float("-inf")
+        self._bundles: set[str] = set()
         self.chain_cfg, self.cfg = chain_cfg, alert_cfg
         self.labels = labels
         self.value_unit = value_unit
@@ -233,25 +237,90 @@ class Engine:
             return self.cfg.alert_transfers
         return True  # SWAP / MULTI are rare and usually interesting
 
+    def bundle_wallets(self) -> set[str]:
+        """Wallets that split buys across addresses; refreshed every bundle_refresh_s."""
+        ic = self.intel
+        if time.monotonic() - self._bundles_at >= ic.bundle_refresh_s:
+            self._bundles_at = time.monotonic()      # also on failure: retry next interval
+            try:
+                self._bundles = self.store.bundle_wallets(
+                    lookback_days=ic.bundle_lookback_days, min_wallets=ic.bundle_min_wallets,
+                    min_hits=ic.bundle_min_hits)
+            except Exception:  # noqa: BLE001 - scoring must never block indexing
+                log.exception("bundle wallet refresh failed; keeping %d known", len(self._bundles))
+        return self._bundles
+
     def _maybe_cluster(self, c, ev: TradeEvent, bts: int, min_wei: int) -> None:
         window = self.cfg.cluster_window_s
-        buyers = self.store.recent_buyers(c, ev.token, bts - window, min_wei)
-        if len(buyers) < self.cfg.cluster_min_wallets:
-            return
+        rows = self.store.recent_buyer_blocks(c, ev.token, bts - window, min_wei)
+        ic = self.intel
+        strong = False
+        if ic.independent_min > 0:
+            irows = rows if ic.independent_window_s == window else \
+                self.store.recent_buyer_blocks(c, ev.token, bts - ic.independent_window_s, min_wei)
+            if len(irows) >= ic.independent_min:
+                strong = self._strong_signal(c, ev, bts, irows)
+        if len(rows) >= self.cfg.cluster_min_wallets:
+            # one alert per moment: the strong card already says everything the plain one would
+            self._raw_cluster(c, ev, bts, min_wei, rows, alert=not strong)
+
+    def _score(self, rows: list[tuple[str, int, int, int]], window_s: int) -> dict:
+        n = count_independent([(w, blk) for w, _, blk, _ in rows], self.bundle_wallets())
+        return {"independent": n, "n_raw": len(rows),
+                "tier": tier_label(n, len(rows), window_s, self.intel.independent_min)}
+
+    def _raw_cluster(self, c, ev: TradeEvent, bts: int, min_wei: int, rows: list,
+                     alert: bool = True) -> None:
+        window = self.cfg.cluster_window_s
         sid = self.store.record_signal(
             c, kind="cluster_buy", token=ev.token, dedup_key=f"cluster:{ev.token}:{bts // window}",
             window_start=bts - window, window_end=bts,
-            details={"wallets": [w for w, _ in buyers], "min_hype_wei": str(min_wei),
+            details={"wallets": [r[0] for r in rows], "min_hype_wei": str(min_wei),
                      "window_s": window},
-            trade_ids=[tid for _, tid in buyers], cooldown_s=window)
-        if sid is None or not self.cfg.cluster_alerts:
+            trade_ids=[r[1] for r in rows], cooldown_s=window)
+        if sid is None or not alert or not self.cfg.cluster_alerts:
             return  # the signal stays in the database (Smart Money > Clusters)
         sym, _ = self.tokens.get(ev.token)
         payload = {"type": "cluster", "token": ev.token, "symbol": sym,
                    "min_hype": self.cfg.min_trade_hype, "window_min": window // 60,
-                   "buyers": [self._wallet_ctx(w) for w, _ in buyers]}
+                   "buyers": [self._wallet_ctx(r[0]) for r in rows], "tx": ev.tx,
+                   **self._score(rows, window)}
         text, _ = cards.render_cluster(payload, self.links)
         self.store.enqueue(c, f"signal:{sid}", text, severity="high", payload=payload)
+
+    def _strong_signal(self, c, ev: TradeEvent, bts: int, rows: list) -> bool:
+        """>= independent_min unrelated wallets: the signal worth acting on. Fires once per
+        token per cooldown, also records the paper trade that measures it forward."""
+        ic = self.intel
+        score = self._score(rows, ic.independent_window_s)
+        if score["independent"] < ic.independent_min:
+            return False                # several addresses, but one operator
+        sid = self.store.record_signal(
+            c, kind="independent_buy", token=ev.token,
+            dedup_key=f"indep:{ev.token}:{bts // ic.independent_cooldown_s}",
+            window_start=bts - ic.independent_window_s, window_end=bts,
+            details={"wallets": [r[0] for r in rows], "window_s": ic.independent_window_s,
+                     "independent": score["independent"]},
+            trade_ids=[r[1] for r in rows], cooldown_s=ic.independent_cooldown_s)
+        if sid is None:
+            return False
+        sym, dec = self.tokens.get(ev.token)
+        if ic.paper_enabled:
+            entry = None
+            if ev.hype_wei and ev.qty > 0:
+                entry = (Decimal(ev.hype_wei) / Decimal(WEI)) / (Decimal(ev.qty) / Decimal(10) ** int(dec or 18))
+            self.store.record_paper_trade(
+                c, token=ev.token, signal_id=sid, opened_at=bts, block=ev.block,
+                entry_price_hype=entry, n_independent=score["independent"], n_raw=len(rows),
+                details={"tx": ev.tx, "symbol": sym, "wallets": [r[0] for r in rows]})
+        if not self.cfg.cluster_alerts:
+            return True
+        payload = {"type": "cluster", "strong": True, "token": ev.token, "symbol": sym,
+                   "min_hype": self.cfg.min_trade_hype, "window_min": ic.independent_window_s // 60,
+                   "buyers": [self._wallet_ctx(r[0]) for r in rows], "tx": ev.tx, **score}
+        text, _ = cards.render_cluster(payload, self.links)
+        self.store.enqueue(c, f"signal:{sid}", text, severity="high", payload=payload)
+        return True
 
     def leaderboard_alerts(self, changes: list[tuple[str, str, Trader]]) -> None:
         bucket = int(time.time()) // 60

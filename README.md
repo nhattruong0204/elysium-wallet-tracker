@@ -62,7 +62,7 @@ git pull && docker compose up -d --build           # update (migrations run auto
 ```
 
 Docs: [operations runbook](docs/OPERATIONS.md) · [database design & ERD](docs/DATABASE.md) ·
-[audit of v0.1](docs/AUDIT.md).
+[audit of v0.1](docs/AUDIT.md) · [launch intelligence](docs/LAUNCH_INTEL.md).
 
 ### If `--discover` finds nothing
 

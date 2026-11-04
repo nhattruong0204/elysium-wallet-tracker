@@ -362,6 +362,41 @@ hype_usd_rates = sa.Table(
     sa.Index("ix_hype_usd_rates_observed_at", "observed_at"),
 )
 
+# Launch intelligence (migration 0006). Private: no public_api view exposes these.
+# launch_venues: every launchpad / DEX pool already reported, so a new one alerts once.
+launch_venues = sa.Table(
+    "launch_venues", metadata,
+    sa.Column("id", sa.BigInteger, sa.Identity(), primary_key=True),
+    sa.Column("chain_id", sa.BigInteger, sa.ForeignKey("chains.chain_id"), nullable=False),
+    sa.Column("key", sa.Text, nullable=False),
+    sa.Column("kind", sa.Text, nullable=False),
+    sa.Column("first_seen_at", TS, nullable=False, server_default=_now()),
+    sa.Column("alerted_at", TS),
+    sa.Column("details", JSONB, nullable=False, server_default=sa.text("'{}'::jsonb")),
+    sa.UniqueConstraint("chain_id", "key", name="uq_launch_venues_key"),
+    sa.Index("ix_launch_venues_kind_seen", "chain_id", "kind", "first_seen_at"),
+)
+
+# paper_trades: forward measurement of the independent-wallets signal. Entry = executed price
+# of the triggering buy; later prices are read from token_market_snapshots at report time.
+paper_trades = sa.Table(
+    "paper_trades", metadata,
+    sa.Column("id", sa.BigInteger, sa.Identity(), primary_key=True),
+    sa.Column("chain_id", sa.BigInteger, sa.ForeignKey("chains.chain_id"), nullable=False),
+    sa.Column("token", ADDR, nullable=False),
+    sa.Column("signal_id", sa.BigInteger, sa.ForeignKey("signals.id", ondelete="SET NULL")),
+    sa.Column("opened_at", TS, nullable=False),
+    sa.Column("block_number", sa.BigInteger),
+    sa.Column("entry_price_hype", sa.Numeric(60, 30)),
+    sa.Column("n_independent", sa.Integer, nullable=False),
+    sa.Column("n_raw", sa.Integer, nullable=False),
+    sa.Column("details", JSONB, nullable=False, server_default=sa.text("'{}'::jsonb")),
+    sa.Column("created_at", TS, nullable=False, server_default=_now()),
+    _addr_check("token"),
+    sa.UniqueConstraint("chain_id", "token", name="uq_paper_trades_token"),
+    sa.Index("ix_paper_trades_opened_at", "opened_at"),
+)
+
 # Telegram UI state per user: selected period, pending conversational input. Survives
 # restarts, so a half-finished custom-range or export flow resumes where it was.
 ui_sessions = sa.Table(

@@ -45,8 +45,10 @@ def _ts(v: int | None) -> datetime | None:
 
 
 class Collector:
-    def __init__(self, store: Store, market: AgoraMarket, cfg: CollectorConfig):
+    def __init__(self, store: Store, market: AgoraMarket, cfg: CollectorConfig,
+                 new_launchpad_alerts: bool = False):
         self.store, self.market, self.cfg = store, market, cfg
+        self.new_launchpad_alerts = new_launchpad_alerts
         self._last_prune = 0.0
 
     def _recent_tracked_tokens(self, since: datetime) -> list[str]:
@@ -90,6 +92,8 @@ class Collector:
                     set_={k: getattr(stmt.excluded, k) for k in
                           ("symbol", "name", "launchpad", "version", "launched_at")}
                     | {"updated_at": sa.func.now()}))
+            if self.new_launchpad_alerts:
+                self._launchpad_alerts(c, toks)
             if time.monotonic() - self._last_prune > 86400:
                 n = c.execute(sa.delete(t.token_market_snapshots).where(
                     t.token_market_snapshots.c.chain_id == cid,
@@ -104,6 +108,19 @@ class Collector:
         self.store.set_kv("collector_last", json.dumps(out))
         log.info("collector: %d token snapshots (%d tracked extras)", len(rows), len(extra))
         return out
+
+    def _launchpad_alerts(self, c: Any, toks: list[TokenInfo]) -> None:
+        """Queue one alert per launchpad name Agora reports for the first time."""
+        found: dict[str, list[dict]] = {}
+        for x in toks:
+            if x.launchpad:
+                found.setdefault(x.launchpad, []).append({"token": x.address, "symbol": x.symbol})
+        for name, tokens in self.store.register_launchpads(c, found):
+            payload = {"type": "launch", "kind": "new_launchpad", "launchpad": name,
+                       "tokens": tokens}
+            self.store.enqueue(c, f"launchpad:{name}", f"🆕 New launchpad: {name}",
+                               severity="high", payload=payload)
+            log.warning("collector: new launchpad %r (%d tokens)", name, len(tokens))
 
     def _row(self, x: TokenInfo, now: datetime, synced_at: datetime | None,
              head: int | None) -> dict[str, Any]:

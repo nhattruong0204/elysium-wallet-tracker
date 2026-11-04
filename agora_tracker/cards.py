@@ -36,7 +36,16 @@ WEI = 10 ** 18
 ICON = {"BUY": "🟢", "SELL": "🔴", "SWAP": "🔁", "TRANSFER_IN": "📥", "TRANSFER_OUT": "📤",
         "MULTI": "🧩"}
 LAUNCHPAD_NAMES = {"kleos": "Kleos", "boxa": "BOXA", "elyspump": "ElysPump", "elyxa": "Elyxa",
-                   "obol": "Obol", "petals": "Petals", "stockium": "Stockium", "eleos": "Eleos"}
+                   "obol": "Obol", "petals": "Petals", "stockium": "Stockium", "eleos": "Eleos",
+                   "volta": "Volta", "rons": "Rons", "other": "other venue"}
+# Launchpads whose token page (Kleos / BOXA / ElysPump) can really trade the token. For any
+# other venue those pages are a dead end, so alerts point at the pool/router instead.
+TRADE_PAGES = {"kleos", "boxa", "elyspump"}
+
+
+def unknown_venue(info: TokenInfo | None, dd: Any = None) -> bool:
+    pad = info.launchpad if info else None
+    return bool(pad) and pad not in TRADE_PAGES
 
 
 def human(x: float) -> str:
@@ -215,7 +224,7 @@ def market_line(info: TokenInfo | None, hype_usd: float | None) -> str | None:
 
 
 def link_bar(L: Links, token: str, symbol: str, info: TokenInfo | None,
-             hype_usd: float | None, now: float | None = None) -> str:
+             hype_usd: float | None, now: float | None = None, venue_pages: bool = True) -> str:
     """🔗 #BOZO (𝕏) | MC: $6.96K | Seen: 3d: Agora | Kleos | BOXA | ElysPump | 🔎𝕏"""
     tag = hashtag((info.symbol if info and info.symbol else None) or symbol)
     head = tag or esc(symbol)
@@ -232,8 +241,11 @@ def link_bar(L: Links, token: str, symbol: str, info: TokenInfo | None,
     if info is not None and info.mcap_hype is not None:
         segs.append(f"<b>MC</b>: {usd(info.mcap_hype * hype_usd)}" if hype_usd
                     else f"<b>MC</b>: {human(info.mcap_hype)} HYPE")
-    venues = [a(L.agora_token(token), "Agora"), a(L.kleos_token(token), "Kleos"),
-              a(L.boxa_token(token), "BOXA")]
+    venues = [a(L.agora_token(token), "Agora")]
+    if venue_pages:
+        venues += [a(L.kleos_token(token), "Kleos"), a(L.boxa_token(token), "BOXA")]
+    else:
+        venues.append(a(L.explorer_token(token), "Elyscan"))
     nat = L.native(info.launchpad if info else None, token)
     if nat:
         venues.append(a(nat[1], nat[0]))
@@ -245,8 +257,11 @@ def link_bar(L: Links, token: str, symbol: str, info: TokenInfo | None,
 
 
 def keyboard(L: Links, token: str, symbol: str, info: TokenInfo | None,
-             tx: str | None, wallet: str | None = None) -> dict:
+             tx: str | None, wallet: str | None = None, dd: Any = None,
+             force_unknown: bool = False) -> dict:
     s = (symbol or token[:6])[:12]
+    if force_unknown or unknown_venue(info, dd):
+        return {"inline_keyboard": _venue_rows(L, token, s, tx, dd)}
     rows = [r for r in (L.wallet_buttons(token, s),) if r]
     rows += [[{"text": f"🛒 Agora: {s}", "url": L.agora_token(token)},
              {"text": f"BOXA: {s}", "url": L.boxa_token(token)}]]
@@ -258,6 +273,59 @@ def keyboard(L: Links, token: str, symbol: str, info: TokenInfo | None,
         row2.append({"text": "🧾 Tx", "url": L.tx(tx)})
     rows.append(row2)
     return {"inline_keyboard": rows}
+
+
+def _venue_rows(L: Links, token: str, s: str, tx: str | None, dd: Any) -> list[list[dict]]:
+    """Buttons for a token that trades somewhere Kleos/BOXA/Rabby links cannot reach: the
+    pool or curve and the router the buyers actually used, on the explorer."""
+    rows = [[{"text": f"📊 Agora: {s}", "url": L.agora_token(token)},
+             {"text": "🔍 Token", "url": L.explorer_token(token)}]]
+    r2 = []
+    if dd is not None and dd.pool:
+        r2.append({"text": "🏊 Curve" if dd.pool_kind == "curve" else "🏊 Pool",
+                   "url": L.address(dd.pool)})
+    if dd is not None and dd.router:
+        r2.append({"text": "🔀 Router", "url": L.address(dd.router)})
+    if tx:
+        r2.append({"text": "🧾 Tx", "url": L.tx(tx)})
+    if r2:
+        rows.append(r2)
+    return rows
+
+
+def dd_lines(dd: Any, L: Links, hype_usd: float | None) -> list[str]:
+    """🛡 Due diligence block (read-only RPC facts; every line is optional)."""
+    if dd is None:
+        return []
+    out = ["🛡 <b>Due diligence</b>"]
+    if dd.pool:
+        kind = "Bonding curve" if dd.pool_kind == "curve" else "Pool"
+        liq = ""
+        if dd.liquidity_hype is not None:
+            liq = f" holds <b>{_money(dd.liquidity_hype, hype_usd)}</b> (exit ceiling)"
+        out.append(f"💧 {kind} {a(L.address(dd.pool), '<code>' + short(dd.pool) + '</code>')}{liq}")
+    else:
+        out.append("💧 <i>No pool or curve found for this token yet</i>")
+    if dd.router:
+        out.append(f"🔀 Router/venue {a(L.address(dd.router), '<code>' + short(dd.router) + '</code>')}")
+    if dd.top_pct is not None and dd.top_holder:
+        who_ = "owner" if dd.top_is_owner else "wallet"
+        out.append(f"👑 Largest holder ({who_}) "
+                   f"{a(L.address(dd.top_holder), '<code>' + short(dd.top_holder) + '</code>')} "
+                   f"<b>{dd.top_pct:.1f}%</b> of supply")
+    elif dd.owner_pct is not None and dd.owner:
+        out.append(f"👑 Owner holds <b>{dd.owner_pct:.1f}%</b> of supply")
+    if dd.sellers is not None:
+        sold = f", {dd.sold_pct:.1f}% of supply" if dd.sold_pct is not None else ""
+        out.append(f"🚪 {dd.sellers} wallet(s) sold into it in the last hour{sold}"
+                   if dd.sellers else "🚪 Nobody has sold into it yet (a sell is untested)")
+    if dd.risks:
+        out.append("⚠️ " + esc("; ".join(dd.risks[:4])))
+    elif dd.decimals is not None:
+        out.append("✅ No mint/pause/blacklist functions seen in the code")
+    if dd.partial:
+        out.append("<i>Some checks failed or timed out; missing lines are unknown, not safe.</i>")
+    return out
 
 
 def name_of(p: dict) -> str:
@@ -304,8 +372,8 @@ def _header(p: dict, L: Links, info: TokenInfo | None, sym: str) -> str:
 
 
 def render_trade(p: dict, L: Links, info: TokenInfo | None = None,
-                 hype_usd: float | None = None, now: float | None = None
-                 ) -> tuple[str, dict]:
+                 hype_usd: float | None = None, now: float | None = None,
+                 dd: Any = None) -> tuple[str, dict]:
     kind, token, conf = p["kind"], p["token"], p.get("confidence", "high")
     sym = (info.symbol if info and info.symbol else None) or p.get("symbol") or token[:8]
     dec = int(p.get("decimals") or 18)
@@ -375,11 +443,14 @@ def render_trade(p: dict, L: Links, info: TokenInfo | None = None,
     lines.append("")
     if (m := market_line(info, hype_usd)) is not None:
         lines.append(m)
-    lines.append(link_bar(L, token, sym, info, hype_usd, now))
+    lines.append(link_bar(L, token, sym, info, hype_usd, now,
+                          venue_pages=not unknown_venue(info, dd)))
     lines.append(f"<code>{esc(token)}</code>")
     when = ago(p.get("ts"), now)
     lines.append(f"🧾 {a(L.tx(p['tx']), 'Tx')}" + (f" · {when} ago" if when else ""))
-    return "\n".join(lines), keyboard(L, token, sym, info, p["tx"], p["wallet"])
+    if dd is not None:
+        lines += [""] + dd_lines(dd, L, hype_usd)
+    return "\n".join(lines), keyboard(L, token, sym, info, p["tx"], p["wallet"], dd=dd)
 
 
 def _holds_line(p: dict, info: TokenInfo | None, hype_usd: float | None, dec: int
@@ -402,20 +473,71 @@ def _holds_line(p: dict, info: TokenInfo | None, hype_usd: float | None, dec: in
 
 
 def render_cluster(p: dict, L: Links, info: TokenInfo | None = None,
-                   hype_usd: float | None = None, now: float | None = None) -> tuple[str, dict]:
+                   hype_usd: float | None = None, now: float | None = None,
+                   dd: Any = None) -> tuple[str, dict]:
     token = p["token"]
     sym = (info.symbol if info and info.symbol else None) or p.get("symbol") or token[:8]
-    lines = [f"🚨 <b>CLUSTER BUY</b> {a(L.agora_token(token), '<b>' + esc(sym) + '</b>')}",
-             f"<b>{len(p['buyers'])} tracked wallets</b> bought ≥{p['min_hype']:g} HYPE within "
-             f"{p['window_min']} min", ""]
+    strong = bool(p.get("strong"))
+    icon = "🚨🚨" if strong else "🚨"
+    lines = [f"{icon} <b>CLUSTER BUY</b> {a(L.agora_token(token), '<b>' + esc(sym) + '</b>')}"
+             + (" ✅ independent" if strong else "")]
+    if p.get("tier"):
+        n_raw = p.get("n_raw", len(p["buyers"]))
+        lines.append(f"🎯 <b>{esc(p['tier'])}</b> · {n_raw} addresses")
+    lines += [f"<b>{len(p['buyers'])} tracked wallets</b> bought ≥{p['min_hype']:g} HYPE within "
+              f"{p['window_min']} min", ""]
     for b in p["buyers"][:10]:
         lines.append(who(L, b, hype_usd))
-    lines += ["<i>Measured buys only; different addresses may share an owner.</i>", ""]
+    note = ("Same-block buyers and known bundle wallets count as one operator."
+            if p.get("tier") else "Measured buys only; different addresses may share an owner.")
+    lines += [f"<i>{note}</i>", ""]
     if (m := market_line(info, hype_usd)) is not None:
         lines.append(m)
-    lines.append(link_bar(L, token, sym, info, hype_usd, now))
+    unk = unknown_venue(info, dd)
+    lines.append(link_bar(L, token, sym, info, hype_usd, now, venue_pages=not unk))
     lines.append(f"<code>{esc(token)}</code>")
-    return "\n".join(lines), keyboard(L, token, sym, info, None)
+    if dd is not None:
+        lines += [""] + dd_lines(dd, L, hype_usd)
+    return "\n".join(lines), keyboard(L, token, sym, info, p.get("tx"), dd=dd)
+
+
+def render_launch(p: dict, L: Links, info: TokenInfo | None = None,
+                  hype_usd: float | None = None, now: float | None = None,
+                  dd: Any = None) -> tuple[str, dict]:
+    """New venue alerts: a launchpad Agora has not listed before, or a fresh DEX pool."""
+    if p.get("kind") == "new_launchpad":
+        name = p.get("launchpad") or "?"
+        lines = [f"🆕🚀 <b>NEW LAUNCHPAD</b> <code>{esc(name)}</code>",
+                 "Agora lists tokens from a launchpad this tracker has not seen before."]
+        for tk in (p.get("tokens") or [])[:5]:
+            sy = esc(tk.get("symbol") or tk["token"][:8])
+            lines.append(f"• {a(L.agora_token(tk['token']), sy)} <code>{esc(tk['token'])}</code>")
+        lines.append("<i>Its token pages and trade routes are unknown here: check the "
+                     "venue before buying.</i>")
+        rows = [[{"text": f"📊 Agora: {(tk.get('symbol') or tk['token'][:6])[:12]}",
+                  "url": L.agora_token(tk["token"])}] for tk in (p.get("tokens") or [])[:3]]
+        return "\n".join(lines), {"inline_keyboard": rows}
+    token = p["token"]
+    sym = (info.symbol if info and info.symbol else None) or p.get("symbol") or token[:8]
+    lines = [f"🆕🏊 <b>NEW DEX POOL</b> {a(L.agora_token(token), '<b>' + esc(sym) + '</b>')}",
+             f"Pool {a(L.address(p['pool']), '<code>' + short(p['pool']) + '</code>')} holds "
+             f"<b>{_money(p['liquidity_hype'], hype_usd)}</b> {p.get('age_s', 0) // 60} min after "
+             f"creation"]
+    if p.get("factory"):
+        lines.append(f"Factory {a(L.address(p['factory']), '<code>' + short(p['factory']) + '</code>')}"
+                     + (f" · fee {int(p['fee']) / 10000:g}%" if p.get("fee") else ""))
+    lines.append("<i>A venue Agora may not index: it is not a Kleos/BOXA/ElysPump token.</i>")
+    if (m := market_line(info, hype_usd)) is not None:
+        lines.append(m)
+    lines.append(f"<code>{esc(token)}</code>")
+    if dd is not None:
+        lines += [""] + dd_lines(dd, L, hype_usd)
+    class _P:  # the pool is known from the event even when the DD probe is unavailable
+        pool = p["pool"]
+        pool_kind = "pool"
+        router = getattr(dd, "router", None)
+    return "\n".join(lines), keyboard(L, token, sym, info, None, dd=dd if dd is not None
+                                      and dd.pool else _P(), force_unknown=True)
 
 
 def preview_url(L: Links, info: TokenInfo | None) -> str | None:
@@ -428,12 +550,24 @@ def preview_url(L: Links, info: TokenInfo | None) -> str | None:
     return img if img.startswith("https://") else None
 
 
+def wants_dd(payload: dict | None) -> bool:
+    """Alerts that get the due-diligence block: clusters, launches and first buys."""
+    if not payload:
+        return False
+    t_ = payload.get("type")
+    return t_ in ("cluster", "launch") or (
+        t_ == "trade" and payload.get("kind") == "BUY"
+        and (payload.get("is_new") or "🆕 new position" in (payload.get("notes") or [])))
+
+
 def render(payload: dict | None, L: Links, info: TokenInfo | None = None,
-           hype_usd: float | None = None) -> tuple[str, dict] | None:
+           hype_usd: float | None = None, dd: Any = None) -> tuple[str, dict] | None:
     if not payload:
         return None
     if payload.get("type") == "trade":
-        return render_trade(payload, L, info, hype_usd)
+        return render_trade(payload, L, info, hype_usd, dd=dd)
     if payload.get("type") == "cluster":
-        return render_cluster(payload, L, info, hype_usd)
+        return render_cluster(payload, L, info, hype_usd, dd=dd)
+    if payload.get("type") == "launch":
+        return render_launch(payload, L, info, hype_usd, dd=dd)
     return None
