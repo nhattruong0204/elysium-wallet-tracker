@@ -60,6 +60,20 @@ links:                         # every alert detail links here (formats verified
   boxa: https://boxa.club
   elyspump: https://elysp.com
 
+intel:                         # launch intelligence: ALERTS ONLY, no order is ever placed
+  independent_min: 3           # unrelated wallets that make the strong signal (bundle wallets count once)
+  independent_window_s: 1800
+  paper_enabled: true          # log each strong signal and measure it forward (/maint paper-report)
+  paper_slippage_pct: 10
+  dd_enabled: true             # due-diligence block (pool/curve HYPE, owner share, sellers, mint powers)
+  dd_budget_s: 6
+  dd_factories:                # DEX factories with getPool(); new ones are learned from PoolCreated
+    - "0x1707327f626496a7b5b3872e7e4d2879df7d7a9f"   # PERPME DEX (Uniswap-V3 style)
+  launch_watch: true           # PoolCreated events: venues Agora does not index
+  launch_min_liquidity_hype: 300
+  launch_delay_s: 120
+  new_launchpad_alerts: true   # Agora lists a launchpad we have not seen before
+
 market:                        # token stats in alerts, from Agora's public API (values in HYPE)
   enabled: true
   api: https://api.agoradex.app

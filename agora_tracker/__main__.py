@@ -10,6 +10,7 @@ import shutil
 import signal
 import sys
 import time
+from datetime import datetime, timezone
 from urllib.parse import urlsplit
 
 import requests
@@ -17,11 +18,13 @@ import sqlalchemy as sa
 import yaml
 
 from . import cards
+from . import schema as tables
 from .cards import Links
 from .chain import ChainFollower, ScanResult
 from .config import Config, load_config, load_watchlist
 from .db import Store
 from .engine import WEI, Engine
+from .launchintel import DueDiligence, LaunchWatcher
 from .leaderboard import HttpLeaderboard, diff_leaderboard, dig, guess_mapping, parse_curl
 from .market import AgoraMarket
 from .notify import Notifier
@@ -44,7 +47,18 @@ class Tracker:
         self.links = Links(cfg.links)
         self.market = AgoraMarket(cfg.market)
         self.engine = Engine(self.store, self.follower.tokens, c, cfg.alerts, self.watchlist,
-                             value_unit=cfg.leaderboard.value_unit, links=self.links)
+                             value_unit=cfg.leaderboard.value_unit, links=self.links,
+                             intel=cfg.intel)
+        ic = cfg.intel
+        self.dd = DueDiligence(
+            self.rpc, wrapped=ic.wrapped_native, factories=ic.dd_factories,
+            budget_s=ic.dd_budget_s, cache_s=ic.dd_cache_s, log_blocks=ic.dd_log_blocks,
+        ) if ic.dd_enabled else None
+        self.launch = LaunchWatcher(
+            self.store, self.rpc, wrapped=ic.wrapped_native, factories=ic.launch_factories,
+            min_liquidity_hype=ic.launch_min_liquidity_hype, delay_s=ic.launch_delay_s,
+        ) if ic.launch_watch else None
+        self._next_launch = 0.0
         self.notifier = Notifier(self.store, cfg.telegram, dry_run, renderer=self.render_alert)
         lb = cfg.leaderboard
         self.leaderboard = HttpLeaderboard(lb) if lb.enabled and lb.url else None
@@ -60,11 +74,29 @@ class Tracker:
         payload = row["payload"]
         token = payload.get("token")
         info = self.market.token(token) if token else None
-        out = cards.render(payload, self.links, info, self.market.hype_usd())
+        dd = None
+        if self.dd is not None and token and cards.wants_dd(payload):
+            try:   # bounded, cached, optional: the alert goes out with or without it
+                dd = self.dd.probe(token, payload.get("tx"))
+            except Exception:  # noqa: BLE001
+                log.warning("due diligence probe failed for %s", token, exc_info=True)
+        out = cards.render(payload, self.links, info, self.market.hype_usd(), dd=dd)
         if not out:
             return row["text"], None, None
         img = cards.preview_url(self.links, info) if self.cfg.alerts.token_image else None
         return out[0], out[1], img
+
+    def run_launch_watch(self) -> None:
+        """New DEX pools from chain events. Isolated: a failure here never touches indexing."""
+        if self.launch is None or time.monotonic() < self._next_launch:
+            return
+        self._next_launch = time.monotonic() + self.cfg.intel.launch_watch_interval_s
+        try:
+            self.launch.tick()
+            if self.dd is not None:
+                self.dd.add_factories(self.store.launch_factories())
+        except Exception as e:  # noqa: BLE001
+            log.warning("launch watcher: %s", e)
 
     def stop(self, *_):
         log.info("shutdown requested")
@@ -243,6 +275,7 @@ class Tracker:
                 if time.monotonic() >= self._next_heads:
                     self.check_heads()
                 behind = self.scan_step()
+                self.run_launch_watch()
                 self.notifier.drain()
                 self.store.set_kv("heartbeat", str(int(time.time())))
                 backoff = 1.0
@@ -265,6 +298,30 @@ class Tracker:
         end = time.monotonic() + s
         while not self._stop and time.monotonic() < end:
             time.sleep(min(0.5, end - time.monotonic()))
+
+
+def launch_report(cfg: Config) -> None:
+    """Paper-trading results and what the launch watchers have seen (read-only, no RPC)."""
+    from .launchintel import format_paper_report, summarize_paper
+    store = Store(chain_id=cfg.chain.chain_id)
+    rep = summarize_paper(store.paper_trades(), time.time(), cfg.intel.paper_slippage_pct)
+    print(format_paper_report(rep))
+    for r in rep["rows"]:
+        when = datetime.fromtimestamp(r["opened_ts"], timezone.utc).strftime("%m-%d %H:%M")
+        peak = f"{r['peak']:.2f}x" if r["priced"] else "unpriced"
+        last = f"{r['last']:.2f}x" if r["priced"] else "-"
+        print(f"  {when} {r['token']} indep={r['n_independent']} peak={peak} now={last}")
+    lv = tables.launch_venues
+    with store.engine.connect() as c:
+        for kind, n, newest in c.execute(sa.select(
+                lv.c.kind, sa.func.count(), sa.func.max(lv.c.first_seen_at))
+                .where(lv.c.chain_id == store.chain_id).group_by(lv.c.kind)):
+            print(f"launch venues: {kind}: {n} seen, newest {newest:%Y-%m-%d %H:%M} UTC")
+        pend = c.execute(sa.select(sa.func.count()).where(
+            lv.c.chain_id == store.chain_id, lv.c.kind == "pool",
+            lv.c.alerted_at.is_(None))).scalar()
+    print(f"pools waiting for liquidity/delay: {pend}; watcher cursor: "
+          f"{store.get_kv('launch_watch_cursor')}")
 
 
 def test_telegram(cfg: Config) -> int:
@@ -456,7 +513,8 @@ def run_ui(cfg: Config) -> None:
     signal.signal(signal.SIGINT, _stop)
     signal.signal(signal.SIGTERM, _stop)
     if cfg.collector.enabled:
-        coll = Collector(store, AgoraMarket(cfg.market), cfg.collector)
+        coll = Collector(store, AgoraMarket(cfg.market), cfg.collector,
+                         new_launchpad_alerts=cfg.intel.new_launchpad_alerts)
         threading.Thread(target=coll.loop, args=(stop,), name="collector", daemon=True).start()
     try:
         bot.run(stop)
@@ -532,6 +590,8 @@ def main(argv: list[str] | None = None) -> None:
                     help="serve the public research dashboard (read-only database role)")
     ap.add_argument("--host", default=None, help="--web bind address (default web.host)")
     ap.add_argument("--port", type=int, default=None, help="--web port (default web.port)")
+    ap.add_argument("--launch-report", action="store_true",
+                    help="print paper-trading results and launch-watcher state, then exit")
     ap.add_argument("--collect-once", action="store_true",
                     help="take one market snapshot round and exit")
     ap.add_argument("--log-level", default="INFO")
@@ -582,6 +642,9 @@ def main(argv: list[str] | None = None) -> None:
                             report_path=args.report))
     if args.status:
         status(cfg)
+        return
+    if args.launch_report:
+        launch_report(cfg)
         return
     if args.top:
         top(cfg, args.top)

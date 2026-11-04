@@ -154,6 +154,10 @@ except Exception: print("reject")')
         echo "  site ${u%$tok}<token> -> $r"
       done
       ;;
+    launch-report)
+      say "launch intelligence: paper-trading results and launch-watcher state (read-only)"
+      docker exec elysium-wallet-tracker python -m agora_tracker --launch-report 2>&1 | sed 's/^/  /'
+      ;;
     trace-token)
       say "read-only on-chain trace of one token (public chain data; wallets limited to the public leaderboard)"
       T=$(head -1 "$REPO/deploy/TRACE_TOKEN" 2>/dev/null | tr 'A-F' 'a-f' | tr -d '[:space:]')

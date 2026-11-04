@@ -290,7 +290,8 @@ def test_quiet_mode_keeps_trade_alerts_and_records_signals_silently(store, chain
     assert not any("CLUSTER BUY" in t for t in texts)
     assert any("🆕🟢" in t for t in texts) and any("OUT (sell?)" in t for t in texts)
     with store.tx() as c:
-        assert c.execute(sa.text("SELECT count(*) FROM signals")).scalar() == 1
+        kinds = sorted(r[0] for r in c.execute(sa.text("SELECT kind FROM signals")))
+    assert kinds == ["cluster_buy", "independent_buy"]      # both recorded, neither alerted
 
 
 def test_leaderboard_changes_recorded_without_alerts(store, monkeypatch):
