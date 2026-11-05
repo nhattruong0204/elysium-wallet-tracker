@@ -221,6 +221,22 @@ for i in it[:12]: print(" ", i["block_time"], (i.get("symbol") or "")[:10].ljust
         LEFT JOIN token_profiles p ON p.address=a.address LEFT JOIN token_metadata m ON m.address=a.address
         ORDER BY legs_7d DESC" 2>&1 | sed 's/^/  /'
       ;;
+    consensus-check)
+      say "consensus: timing and summary of the public API on real data (loopback)"
+      for q in "traders=3&window=30&min_net=1&range=24h" "traders=2&window=60&min_net=0&range=7d" "traders=3&window=30&min_net=1&range=24h&independent=1"; do
+        t0=$(date +%s%N); body=$(curl -s -m 30 "http://127.0.0.1:8100/api/v1/consensus?$q"); t1=$(date +%s%N)
+        echo "$body" | python3 -c '
+import json,sys
+d=json.load(sys.stdin)
+if "cards" not in d: print("  ERROR", str(d)[:200]); sys.exit()
+print("  %s -> %d events, %d legs, %d bundle wallets" % (sys.argv[1], d["total"], d["legs"], d["bundle_wallets"]))
+for k in d["cards"][:6]:
+    print("    %s %-10s %-9s traders=%d indep=%d net=%.1f HYPE mc_at=%s now=%s x=%s" % (k["trigger_at"][:16], (k.get("symbol") or k["token"][:8])[:10], str(k.get("launchpad_label"))[:9], k["traders"], k["independent"], k["net_hype"], k.get("mcap_at_usd"), (k.get("mcap_now") or {}).get("market_cap_usd"), None if k.get("change_x") is None else round(k["change_x"],2)))
+' "$q"
+        echo "    took $(( (t1-t0)/1000000 )) ms"
+      done
+      curl -s -o /dev/null -w "  /consensus page: HTTP %{http_code} in %{time_total}s\n" http://127.0.0.1:8100/consensus
+      ;;
     launch-report)
       say "launch intelligence: paper-trading results and launch-watcher state (read-only)"
       docker exec elysium-wallet-tracker python -m agora_tracker --config /config/config.yaml --launch-report 2>&1 | sed 's/^/  /'
