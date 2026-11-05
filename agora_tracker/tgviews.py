@@ -223,6 +223,9 @@ def reply_keyboard() -> dict:
             "input_field_placeholder": "Address, symbol or /menu"}
 
 
+REMOVE_KEYBOARD = {"remove_keyboard": True}
+
+
 def market_overview(o: dict, cov: dict, tz: ZoneInfo, L: Links) -> tuple[str, Kb]:
     t, p, tr = o["totals"], o["prev"], o["range"]
     lines = header("📊 MARKET OVERVIEW · tracked wallets", tr, cov, tz)
