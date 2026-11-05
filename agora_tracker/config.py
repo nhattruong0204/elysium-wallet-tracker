@@ -192,7 +192,8 @@ class IntelConfig:
     dd_enabled: bool = True
     dd_budget_s: float = 6.0            # RPC time per token, hard cap
     dd_cache_s: float = 300.0
-    dd_log_blocks: int = 3600           # ~1 h of Transfer logs to see who sold
+    dd_log_blocks: int = 18000          # ~1 h of Transfer logs at ~5 blocks/s, read in 5k chunks
+    dd_block_time_s: float = 0.2        # for the "in the last N min" wording only
     dd_factories: list[str] = field(default_factory=list)   # DEX factories with getPool()
     # chain-level new pool watcher (venues Agora does not index)
     launch_watch: bool = True

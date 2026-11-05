@@ -54,7 +54,7 @@ class Tracker:
         self.dd = DueDiligence(
             self.rpc, wrapped=ic.wrapped_native, factories=ic.dd_factories,
             budget_s=ic.dd_budget_s, cache_s=ic.dd_cache_s, log_blocks=ic.dd_log_blocks,
-            ascend_lookup=self.store.ascend_launch,
+            block_time_s=ic.dd_block_time_s, ascend_lookup=self.store.ascend_launch,
         ) if ic.dd_enabled else None
         self.ascend = AscendIndexer(self.store, self.rpc, max_chunks=ic.ascend_max_chunks) \
             if ic.ascend_index else None

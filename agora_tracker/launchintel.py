@@ -222,6 +222,8 @@ class DD:
     fee_pct: float | None = None
     dev_pct: float | None = None
     launched_at: Any = None
+    launch_block: int | None = None
+    flow_window_s: float | None = None  # how far back the seller scan reached
     bid_quote: float | None = None      # standing bid inventory
     escrow_balance: float | None = None
     escrow_claimable: float | None = None
@@ -237,13 +239,15 @@ class DueDiligence:
     node cannot slow alert delivery."""
 
     def __init__(self, rpc: Any, *, wrapped: str | None, factories: list[str] | None = None,
-                 budget_s: float = 6.0, cache_s: float = 300.0, log_blocks: int = 3600,
+                 budget_s: float = 6.0, cache_s: float = 300.0, log_blocks: int = 18000,
+                 log_chunk: int = 5000, block_time_s: float = 0.2,
                  max_logs: int = 4000, cooldown_s: float = 60.0,
                  clock: Callable[[], float] = time.monotonic,
                  ascend_lookup: Callable[[str], dict | None] | None = None):
         self.rpc, self.wrapped = rpc, (wrapped or "").lower() or None
         self.factories = [f.lower() for f in factories or []]
         self.budget_s, self.cache_s, self.log_blocks = budget_s, cache_s, log_blocks
+        self.log_chunk, self.block_time_s = log_chunk, block_time_s
         self.max_logs, self.cooldown_s, self.clock = max_logs, cooldown_s, clock
         self._cache: dict[str, tuple[float, DD]] = {}
         self._down_until = 0.0
@@ -263,8 +267,10 @@ class DueDiligence:
             raise self._Out()
         try:
             return self.rpc.call(method, params)
-        except Exception:
-            self._down_until = self.clock() + self.cooldown_s
+        except Exception as e:
+            # a revert is the contract's answer (e.g. no owner()), not a sick node
+            if "revert" not in str(e).lower():
+                self._down_until = self.clock() + self.cooldown_s
             raise
 
     def _eth_call(self, deadline: float, to: str, sig: str, arg: str = "") -> str | None:
@@ -373,6 +379,7 @@ class DueDiligence:
         dd.fee_pct = int(info["fee_pips"]) / 10_000
         dd.dev_pct = 100 * int(info.get("dev_buy_tokens") or 0) / supply if supply else None
         dd.launched_at = info.get("launched_at")
+        dd.launch_block = int(info["block_number"]) if info.get("block_number") else None
         pid = dd.pool_id[2:]
         if tx:
             t = self._call(deadline, "eth_getTransactionByHash", [tx]) or {}
@@ -413,9 +420,19 @@ class DueDiligence:
             return
         head = _hx(self._call(deadline, "eth_blockNumber", []))
         frm = max(0, head - self.log_blocks)
-        logs = self._call(deadline, "eth_getLogs", [{
-            "fromBlock": hex(frm), "toBlock": hex(head), "address": dd.token,
-            "topics": [TOPIC_TRANSFER]}]) or []
+        if dd.launch_block:                      # an Ascend coin: everything since its launch
+            frm = max(frm, dd.launch_block)
+        logs: list = []
+        lo = frm
+        while lo <= head:                        # nodes cap a log query at 10,000 blocks
+            hi = min(head, lo + self.log_chunk - 1)
+            logs += self._call(deadline, "eth_getLogs", [{
+                "fromBlock": hex(lo), "toBlock": hex(hi), "address": dd.token,
+                "topics": [TOPIC_TRANSFER]}]) or []
+            if len(logs) > self.max_logs:
+                break
+            lo = hi + 1
+        dd.flow_window_s = max(0, (head - frm)) * self.block_time_s
         if len(logs) > self.max_logs:
             dd.partial = True
             return
