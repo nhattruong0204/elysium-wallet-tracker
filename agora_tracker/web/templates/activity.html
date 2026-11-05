@@ -61,12 +61,12 @@
 
   {% if d['items'] %}
   <div class="tw"><table id="act-table">
-    <thead><tr><th>Time (UTC)</th><th>Wallet</th><th>Token</th><th>Action</th><th class="r">HYPE</th><th>Basis</th><th class="r">Block</th><th>Tx</th></tr></thead>
+    <thead><tr><th title="Click a time to open the transaction">Time (UTC)</th><th>Wallet</th><th>Token</th><th>Launchpad</th><th>Action</th><th class="r">HYPE</th><th class="r" title="Market cap in USD at the time of the transaction">MC (USD)</th><th>Basis</th><th class="r">Block</th></tr></thead>
     <tbody id="act-body">{% for t in d['items'] %}{{ act_row(t) }}{% endfor %}</tbody>
   </table></div>
   {% else %}
   <div id="act-empty">{{ empty('No matching activity', 'Nothing matched these filters in this range. Widen the range or clear the search.') }}</div>
-  <div class="tw" hidden><table id="act-table"><thead><tr><th>Time (UTC)</th><th>Wallet</th><th>Token</th><th>Action</th><th class="r">HYPE</th><th>Basis</th><th class="r">Block</th><th>Tx</th></tr></thead><tbody id="act-body"></tbody></table></div>
+  <div class="tw" hidden><table id="act-table"><thead><tr><th title="Click a time to open the transaction">Time (UTC)</th><th>Wallet</th><th>Token</th><th>Launchpad</th><th>Action</th><th class="r">HYPE</th><th class="r" title="Market cap in USD at the time of the transaction">MC (USD)</th><th>Basis</th><th class="r">Block</th></tr></thead><tbody id="act-body"></tbody></table></div>
   {% endif %}
 
   <div class="pager">
@@ -78,5 +78,5 @@
     </span>
   </div>
 </section>
-<p class="faint note">Times are exact block times in UTC. Counts cover wallets on Agora's public leaderboard only. <a href="/api/v1/activity">JSON API</a> · polling is paused while the tab is hidden.</p>
+<p class="faint note">Times are exact block times in UTC; click one to open the transaction. MC is the market cap at that block (nearest Agora snapshot, or <sup>p</sup> = the trade's own price × supply), at the HYPE/USD rate of that time. Counts cover wallets on Agora's public leaderboard only. <a href="/api/v1/activity">JSON API</a> · polling is paused while the tab is hidden.</p>
 {% endblock %}

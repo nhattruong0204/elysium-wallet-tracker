@@ -532,3 +532,34 @@ def test_cursor_round_trip_and_rejects_garbage():
     for bad in ("", "x", "e30", c[:-3], c + "AAAA" * 80):
         with pytest.raises(A.ParamError):
             A.decode_cursor(bad, "newest")
+
+
+# --- market cap at the time of the row, and launchpad ------------------------------------------
+def test_market_cap_is_valued_at_the_rows_block_time(kinds, make_live):
+    from agora_tracker.web.usd import format_usd
+    with kinds.tx() as c:
+        c.execute(sa.insert(t.hype_usd_rates).values(observed_at=NOW - timedelta(minutes=1),
+                                                     hype_usd=Decimal("40"), source="test"))
+        # TOK_B has only an old snapshot: no market data near the trade, but a known supply
+        c.execute(sa.insert(t.token_market_snapshots).values(
+            chain_id=CHAIN, token=TOK_B, captured_at=NOW - timedelta(days=2), source="agora",
+            price_hype=Decimal("0.01"), mcap_hype=100))
+    rows = items(make_live(), range="all", limit=100)
+    pub = next(r for r in rows if r["tx_hash"].startswith("0xa1"))
+    assert Decimal(str(pub["market_cap_usd"])) == Decimal("40000")     # 1000 HYPE x $40, snapshot
+    assert pub["market_cap_source"] == "snapshot" and pub["market_cap_text"] == format_usd(40000)
+    bee = next(r for r in rows if r["tx_hash"].startswith("0xa8") and r["token"] == TOK_B)
+    # 0.25 HYPE for 10 tokens = 0.025/token x 10,000 supply = 250 HYPE x $40
+    assert Decimal(str(bee["market_cap_usd"])) == Decimal("10000")
+    assert bee["market_cap_source"] == "trade_price"
+    assert bee["launchpad"] == "boxa" and bee["launchpad_label"] == "BOXA"
+    transfer = next(r for r in rows if r["kind"] == "TRANSFER_IN")
+    assert transfer["market_cap_source"] == "snapshot"          # TOK_PUB snapshot is near
+    page = make_live().get("/activity", params={"range": "all"}).text
+    assert "MC (USD)" in page and "Launchpad" in page and ">Tx<" not in page
+    assert "BOXA" in page and 'class="txl"' in page
+
+
+def test_market_cap_missing_without_a_rate(kinds, make_live):
+    rows = items(make_live(), range="all", limit=100)
+    assert all(r["market_cap_usd"] is None and r["market_cap_text"] is None for r in rows)
