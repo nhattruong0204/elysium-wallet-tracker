@@ -28,8 +28,10 @@ def call(to, sig, args=""):
         return f"ERR {str(e)[:120]}"
 
 head = H(rpc.call("eth_blockNumber", []))
-logs = rpc.call("eth_getLogs", [{"fromBlock": hex(head - 20000), "toBlock": hex(head),
-                                 "address": [HOOK, EF], "topics": [[T_L, T_E]]}]) or []
+logs = []
+for lo in range(head - 20000, head, 5000):
+    logs += rpc.call("eth_getLogs", [{"fromBlock": hex(lo), "toBlock": hex(min(head, lo + 4999)),
+                                      "address": [HOOK, EF], "topics": [[T_L, T_E]]}]) or []
 print("recent logs", len(logs), "launched", sum(l["topics"][0] == T_L for l in logs),
       "escrow", sum(l["topics"][0] == T_E for l in logs))
 esc = {l["topics"][1]: l for l in logs if l["topics"][0] == T_E}
