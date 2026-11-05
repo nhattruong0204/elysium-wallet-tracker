@@ -41,9 +41,13 @@ LAUNCHPAD_NAMES = {"kleos": "Kleos", "boxa": "BOXA", "elyspump": "ElysPump", "el
 # Launchpads whose token page (Kleos / BOXA / ElysPump) can really trade the token. For any
 # other venue those pages are a dead end, so alerts point at the pool/router instead.
 TRADE_PAGES = {"kleos", "boxa", "elyspump"}
+ASCEND_APP = "https://app.ascendlaunch.xyz/"
+SHARED = {"0xe2e105d3f7209a9da11f83ccf3e7398a753823f1"}   # Uniswap v4 PoolManager (all pools)
 
 
 def unknown_venue(info: TokenInfo | None, dd: Any = None) -> bool:
+    if getattr(dd, "venue", None) in ("ascend", "v4"):
+        return True
     pad = info.launchpad if info else None
     return bool(pad) and pad not in TRADE_PAGES
 
@@ -281,10 +285,12 @@ def _venue_rows(L: Links, token: str, s: str, tx: str | None, dd: Any) -> list[l
     rows = [[{"text": f"📊 Agora: {s}", "url": L.agora_token(token)},
              {"text": "🔍 Token", "url": L.explorer_token(token)}]]
     r2 = []
-    if dd is not None and dd.pool:
+    if getattr(dd, "venue", None) == "ascend":
+        r2.append({"text": "🚀 Ascend", "url": ASCEND_APP})
+    elif dd is not None and dd.pool and dd.pool not in SHARED:
         r2.append({"text": "🏊 Curve" if dd.pool_kind == "curve" else "🏊 Pool",
                    "url": L.address(dd.pool)})
-    if dd is not None and dd.router:
+    if dd is not None and dd.router and getattr(dd, "venue", None) != "ascend":
         r2.append({"text": "🔀 Router", "url": L.address(dd.router)})
     if tx:
         r2.append({"text": "🧾 Tx", "url": L.tx(tx)})
@@ -293,12 +299,57 @@ def _venue_rows(L: Links, token: str, s: str, tx: str | None, dd: Any) -> list[l
     return rows
 
 
+def _qty(v: float, sym: str | None, hype_usd: float | None) -> str:
+    if sym == "HYPE":
+        return _money(v, hype_usd)
+    if sym == "USDC":
+        return f"${v:,.2f}"
+    return f"{v:,.4g} {esc(sym or '')}".strip()
+
+
+def _ascend_lines(dd: Any, L: Links, hype_usd: float | None) -> list[str]:
+    sym = dd.quote_symbol or "quote"
+    head = f"🚀 <b>Ascend</b> · {esc(sym)} pair"
+    if dd.fee_pct is not None:
+        head += f" · fee <b>{dd.fee_pct:g}%</b>"
+    if dd.dev_pct is not None:
+        head += f" · dev bought {dd.dev_pct:.2f}%"
+    when = ago(int(dd.launched_at.timestamp())) if dd.launched_at is not None else None
+    if when:
+        head += f" · launched {when} ago"
+    out = [head]
+    if dd.paused:
+        out.append("⛔ <b>Ascend trading is PAUSED</b>: sells are blocked on every Ascend pool")
+    if dd.fee_pct is not None and dd.fee_pct > 3:
+        out.append(f"⚠️ High fee: ~{2 * dd.fee_pct:g}% to buy and sell back")
+    if dd.liquidity_quote is not None:
+        mc = f" · MC {_qty(dd.mcap_quote, sym, hype_usd)}" if dd.mcap_quote else ""
+        out.append(f"💧 Pool holds <b>{_qty(dd.liquidity_quote, sym, hype_usd)}</b> "
+                   f"(exit ceiling){mc}")
+    else:
+        out.append("💧 <i>Pool reserve could not be read</i>")
+    if dd.bid_quote:
+        out.append(f"🧱 Standing bid {_qty(dd.bid_quote, sym, hype_usd)} absorbs sells near the average price")
+    if dd.escrow_balance is not None:
+        cl = f", claimable now {_qty(dd.escrow_claimable, sym, hype_usd)}" \
+            if dd.escrow_claimable is not None else ""
+        un = f", {_qty(dd.unsettled_fees, sym, hype_usd)} not yet settled" if dd.unsettled_fees else ""
+        out.append(f"🔒 Creator escrow {_qty(dd.escrow_balance, sym, hype_usd)}{cl}{un} "
+                   "<i>(held fees unlock only if MC holds ≥$40K for 1 h within 14 days)</i>")
+    return out
+
+
 def dd_lines(dd: Any, L: Links, hype_usd: float | None) -> list[str]:
     """🛡 Due diligence block (read-only RPC facts; every line is optional)."""
     if dd is None:
         return []
     out = ["🛡 <b>Due diligence</b>"]
-    if dd.pool:
+    if getattr(dd, "venue", None) == "ascend":
+        out += _ascend_lines(dd, L, hype_usd)
+    elif getattr(dd, "venue", None) == "v4":
+        out.append("💧 <i>Uniswap v4 pool: the PoolManager holds every v4 pool, so this "
+                   "token's own liquidity is unknown here</i>")
+    elif dd.pool:
         kind = "Bonding curve" if dd.pool_kind == "curve" else "Pool"
         liq = ""
         if dd.liquidity_hype is not None:

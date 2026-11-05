@@ -74,6 +74,8 @@ intel:                         # launch intelligence: ALERTS ONLY, no order is e
   launch_min_liquidity_hype: 300
   launch_delay_s: 120
   new_launchpad_alerts: true   # Agora lists a launchpad we have not seen before
+  ascend_index: true           # Ascend launches from its own hook events (pool, fee, pair, dev buy)
+  ascend_max_chunks: 2         # x 5,000 blocks per minute: the backfill never crowds the indexer
 
 market:                        # token stats in alerts, from Agora's public API (values in HYPE)
   enabled: true

@@ -575,3 +575,15 @@ def test_muted_tokens_are_hidden_unless_filtered_for(kinds, make_live):
     only = items(lv, range="all", token=TOK_B)
     assert only and all(r["token"] == TOK_B for r in only)           # explicit filter still works
     assert TOK_B[:8] not in lv.get("/activity", params={"range": "all"}).text
+
+
+def test_ascend_label_comes_from_the_chain_not_agora(kinds, make_live):
+    with kinds.tx() as c:
+        c.execute(sa.insert(t.ascend_launches).values(
+            chain_id=CHAIN, token=TOK_B, pool_id="0x" + "ab" * 32,
+            quote="0xba876237b0f021a6c6d852d6c26e107997cc5e81", token_is0=True, fee_pips=10000,
+            builder_fee_pips=0, supply_seeded=10**27, dev_buy_tokens=0, creator="0x" + "c1" * 20,
+            block_number=1, tx_hash="0x" + "cd" * 32))
+    rows = items(make_live(), range="all", limit=100)
+    bee = next(r for r in rows if r["token"] == TOK_B)
+    assert bee["launchpad"] == "ascend" and bee["launchpad_label"] == "Ascend"   # Agora said boxa
