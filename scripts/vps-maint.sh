@@ -197,6 +197,19 @@ except Exception: print("reject")')
         echo "  $w HYPE_now=${bh:-?}  dst $d $([ "${#c}" -gt 2 ] && echo "CONTRACT $(( (${#c}-2)/2 ))B" || echo wallet)"
       done
       ;;
+    activity-mcap-check)
+      say "activity: share of rows with launchpad and market cap (public API on the loopback port)"
+      curl -s -m 20 'http://127.0.0.1:8100/api/v1/activity?range=24h&limit=100' | python3 -c '
+import json,sys,collections
+d=json.load(sys.stdin); it=d["items"]
+print("rows", len(it), "| with launchpad", sum(1 for i in it if i.get("launchpad_label")),
+      "| with MC", sum(1 for i in it if i.get("market_cap_text")),
+      "| MC source", dict(collections.Counter(i.get("market_cap_source") for i in it)))
+print("launchpads", dict(collections.Counter(i.get("launchpad_label") for i in it)))
+for i in it[:12]: print(" ", i["block_time"], (i.get("symbol") or "")[:10].ljust(10), i["action"].ljust(12), str(i.get("launchpad_label")).ljust(10), i.get("market_cap_text"), i.get("market_cap_source"))
+' 2>&1 | sed 's/^/  /'
+      curl -s -m 20 'http://127.0.0.1:8100/activity' | grep -o '<th[^>]*>[^<]*</th>' | sed 's/<[^>]*>//g' | tr '\n' '|' | sed 's/^/  headers: /'; echo
+      ;;
     launch-report)
       say "launch intelligence: paper-trading results and launch-watcher state (read-only)"
       docker exec elysium-wallet-tracker python -m agora_tracker --config /config/config.yaml --launch-report 2>&1 | sed 's/^/  /'
