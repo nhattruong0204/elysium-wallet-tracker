@@ -37,7 +37,7 @@ ICON = {"BUY": "🟢", "SELL": "🔴", "SWAP": "🔁", "TRANSFER_IN": "📥", "T
         "MULTI": "🧩"}
 LAUNCHPAD_NAMES = {"kleos": "Kleos", "boxa": "BOXA", "elyspump": "ElysPump", "elyxa": "Elyxa",
                    "obol": "Obol", "petals": "Petals", "stockium": "Stockium", "eleos": "Eleos",
-                   "volta": "Volta", "rons": "Rons", "other": "other venue"}
+                   "volta": "Volta", "rons": "RONS", "ascend": "Ascend", "other": "other venue"}
 # Launchpads whose token page (Kleos / BOXA / ElysPump) can really trade the token. For any
 # other venue those pages are a dead end, so alerts point at the pool/router instead.
 TRADE_PAGES = {"kleos", "boxa", "elyspump"}

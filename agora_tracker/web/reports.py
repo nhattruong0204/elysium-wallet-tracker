@@ -219,6 +219,47 @@ def hype_str(v: Decimal | float | None, places: int = 2) -> str:
 
 
 # --- Activity monitor -----------------------------------------------------------------------------
+# Market cap of a row is taken at the row's own block time, never today's value:
+#   snapshot     the token's stored Agora snapshot nearest to the block (within MCAP_NEAR_S)
+#   trade_price  no snapshot that close: the leg's own executed price x the supply implied by
+#                the token's latest snapshot (mcap / price). Only verified buys and sells.
+# Both are converted with the HYPE/USD rate observed closest to the block time.
+MCAP_NEAR_S = 1800
+
+_ACT_MARKET = """
+    SELECT x.id, near.captured_at AS snap_at, near.mcap_hype AS snap_mcap,
+           fx.observed_at AS fx_at, fx.hype_usd AS fx_rate
+    FROM unnest(CAST(:ids AS bigint[]), CAST(:toks AS text[]), CAST(:ts AS timestamptz[]))
+         AS x(id, token, ts)
+    LEFT JOIN LATERAL (
+        SELECT c.captured_at, c.mcap_hype FROM (
+            (SELECT s.captured_at, s.mcap_hype FROM token_market_snapshots s
+              WHERE s.chain_id = :c AND s.token = x.token AND s.mcap_hype IS NOT NULL
+                AND s.captured_at <= x.ts AND s.captured_at > x.ts - make_interval(secs => :near)
+              ORDER BY s.captured_at DESC LIMIT 1)
+            UNION ALL
+            (SELECT s.captured_at, s.mcap_hype FROM token_market_snapshots s
+              WHERE s.chain_id = :c AND s.token = x.token AND s.mcap_hype IS NOT NULL
+                AND s.captured_at > x.ts AND s.captured_at < x.ts + make_interval(secs => :near)
+              ORDER BY s.captured_at ASC LIMIT 1)
+        ) c ORDER BY abs(extract(epoch FROM c.captured_at - x.ts)) LIMIT 1
+    ) near ON true""" + FX_LATERAL.format(ts="x.ts")
+
+# supply implied by each token's latest snapshot with both a price and a market cap
+_ACT_SUPPLY = """
+    SELECT DISTINCT ON (token) token, mcap_hype / price_hype AS supply
+    FROM token_market_snapshots
+    WHERE chain_id = :c AND token = ANY(:t) AND price_hype > 0 AND mcap_hype > 0
+    ORDER BY token, captured_at DESC"""
+
+
+def launchpad_label(raw: str | None) -> str | None:
+    if not raw:
+        return None
+    from ..cards import LAUNCHPAD_NAMES
+    return LAUNCHPAD_NAMES.get(raw.lower(), raw[:1].upper() + raw[1:])
+
+
 def _activity_row(r: dict[str, Any], names: dict[str, dict[str, Any]]) -> dict[str, Any]:
     m = names.get(r["token"], {})
     dec = m.get("decimals", 18)
@@ -233,6 +274,7 @@ def _activity_row(r: dict[str, Any], names: dict[str, dict[str, Any]]) -> dict[s
         "hype_method": r["hype_method"],
         "_wei": None if r["hype_wei"] is None else int(r["hype_wei"]),
         "qty_units": Decimal(r["qty"]) / (Decimal(10) ** int(dec if dec is not None else 18)),
+        "launchpad": m.get("launchpad"), "launchpad_label": launchpad_label(m.get("launchpad")),
     }
 
 
@@ -300,6 +342,29 @@ class PublicReports(_BasePublicReports):
             out.update(got)
         return out
 
+    def _activity_market(self, c: Connection, items: list[dict[str, Any]]) -> None:
+        """Adds market_cap_usd / _source / _text to each item, valued at its block time."""
+        if not items:
+            return
+        rows = {r["id"]: r for r in self._all(
+            c, _ACT_MARKET, ids=[i["id"] for i in items], toks=[i["token"] for i in items],
+            ts=[i["block_time"] for i in items], near=MCAP_NEAR_S)}
+        supply = {r["token"]: r["supply"] for r in self._all(
+            c, _ACT_SUPPLY, t=sorted({i["token"] for i in items}))}
+        for it in items:
+            r = rows.get(it["id"]) or {}
+            cap, src, at = r.get("snap_mcap"), "snapshot", r.get("snap_at")
+            if cap is None and it["basis"] == "verified" and it["kind"] in ("BUY", "SELL") \
+                    and it["_wei"] and it["qty_units"] and supply.get(it["token"]):
+                price = Decimal(it["_wei"]) / Decimal(10**18) / it["qty_units"]
+                cap, src, at = price * Decimal(supply[it["token"]]), "trade_price", it["block_time"]
+            u = to_usd(cap, r.get("fx_rate"), r.get("fx_at"), at, self.fx_policy) \
+                if cap is not None else None
+            usd = u["market_cap_usd"] if u else None
+            it["market_cap_usd"] = usd
+            it["market_cap_source"] = src if usd is not None else None
+            it["market_cap_text"] = format_usd(usd) if usd is not None else None
+
     def activity_page(self, p: ActivityParams) -> dict[str, Any]:
         """One keyset page. Fetches size+1 rows to learn whether more exist in that direction."""
         where, prm = filter_sql(p)
@@ -316,7 +381,8 @@ class PublicReports(_BasePublicReports):
             if p.direction == "prev":
                 rows.reverse()
             names = self._activity_names(c, sorted({r["token"] for r in rows}))
-        items = [_activity_row(r, names) for r in rows]
+            items = [_activity_row(r, names) for r in rows]
+            self._activity_market(c, items)
         return {"items": items, "more": more}
 
     def activity_since(self, p: ActivityParams, limit: int) -> dict[str, Any]:
@@ -329,7 +395,8 @@ class PublicReports(_BasePublicReports):
             overflow = len(rows) > limit
             rows = rows[:limit]
             names = self._activity_names(c, sorted({r["token"] for r in rows}))
-        items = [_activity_row(r, names) for r in rows]
+            items = [_activity_row(r, names) for r in rows]
+            self._activity_market(c, items)
         items.sort(key=lambda i: (i["block_time"], i["id"]), reverse=True)
         return {"items": items, "overflow": overflow}
 

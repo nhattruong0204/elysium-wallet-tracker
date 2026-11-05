@@ -122,13 +122,14 @@
    tests/test_activity_browser.py compares the two. #}
 {% macro act_row(t) -%}
 <tr data-id="{{ t.id }}" data-ts="{{ t.block_time.timestamp()|int }}" data-kind="{{ t.kind }}">
-  <td class="nw">{{ t.block_time|ts(true) }}</td>
+  <td class="nw"><a class="txl" href="{{ links.tx(t.tx_hash) }}" target="_blank" rel="noopener noreferrer" title="Open transaction {{ t.tx_hash }}">{{ t.block_time|ts(true) }}</a></td>
   <td>{{ waddr(t.wallet) }}</td>
   <td><a class="tok" href="/tokens/{{ t.token }}" title="{{ t.token }}"><b>{{ t.symbol or t.token|short }}</b></a></td>
+  <td>{% if t.launchpad_label %}<span class="lp">{{ t.launchpad_label }}</span>{% else %}<span class="faint" title="Agora has no launchpad profile for this token">–</span>{% endif %}</td>
   <td><span class="act act-{{ t.action }}">{{ action_labels[t.action] }}</span></td>
   <td class="r">{% if t.amount_hype is not none %}{{ t.amount_hype|hype(3) }}{% else %}<span class="faint" title="{{ 'A transfer moves tokens without a HYPE payment: it is not a buy or a sell.' if t.kind in ('TRANSFER_IN', 'TRANSFER_OUT') else 'The HYPE amount could not be determined.' }}">{{ 'no HYPE leg' if t.kind in ('TRANSFER_IN', 'TRANSFER_OUT') else 'unknown' }}</span>{% endif %}</td>
+  <td class="r">{% if t.market_cap_text %}<span title="{{ 'Market cap at this block: nearest stored Agora snapshot' if t.market_cap_source == 'snapshot' else 'Market cap at this block: this trade\'s price × supply' }}, in USD at the HYPE rate of that time">{{ t.market_cap_text }}{% if t.market_cap_source == 'trade_price' %}<sup class="faint">p</sup>{% endif %}</span>{% else %}<span class="faint" title="No market data near this block">–</span>{% endif %}</td>
   <td>{% if t.basis == 'verified' %}{{ badge('ok', 'verified') }}{% elif t.basis == 'estimated' %}{{ badge('est', 'estimated') }}{% else %}{{ badge('', 'unknown') }}{% endif %}</td>
   <td class="r mono">{{ t.block_number|number }}</td>
-  <td><a class="mono" href="{{ links.tx(t.tx_hash) }}" target="_blank" rel="noopener noreferrer" title="{{ t.tx_hash }}">{{ t.tx_hash|short(8, 4) }} ↗</a></td>
 </tr>
 {%- endmacro %}

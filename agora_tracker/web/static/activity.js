@@ -57,7 +57,13 @@
     var td = el('td', 'nw'), t = el('time', null, utcText(it.block_time));
     t.setAttribute('datetime', it.block_time); t.setAttribute('data-ts', '');
     if (fmtTip) { var d0 = new Date(it.block_time); if (!isNaN(d0)) t.title = 'Your time: ' + fmtTip.format(d0); }
-    td.appendChild(t); tr.appendChild(td);
+    var txh = safeHttps(it.tx_url);
+    if (txh) {
+      var tl = el('a', 'txl'); tl.setAttribute('href', txh); tl.setAttribute('target', '_blank');
+      tl.setAttribute('rel', 'noopener noreferrer'); tl.setAttribute('title', 'Open transaction ' + it.tx_hash);
+      tl.appendChild(t); td.appendChild(tl);
+    } else td.appendChild(t);
+    tr.appendChild(td);
 
     td = el('td'); var sp = el('span', 'addr'), a = el('a', null, short(it.wallet));
     if (isAddr(it.wallet)) a.setAttribute('href', '/wallets/' + it.wallet);
@@ -68,6 +74,11 @@
     td = el('td'); a = el('a', 'tok'); var b = el('b', null, it.symbol || short(it.token));
     if (isAddr(it.token)) a.setAttribute('href', '/tokens/' + it.token);
     a.setAttribute('title', it.token); a.appendChild(b); td.appendChild(a); tr.appendChild(td);
+
+    td = el('td');
+    if (it.launchpad_label) td.appendChild(el('span', 'lp', it.launchpad_label));
+    else { var nl = el('span', 'faint', '–'); nl.setAttribute('title', 'Agora has no launchpad profile for this token'); td.appendChild(nl); }
+    tr.appendChild(td);
 
     td = el('td'); td.appendChild(el('span', 'act act-' + it.action, ACTIONS[it.action] || it.action)); tr.appendChild(td);
 
@@ -81,16 +92,21 @@
     }
     tr.appendChild(td);
 
+    td = el('td', 'r');
+    if (it.market_cap_text) {
+      var mc = el('span', null, it.market_cap_text);
+      mc.setAttribute('title', (it.market_cap_source === 'snapshot' ? 'Market cap at this block: nearest stored Agora snapshot' : "Market cap at this block: this trade's price × supply") + ', in USD at the HYPE rate of that time');
+      if (it.market_cap_source === 'trade_price') mc.appendChild(el('sup', 'faint', 'p'));
+      td.appendChild(mc);
+    } else { var nm = el('span', 'faint', '–'); nm.setAttribute('title', 'No market data near this block'); td.appendChild(nm); }
+    tr.appendChild(td);
+
     td = el('td');
     td.appendChild(el('span', 'badge ' + (it.basis === 'verified' ? 'ok' : it.basis === 'estimated' ? 'est' : ''), it.basis === 'verified' ? 'verified' : it.basis === 'estimated' ? 'estimated' : 'unknown'));
     tr.appendChild(td);
 
     td = el('td', 'r mono', Number(it.block_number).toLocaleString('en-US')); tr.appendChild(td);
 
-    td = el('td'); a = el('a', 'mono', short(it.tx_hash, 8, 4) + ' ↗');
-    var href = safeHttps(it.tx_url);
-    if (href) { a.setAttribute('href', href); a.setAttribute('target', '_blank'); a.setAttribute('rel', 'noopener noreferrer'); }
-    a.setAttribute('title', it.tx_hash); td.appendChild(a); tr.appendChild(td);
     applyLocal(tr);
     return tr;
   }
