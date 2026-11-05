@@ -200,8 +200,11 @@ def test_failures_back_off_then_recover(kinds, make_live, ctx):
     assert len(hits) - n1 < 12                                   # 5 s fixed would be 12 polls
     mode["fail"] = False
     new = add(kinds, "BUY", "0xb4", seconds_ago=1, block=9903)
-    for _ in range(40):
-        advance(page, 30000)
+    # small fake-clock steps with real time in between: a 30 s jump would also fire the page's
+    # 10 s request timeout before the (real) server has answered
+    for _ in range(400):
+        advance(page, 2000)
+        page.wait_for_timeout(250)
         if page.locator(f'#act-body tr[data-id="{new}"]').count():
             break
     wait_row(page, new)

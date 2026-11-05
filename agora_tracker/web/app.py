@@ -43,8 +43,12 @@ from .activity import (
 from .activity import (
     RANGE_LABELS as ACT_RANGE_LABELS,
 )
+from .consensus import NET_CHOICES, TRADER_CHOICES, WINDOW_CHOICES, ConsensusParams
+from .consensus import RANGE_LABELS as CONS_RANGE_LABELS
+from .consensus import parse_params as parse_consensus
 from .jsonutil import to_jsonable
 from .params import ADDR_RE, PRESET_ORDER, ParamError, list_params, parse_range
+from .reports import launchpad_label
 from .service import EARLY_SORTS, SM_VIEWS, TOKEN_SORTS, Busy, Dashboard, NotFound, sparkline
 
 log = logging.getLogger("agora_tracker.web")
@@ -54,7 +58,8 @@ CSP = ("default-src 'none'; img-src 'self' data:; style-src 'self'; script-src '
        "font-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'; "
        "frame-ancestors 'none'")
 NAV = (("overview", "/", "Overview"), ("activity", "/activity", "Activity"), ("tokens", "/tokens", "Projects"),
-       ("smart", "/smart-money", "Smart money"), ("early", "/early", "Early plays"),
+       ("smart", "/smart-money", "Smart money"), ("consensus", "/consensus", "Consensus"),
+       ("early", "/early", "Early plays"),
        ("health", "/scanner", "Scanner health"))
 RANGE_LABELS = {"15m": "15 min", "1h": "1 hour", "6h": "6 hours", "24h": "24 hours",
                 "7d": "7 days", "30d": "30 days"}
@@ -298,6 +303,20 @@ def create_app(cfg: Config, dash: Dashboard, engine: Engine | None = None) -> St
         d = await run(request, lambda: dash.early(tr, sort, now_utc()))
         return page(request, "early.html", "early", d, tr, title="Early plays")
 
+    def cons_ctx(request: Request) -> tuple[ConsensusParams, dict[str, Any]]:
+        p = parse_consensus(request.query_params)
+        d = dash.consensus(p, now_utc())
+        return p, d
+
+    @guarded
+    async def consensus(request: Request) -> Response:
+        p, d = await run(request, lambda: cons_ctx(request))
+        ctx = {**d, "p": p, "range_label": CONS_RANGE_LABELS[p.range],
+               "lp_labels": {lp: launchpad_label(lp) for lp in d["launchpads"]},
+               "choices": {"traders": TRADER_CHOICES, "window": WINDOW_CHOICES,
+                           "net": NET_CHOICES, "range": list(CONS_RANGE_LABELS.items())}}
+        return page(request, "consensus.html", "consensus", ctx, None, title="Consensus")
+
     @guarded
     async def scanner(request: Request) -> Response:
         d = await run(request, lambda: dash.health(now_utc()))
@@ -382,7 +401,7 @@ def create_app(cfg: Config, dash: Dashboard, engine: Engine | None = None) -> St
 
     routes = [
         Route("/", overview), Route("/activity", activity), Route("/tokens", tokens), Route("/tokens/{addr}", token),
-        Route("/smart-money", smart), Route("/wallets/{addr}", wallet), Route("/early", early),
+        Route("/smart-money", smart), Route("/wallets/{addr}", wallet), Route("/early", early), Route("/consensus", consensus),
         Route("/scanner", scanner), Route("/about", about), Route("/search", search),
         Route("/healthz", healthz), Route("/robots.txt", robots),
         Route("/api/v1/meta", api(api_meta)),
@@ -396,6 +415,8 @@ def create_app(cfg: Config, dash: Dashboard, engine: Engine | None = None) -> St
         Route("/api/v1/early", api(lambda r: dash.early(
             get_range(r), r.query_params.get("sort", "score"), now_utc()))),
         Route("/api/v1/health", api(lambda r: dash.health(now_utc()))),
+        Route("/api/v1/consensus", api(lambda r: {"params": parse_consensus(r.query_params).__dict__,
+                                                  **cons_ctx(r)[1]})),
         Route("/api/v1/search", api(lambda r: dash.search(r.query_params.get("q", "")[:80]))),
         Mount("/static", StaticFiles(directory=HERE / "static"), name="static"),
     ]
