@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% from "_macros.html" import waddr, badge, empty, mcap with context %}
+{% block body %}
+<h1>Consensus</h1>
+<p class="lead">Tokens that <b>several tracked wallets net-bought within one window</b>. Each card opens when the threshold is reached and lists every wallet that joined while it stayed active. Net buy = verified buys minus sells, so a wallet that dumps drops out.</p>
+<div class="banner warn"><b>Statistics, not advice.</b> Several addresses can belong to one operator: same-block buyers and known bundle wallets are counted once in <i>independent</i>. So far most “3 independent” signals in the forward paper log fell below their entry: measure before you trust.</div>
+
+<form class="panel cons-set" method="get" action="/consensus" id="cons-set" aria-labelledby="cs-h">
+  <h2 id="cs-h">Settings <span class="sub">thresholds for this view; remembered in this browser</span></h2>
+  <div class="cons-grid">
+    <label>At least how many traders
+      <select name="traders">{% for n in d.choices.traders %}<option value="{{ n }}"{% if n == d.p.min_traders %} selected{% endif %}>{{ n }} traders</option>{% endfor %}</select></label>
+    <label>Within
+      <select name="window">{% for n in d.choices.window %}<option value="{{ n }}"{% if n == d.p.window_min %} selected{% endif %}>{{ n }} min</option>{% endfor %}</select></label>
+    <label>Minimum net buy per wallet
+      <select name="min_net">{% for n in d.choices.net %}<option value="{{ n }}"{% if n == d.p.min_net_hype %} selected{% endif %}>{{ 'any' if n == 0 else (n|hype(1)) ~ ' HYPE' }}</option>{% endfor %}</select></label>
+    <label>Period
+      <select name="range">{% for k, lbl in d.choices.range %}<option value="{{ k }}"{% if k == d.p.range %} selected{% endif %}>{{ lbl }}</option>{% endfor %}</select></label>
+    <label>Launchpad
+      <select name="launchpad"><option value="">All launchpads</option>{% for lp in d.launchpads %}<option value="{{ lp }}"{% if lp == d.p.launchpad %} selected{% endif %}>{{ d.lp_labels[lp] }}</option>{% endfor %}</select></label>
+    <label class="cons-chk"><input type="checkbox" name="independent" value="1"{% if d.p.independent %} checked{% endif %}> Count independent buyers only</label>
+  </div>
+  <div class="cons-act"><button class="btn primary" type="submit">Apply</button> <a class="btn" href="/consensus?reset=1" id="cons-reset">Reset</a>
+    <span class="faint">{{ d.total }} consensus event{{ '' if d.total == 1 else 's' }} in the last {{ d.range_label }}{% if d.total > d.cards|length %}, newest {{ d.cards|length }} shown{% endif %} · {{ d.bundle_wallets }} known bundle wallets</span></div>
+</form>
+
+{% if d.cards %}
+<div class="cons-list">
+{% for k in d.cards %}
+<article class="panel cons-card{% if k.independent >= d.p.min_traders %} strong{% endif %}">
+  <header class="cons-hd">
+    <div><b class="cons-title">Consensus</b> <span class="badge ok">{{ k.traders }} trader{{ '' if k.traders == 1 else 's' }}</span>
+      <span class="badge {{ 'ok' if k.independent >= d.p.min_traders else 'est' }}" title="Same-block buyers and known bundle wallets count once">{{ k.independent }} independent</span>
+      {% if k.bundled %}<span class="badge est" title="At least one known bundle wallet joined">bundle wallet</span>{% endif %}</div>
+    <div class="cons-tok"><a href="/tokens/{{ k.token }}"><b>{{ k.symbol or k.token|short }}</b></a>
+      <span class="faint">{{ k.trigger_at|ts(true) }} · {{ k.trigger_at|ago(d.meta.generated_at) }}</span></div>
+  </header>
+  <p class="cons-sum">{{ k.first_n }} traders within {{ d.p.window_min }} min reached the threshold{% if k.traders > k.first_n %}, {{ k.traders - k.first_n }} more joined over {{ k.duration_min }} min{% endif %} · net <b>{{ k.net_hype|hype(2) }} HYPE</b>{% if k.net_usd is not none %} ≈ <b>{{ k.net_usd|usd }}</b>{% endif %}</p>
+  <ol class="cons-mem">{% for m in k.members[:12] %}
+    <li><span class="cons-w">{{ waddr(m.wallet) }}{% if m.rank %} <span class="faint">#{{ m.rank }}</span>{% endif %}{% if m.bundle %} <span class="badge est">bundle</span>{% elif m.same_block %} <span class="badge est" title="Bought in the same block as another member">same block</span>{% endif %}</span>
+      <span class="r">{{ m.net_hype|hype(2) }} HYPE{% if m.net_usd is not none %} <span class="faint">≈ {{ m.net_usd|usd }}</span>{% endif %}</span>
+      <span class="faint cons-t">{{ m.first_at|ts(true) }}</span></li>
+  {% endfor %}{% if k.members|length > 12 %}<li class="faint">+ {{ k.members|length - 12 }} more</li>{% endif %}</ol>
+  <footer class="cons-ft">
+    {% if k.launchpad_label %}<span class="lp-chip">{{ k.launchpad_label }}</span>{% endif %}
+    <span>MC at consensus <b>{% if k.mcap_at_usd is not none %}{{ k.mcap_at_usd|usd }}{% else %}–{% endif %}</b></span>
+    <span>now <b>{{ mcap(k.mcap_now) }}</b>{% if k.change_x is not none %} <span class="{{ 'pos' if k.change_x >= 1 else 'neg' }}">{{ '%.2f'|format(k.change_x) }}×</span>{% endif %}</span>
+    <span class="cons-links">{% set tl = links.token(k.token) %}<a href="{{ tl['Agora'] }}" target="_blank" rel="noopener noreferrer">Agora ↗</a> <a href="{{ tl['Elyscan'] }}" target="_blank" rel="noopener noreferrer">Elyscan ↗</a> <a href="{{ links.tx(k.trigger_tx) }}" target="_blank" rel="noopener noreferrer" title="The buy that reached the threshold">Trigger tx ↗</a></span>
+  </footer>
+</article>
+{% endfor %}
+</div>
+{% else %}
+{{ empty('No consensus with these settings', 'Lower the trader count, widen the window or the period, or set the minimum net buy to any.') }}
+{% endif %}
+<p class="faint note">Built from verified on-chain buys and sells of public leaderboard wallets ({{ d.legs|number }} legs scanned). MC at consensus is the stored Agora snapshot nearest the trigger (within 30 min), in USD at the HYPE rate of that time. Muted tokens are excluded.</p>
+<script src="/static/consensus.js?v={{ asset_v }}" defer></script>
+{% endblock %}
