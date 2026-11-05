@@ -304,7 +304,8 @@ def _qty(v: float, sym: str | None, hype_usd: float | None) -> str:
         return _money(v, hype_usd)
     if sym == "USDC":
         return f"${v:,.2f}"
-    return f"{v:,.4g} {esc(sym or '')}".strip()
+    num = f"{v:,.0f}" if abs(v) >= 1000 else f"{v:,.4g}"
+    return f"{num} {esc(sym or '')}".strip()
 
 
 def _ascend_lines(dd: Any, L: Links, hype_usd: float | None) -> list[str]:
@@ -368,8 +369,11 @@ def dd_lines(dd: Any, L: Links, hype_usd: float | None) -> list[str]:
         out.append(f"👑 Owner holds <b>{dd.owner_pct:.1f}%</b> of supply")
     if dd.sellers is not None:
         sold = f", {dd.sold_pct:.1f}% of supply" if dd.sold_pct is not None else ""
-        out.append(f"🚪 {dd.sellers} wallet(s) sold into it in the last hour{sold}"
-                   if dd.sellers else "🚪 Nobody has sold into it yet (a sell is untested)")
+        w = getattr(dd, "flow_window_s", None)
+        span = ("since launch" if getattr(dd, "launch_block", None) and w is not None and w < 3600
+                else f"in the last {round(w / 60)} min" if w else "recently")
+        out.append(f"🚪 {dd.sellers} wallet(s) sold into it {span}{sold}"
+                   if dd.sellers else f"🚪 Nobody has sold into it {span} (a sell is untested)")
     if dd.risks:
         out.append("⚠️ " + esc("; ".join(dd.risks[:4])))
     elif dd.decimals is not None:
