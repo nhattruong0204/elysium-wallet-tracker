@@ -362,14 +362,29 @@ def all_callbacks(markup):
             for b in row if "callback_data" in b]
 
 
-def test_start_shows_persistent_keyboard_and_full_menu(bot):
+def test_start_removes_pinned_keyboard_and_shows_full_menu(bot):
+    bot.handle(msg("/start"))
+    sends = bot.api.of("sendMessage")
+    assert sends[0]["reply_markup"] == {"remove_keyboard": True}
+    assert "ELYSIUM INTELLIGENCE CENTER" in sends[1]["text"]
+    assert len(all_callbacks(sends[1]["reply_markup"])) == 10
+
+
+def test_old_pinned_keyboard_is_cleared_once(bot):
+    bot.handle(msg("/menu"))
+    bot.handle(msg("/menu"))
+    removes = [s for s in bot.api.of("sendMessage")
+               if s.get("reply_markup") == {"remove_keyboard": True}]
+    assert len(removes) == 1
+
+
+def test_pinned_keyboard_can_be_turned_back_on(bot):
+    bot.cfg.ui.reply_keyboard = True
     bot.handle(msg("/start"))
     sends = bot.api.of("sendMessage")
     assert sends[0]["reply_markup"]["is_persistent"] is True
     labels = [b["text"] for row in sends[0]["reply_markup"]["keyboard"] for b in row]
     assert labels == [label for row in V.MENU for label, _ in row]
-    assert "ELYSIUM INTELLIGENCE CENTER" in sends[1]["text"]
-    assert len(all_callbacks(sends[1]["reply_markup"])) == 10
 
 
 def test_setup_registers_commands_and_recovers_interrupted_exports(bot, seeded):

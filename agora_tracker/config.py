@@ -110,6 +110,9 @@ class UiConfig:
     admin_ids_env: str = "TG_ADMIN_IDS"      # extra authorized Telegram user ids, comma separated
     admin_ids: list[int] = field(default_factory=list)   # resolved: TG_CHAT_ID + admin_ids_env
     page_size: int = 5
+    # Pinned 10-button keyboard under the message box. Off: the menu lives in /menu and in
+    # Telegram's Menu button, and the bot clears a keyboard an older version left behind.
+    reply_keyboard: bool = False
     poll_timeout_s: int = 25                 # getUpdates long-poll
     workers: int = 4                         # concurrent interactive handlers
     report_workers: int = 1                  # concurrent exports (never starves the indexer)
