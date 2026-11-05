@@ -591,3 +591,38 @@ def test_pool_manager_balance_is_never_shown_as_a_curve():
     assert dd.venue == "v4" and dd.pool is None and dd.liquidity_hype is None
     text = "\n".join(cards.dd_lines(dd, L, 40.0))
     assert "2868" not in text and "PoolManager holds every v4 pool" in text
+
+
+def test_a_revert_does_not_switch_due_diligence_off():
+    node = FakeNode()
+    orig = node.call
+
+    def call(method, params):
+        if method == "eth_call" and params[0]["data"][:10] == li.selector("owner()"):
+            raise RuntimeError("eth_call: execution reverted")
+        return orig(method, params)
+    node.call = call
+    d = dd_for(node)
+    first = d.probe(TOKEN, TX)
+    assert first.owner is None and first.pool == POOL_A          # the rest still worked
+    assert d.probe(A(0x57), TX) is not None                      # no cooldown after a revert
+
+
+def test_seller_scan_is_chunked_under_the_node_limit():
+    node = FakeNode()
+    ranges = []
+    orig = node.call
+
+    def call(method, params):
+        if method == "eth_blockNumber":
+            return hex(50_000)
+        if method == "eth_getLogs":
+            lo, hi = int(params[0]["fromBlock"], 16), int(params[0]["toBlock"], 16)
+            ranges.append(hi - lo + 1)
+            return node.logs if not ranges[1:] else []
+        return orig(method, params)
+    node.call = call
+    dd = dd_for(node, log_blocks=18000, log_chunk=5000).probe(TOKEN, TX)
+    assert ranges and max(ranges) <= 5000 and sum(ranges) >= 18000
+    assert dd.sellers == 2 and dd.flow_window_s == pytest.approx(3600)
+    assert "in the last 60 min" in "\n".join(cards.dd_lines(dd, L, 40.0))
