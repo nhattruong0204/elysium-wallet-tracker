@@ -212,6 +212,21 @@ class DD:
     top_is_owner: bool = False
     complete: bool = False              # balances rebuilt from the mint, so shares are exact
     partial: bool = False               # some probes failed or ran out of time
+    # Ascend (Uniswap v4 hook) facts, from the launch event and the hook's own views
+    venue: str | None = None            # "ascend" | "v4" (some other v4 pool) | None
+    pool_id: str | None = None
+    quote: str | None = None
+    quote_symbol: str | None = None
+    liquidity_quote: float | None = None   # pool's own quote reserve, in quote units
+    mcap_quote: float | None = None
+    fee_pct: float | None = None
+    dev_pct: float | None = None
+    launched_at: Any = None
+    bid_quote: float | None = None      # standing bid inventory
+    escrow_balance: float | None = None
+    escrow_claimable: float | None = None
+    unsettled_fees: float | None = None
+    paused: bool = False
 
 
 class DueDiligence:
@@ -224,13 +239,15 @@ class DueDiligence:
     def __init__(self, rpc: Any, *, wrapped: str | None, factories: list[str] | None = None,
                  budget_s: float = 6.0, cache_s: float = 300.0, log_blocks: int = 3600,
                  max_logs: int = 4000, cooldown_s: float = 60.0,
-                 clock: Callable[[], float] = time.monotonic):
+                 clock: Callable[[], float] = time.monotonic,
+                 ascend_lookup: Callable[[str], dict | None] | None = None):
         self.rpc, self.wrapped = rpc, (wrapped or "").lower() or None
         self.factories = [f.lower() for f in factories or []]
         self.budget_s, self.cache_s, self.log_blocks = budget_s, cache_s, log_blocks
         self.max_logs, self.cooldown_s, self.clock = max_logs, cooldown_s, clock
         self._cache: dict[str, tuple[float, DD]] = {}
         self._down_until = 0.0
+        self.ascend_lookup = ascend_lookup
 
     def add_factories(self, factories: Iterable[str]) -> None:
         for f in factories:
@@ -275,7 +292,13 @@ class DueDiligence:
         deadline = now + self.budget_s
         self._try(dd, lambda: self._code(dd, deadline))
         self._try(dd, lambda: self._basics(dd, deadline))
-        self._try(dd, lambda: self._venue(dd, deadline, tx))
+        info = None
+        if self.ascend_lookup is not None:
+            info = self._try(dd, lambda: self.ascend_lookup(token))   # type: ignore[misc]
+        if info:
+            self._try(dd, lambda: self._ascend(dd, deadline, info, tx))
+        else:
+            self._try(dd, lambda: self._venue(dd, deadline, tx))
         self._try(dd, lambda: self._flows(dd, deadline))
         if len(self._cache) > 500:
             self._cache.clear()
@@ -327,6 +350,9 @@ class DueDiligence:
                         best = (liq, pool)
         if best:
             dd.pool, dd.pool_kind, dd.liquidity_hype = best[1], "pool", best[0]
+        elif to in SHARED_CUSTODY:
+            # a Uniswap v4 PoolManager holds every v4 pool: its balance is not this token's
+            dd.venue, dd.pool_kind = "v4", "v4"
         elif to:
             # no DEX pool: a bonding curve holds the token and the HYPE itself
             bal = self._eth_call(deadline, dd.token, "balanceOf(address)", _pad(to))
@@ -337,9 +363,53 @@ class DueDiligence:
         if to and to != dd.pool:
             dd.router = to
 
+    def _ascend(self, dd: DD, deadline: float, info: dict, tx: str | None) -> None:
+        """Per-pool facts for an Ascend coin. The shared PoolManager balance is never used."""
+        dd.venue, dd.pool_kind, dd.pool_id = "ascend", "v4", info["pool_id"]
+        dd.quote = info["quote"]
+        dd.quote_symbol = QUOTE_SYMBOLS.get(dd.quote, "quote")
+        qdec = QUOTE_DECIMALS.get(dd.quote, 18)
+        supply = int(info.get("supply_seeded") or 0) + int(info.get("dev_buy_tokens") or 0)
+        dd.fee_pct = int(info["fee_pips"]) / 10_000
+        dd.dev_pct = 100 * int(info.get("dev_buy_tokens") or 0) / supply if supply else None
+        dd.launched_at = info.get("launched_at")
+        pid = dd.pool_id[2:]
+        if tx:
+            t = self._call(deadline, "eth_getTransactionByHash", [tx]) or {}
+            to = t.get("to")
+            dd.router = to.lower() if isinstance(to, str) else None
+        r = self._eth_call(deadline, ASCEND_HOOK, "currentFee(bytes32)", pid)
+        if r:
+            dd.fee_pct = _hx(r) / 10_000
+        s0 = self._eth_call(deadline, V4_STATE_VIEW, "getSlot0(bytes32)", pid)
+        lq = self._eth_call(deadline, V4_STATE_VIEW, "getLiquidity(bytes32)", pid)
+        st_ = self._eth_call(deadline, ASCEND_HOOK, "poolStartTick(bytes32)", pid)
+        if s0 and lq and st_:
+            sqrtp = int(s0[2:66], 16)
+            raw = v4_quote_reserve(_hx(lq), sqrtp, _int24(_hx(st_)), bool(info["token_is0"]))
+            dd.liquidity_quote = raw / 10**qdec
+            if dd.quote_symbol == "HYPE":
+                dd.liquidity_hype = dd.liquidity_quote
+            px = v4_price_quote_per_token(sqrtp, bool(info["token_is0"]), qdec, dd.decimals or 18)
+            dd.mcap_quote = px * (supply / 10 ** (dd.decimals or 18)) if supply else None
+        b = self._eth_call(deadline, ASCEND_HOOK, "bidInventory(bytes32)", pid)
+        dd.bid_quote = _hx(b) / 10**qdec if b else None
+        a = self._eth_call(deadline, ASCEND_HOOK, "accruedFees(bytes32)", pid)
+        dd.unsettled_fees = _hx(a) / 10**qdec if a else None
+        p = self._eth_call(deadline, ASCEND_HOOK, "paused()")
+        dd.paused = bool(p and _hx(p))
+        esc = info.get("escrow")
+        if esc:
+            bal = self._eth_call(deadline, dd.quote, "balanceOf(address)", _pad(esc))
+            dd.escrow_balance = _hx(bal) / 10**qdec if bal else 0.0
+            if info.get("recipient"):
+                c = self._eth_call(deadline, esc, "claimable(address)", _pad(info["recipient"]))
+                dd.escrow_claimable = _hx(c) / 10**qdec if c else 0.0
+
     def _flows(self, dd: DD, deadline: float) -> None:
         """Rebuild balances from recent Transfer logs: who sold into the pool, who holds."""
-        if not dd.pool or not dd.decimals:
+        sink = V4_POOL_MANAGER if dd.pool_kind == "v4" else dd.pool
+        if not sink or not dd.decimals:
             return
         head = _hx(self._call(deadline, "eth_blockNumber", []))
         frm = max(0, head - self.log_blocks)
@@ -364,14 +434,15 @@ class DueDiligence:
                 bal[f] -= v
             if t not in DEAD:
                 bal[t] += v
-            if t == dd.pool and f not in (dd.pool, ZERO):
-                sellers.add(f)
+            if t == sink and f not in (sink, ZERO, ASCEND_HOOK):
+                sellers.add(f)       # token-specific Transfer logs: valid even into a shared vault
                 sold += v
         dd.sellers = len(sellers)
         if dd.supply:
             dd.sold_pct = 100 * sold / dd.supply
             dd.complete = minted
-            holders = [(a, v) for a, v in bal.items() if v > 0 and a != dd.pool and a not in DEAD]
+            holders = [(a, v) for a, v in bal.items()
+                       if v > 0 and a not in (dd.pool, sink, ASCEND_HOOK) and a not in DEAD]
             if holders and minted:
                 a, v = max(holders, key=lambda kv: kv[1])
                 dd.top_holder, dd.top_pct = a, 100 * v / dd.supply
@@ -556,3 +627,141 @@ def format_paper_report(s: dict) -> str:
     if s["priced"] < 20:
         lines.append("sample is small (<20 priced signals): treat as anecdote, not evidence")
     return "\n".join(lines)
+
+
+# ---- Ascend (Uniswap v4 hook launchpad) --------------------------------------------------
+# Addresses from ascendlaunch.gitbook.io/docs/developers/mainnet-contracts (chain 99901).
+ASCEND_HOOK = "0xe0def4221b9840a610d4e7d55812a79a6431a8ec"
+ASCEND_ESCROW_FACTORY = "0x63f6a8a8d0257c0363251a50cde8a8b1046e4d19"
+ASCEND_START_BLOCK = 422319
+V4_POOL_MANAGER = "0xe2e105d3f7209a9da11f83ccf3e7398a753823f1"   # custody of EVERY v4 pool
+V4_STATE_VIEW = "0x27ed73ae0652fdcf71d6793412a7525f32be9dfe"
+V4_DYNAMIC_FEE, ASCEND_TICK_SPACING = 0x800000, 200
+TOPIC_LAUNCHED = "0x" + keccak256(
+    b"Launched(bytes32,address,address,address,uint256,uint256,uint24,uint24)").hex()
+TOPIC_ESCROW_LAUNCHED = "0x" + keccak256(
+    b"EscrowLaunched(bytes32,address,address,address,address,address,bool)").hex()
+# contracts that hold the assets of many pools at once: their balance is never one pool's
+SHARED_CUSTODY = {V4_POOL_MANAGER}
+QUOTE_DECIMALS = {"0xb47c4c8f73f009cc0c0d3f92b388d13e293f0b65": 6}   # USDC; others 18
+QUOTE_SYMBOLS = {"0xba876237b0f021a6c6d852d6c26e107997cc5e81": "HYPE",
+                 "0xe45a355d9e9cad2ad85f2d03e3ee3102a036acf0": "KNTQ",
+                 "0xb47c4c8f73f009cc0c0d3f92b388d13e293f0b65": "USDC"}
+
+
+def _word(data: str, i: int) -> str:
+    return data[2 + 64 * i: 2 + 64 * (i + 1)]
+
+
+def _int24(v: int) -> int:
+    v &= (1 << 256) - 1
+    return v - (1 << 256) if v >> 255 else v
+
+
+def ascend_pool_id(token: str, quote: str) -> str:
+    c0, c1 = sorted([token.lower(), quote.lower()])
+    key = _pad(c0) + _pad(c1) + f"{V4_DYNAMIC_FEE:064x}" + f"{ASCEND_TICK_SPACING:064x}" \
+        + _pad(ASCEND_HOOK)
+    return "0x" + keccak256(bytes.fromhex(key)).hex()
+
+
+def decode_ascend_logs(logs: list[dict]) -> list[dict]:
+    """Launched + EscrowLaunched logs -> one row per launched token (escrow joined by pool)."""
+    escrows: dict[str, tuple[str, str]] = {}
+    launched = []
+    for lg in logs:
+        tp = lg.get("topics") or []
+        if not tp:
+            continue
+        if tp[0] == TOPIC_ESCROW_LAUNCHED and len(tp) >= 4:
+            escrows[tp[1].lower()] = ("0x" + tp[2][-40:].lower(), "0x" + tp[3][-40:].lower())
+        elif tp[0] == TOPIC_LAUNCHED and len(tp) >= 4 and \
+                str(lg.get("address", "")).lower() == ASCEND_HOOK:
+            launched.append(lg)
+    out = []
+    for lg in launched:
+        tp, d = lg["topics"], lg.get("data") or "0x"
+        if len(d) < 2 + 64 * 5:
+            continue
+        token, quote = "0x" + tp[2][-40:].lower(), "0x" + _word(d, 0)[-40:].lower()
+        pid = tp[1].lower()
+        esc, rec = escrows.get(pid, (None, None))
+        out.append({"token": token, "pool_id": pid, "quote": quote,
+                    "token_is0": token < quote, "creator": "0x" + tp[3][-40:].lower(),
+                    "supply_seeded": int(_word(d, 1), 16), "dev_buy_tokens": int(_word(d, 2), 16),
+                    "fee_pips": int(_word(d, 3), 16), "builder_fee_pips": int(_word(d, 4), 16),
+                    "escrow": esc, "recipient": rec, "block_number": _hx(lg.get("blockNumber")),
+                    "tx_hash": str(lg.get("transactionHash", "")).lower()})
+    return out
+
+
+class AscendIndexer:
+    """Every Ascend launch, from the hook's own events, resumable from a stored cursor.
+
+    Bounded per tick (`max_chunks` x `chunk` blocks) so a backfill never crowds out the main
+    indexer's log queries on the shared RPC; a rate-limit error simply retries next tick."""
+
+    CURSOR = "ascend_cursor"
+
+    def __init__(self, store: Any, rpc: Any, *, start_block: int = ASCEND_START_BLOCK,
+                 chunk: int = 5000, max_chunks: int = 2):
+        self.store, self.rpc = store, rpc
+        self.start_block, self.chunk, self.max_chunks = start_block, chunk, max_chunks
+
+    def tick(self) -> int:
+        head = _hx(self.rpc.call("eth_blockNumber", []))
+        cur = self.store.get_kv(self.CURSOR)
+        frm = int(cur) + 1 if cur is not None else self.start_block
+        added = 0
+        for _ in range(self.max_chunks):
+            if frm > head:
+                break
+            to = min(head, frm + self.chunk - 1)
+            logs = self.rpc.call("eth_getLogs", [{
+                "fromBlock": hex(frm), "toBlock": hex(to),
+                "address": [ASCEND_HOOK, ASCEND_ESCROW_FACTORY],
+                "topics": [[TOPIC_LAUNCHED, TOPIC_ESCROW_LAUNCHED]]}]) or []
+            rows = decode_ascend_logs(logs)
+            if rows:
+                times = self._block_times(sorted({r["block_number"] for r in rows}))
+                for r in rows:
+                    r["launched_ts"] = times.get(r["block_number"])
+                added += self.store.ascend_upsert(rows)
+            self.store.set_kv(self.CURSOR, str(to))     # after the rows are stored
+            frm = to + 1
+        return added
+
+    def _block_times(self, blocks: list[int]) -> dict[int, int]:
+        out: dict[int, int] = {}
+        try:
+            res = self.rpc.batch([("eth_getBlockByNumber", [hex(b), False]) for b in blocks])
+            for b, r in zip(blocks, res, strict=False):
+                if isinstance(r, dict) and r.get("timestamp"):
+                    out[b] = _hx(r["timestamp"])
+        except Exception:  # noqa: BLE001 - launch time is optional; block number is kept
+            log.warning("ascend: block timestamps unavailable for %d blocks", len(blocks))
+        return out
+
+
+def v4_quote_reserve(liquidity: int, sqrt_price_x96: int, start_tick: int,
+                     token_is0: bool) -> float:
+    """Quote-asset units (raw) held by an Ascend pool.
+
+    Ascend seeds one single-sided token position starting at `poolStartTick` (stored in the
+    coin-is-currency0 orientation) and rejects every other liquidity add, so the pool's quote
+    reserve is the quote paid in by buyers along that one range:
+      coin is currency0 (quote = currency1): L * (sqrtP - sqrt(start))
+      coin is currency1 (quote = currency0): L * (1/sqrtP - 1/sqrt(-start))"""
+    if liquidity <= 0 or sqrt_price_x96 <= 0:
+        return 0.0
+    sp = sqrt_price_x96 / 2**96
+    if token_is0:
+        return max(0.0, liquidity * (sp - 1.0001 ** (start_tick / 2)))
+    return max(0.0, liquidity * (1 / sp - 1 / 1.0001 ** (-start_tick / 2)))
+
+
+def v4_price_quote_per_token(sqrt_price_x96: int, token_is0: bool, quote_dec: int,
+                             token_dec: int = 18) -> float:
+    p = (sqrt_price_x96 / 2**96) ** 2          # currency1 per currency0, raw units
+    raw = p if token_is0 else (1 / p if p else 0.0)
+    return raw * 10 ** (token_dec - quote_dec)

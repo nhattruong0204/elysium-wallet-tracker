@@ -118,10 +118,12 @@ class Reports:
             return {}
         rows = self._all(c, """
             SELECT a.address, m.symbol AS chain_symbol, m.decimals, p.symbol, p.name,
-                   p.launchpad, p.launched_at
+                   CASE WHEN al.token IS NOT NULL THEN 'ascend' ELSE p.launchpad END AS launchpad,
+                   coalesce(p.launched_at, al.launched_at) AS launched_at
             FROM unnest(CAST(:t AS text[])) AS a(address)
             LEFT JOIN token_metadata m ON m.chain_id = :c AND m.address = a.address
-            LEFT JOIN token_profiles p ON p.chain_id = :c AND p.address = a.address""",
+            LEFT JOIN token_profiles p ON p.chain_id = :c AND p.address = a.address
+            LEFT JOIN ascend_launches al ON al.chain_id = :c AND al.token = a.address""",
             t=list(tokens))
         out = {}
         for r in rows:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import logging
 import os
@@ -24,7 +25,7 @@ from .chain import ChainFollower, ScanResult
 from .config import Config, load_config, load_watchlist
 from .db import Store
 from .engine import WEI, Engine
-from .launchintel import DueDiligence, LaunchWatcher
+from .launchintel import AscendIndexer, DueDiligence, LaunchWatcher
 from .leaderboard import HttpLeaderboard, diff_leaderboard, dig, guess_mapping, parse_curl
 from .market import AgoraMarket
 from .notify import Notifier
@@ -53,7 +54,11 @@ class Tracker:
         self.dd = DueDiligence(
             self.rpc, wrapped=ic.wrapped_native, factories=ic.dd_factories,
             budget_s=ic.dd_budget_s, cache_s=ic.dd_cache_s, log_blocks=ic.dd_log_blocks,
+            ascend_lookup=self.store.ascend_launch,
         ) if ic.dd_enabled else None
+        self.ascend = AscendIndexer(self.store, self.rpc, max_chunks=ic.ascend_max_chunks) \
+            if ic.ascend_index else None
+        self._next_ascend = 0.0
         self.launch = LaunchWatcher(
             self.store, self.rpc, wrapped=ic.wrapped_native, factories=ic.launch_factories,
             min_liquidity_hype=ic.launch_min_liquidity_hype, delay_s=ic.launch_delay_s,
@@ -80,11 +85,25 @@ class Tracker:
                 dd = self.dd.probe(token, payload.get("tx"))
             except Exception:  # noqa: BLE001
                 log.warning("due diligence probe failed for %s", token, exc_info=True)
+        if info is not None and getattr(dd, "venue", None) == "ascend":
+            info = dataclasses.replace(info, launchpad="ascend")   # chain fact beats Agora's label
         out = cards.render(payload, self.links, info, self.market.hype_usd(), dd=dd)
         if not out:
             return row["text"], None, None
         img = cards.preview_url(self.links, info) if self.cfg.alerts.token_image else None
         return out[0], out[1], img
+
+    def run_ascend_index(self) -> None:
+        """Ascend launches from the hook's events. Isolated: never touches indexing."""
+        if self.ascend is None or time.monotonic() < self._next_ascend:
+            return
+        self._next_ascend = time.monotonic() + self.cfg.intel.ascend_interval_s
+        try:
+            n = self.ascend.tick()
+            if n:
+                log.info("ascend: %d new launches indexed", n)
+        except Exception as e:  # noqa: BLE001 - e.g. a log-search rate limit: retry next tick
+            log.warning("ascend indexer: %s", str(e)[:200])
 
     def run_launch_watch(self) -> None:
         """New DEX pools from chain events. Isolated: a failure here never touches indexing."""
@@ -276,6 +295,7 @@ class Tracker:
                     self.check_heads()
                 behind = self.scan_step()
                 self.run_launch_watch()
+                self.run_ascend_index()
                 self.notifier.drain()
                 self.store.set_kv("heartbeat", str(int(time.time())))
                 backoff = 1.0

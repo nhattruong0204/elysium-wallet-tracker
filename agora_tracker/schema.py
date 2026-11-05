@@ -397,6 +397,31 @@ paper_trades = sa.Table(
     sa.Index("ix_paper_trades_opened_at", "opened_at"),
 )
 
+# Ascend launches, indexed from the hook's `Launched` + EscrowFactory `EscrowLaunched` events
+# (migration 0007). public_api.ascend_launches exposes the launch facts only.
+ascend_launches = sa.Table(
+    "ascend_launches", metadata,
+    sa.Column("chain_id", sa.BigInteger, sa.ForeignKey("chains.chain_id"), primary_key=True),
+    sa.Column("token", ADDR, primary_key=True),
+    sa.Column("pool_id", sa.String(66), nullable=False),
+    sa.Column("quote", ADDR, nullable=False),
+    sa.Column("token_is0", sa.Boolean, nullable=False),
+    sa.Column("fee_pips", sa.Integer, nullable=False),
+    sa.Column("builder_fee_pips", sa.Integer, nullable=False),
+    sa.Column("supply_seeded", sa.Numeric(78, 0), nullable=False),
+    sa.Column("dev_buy_tokens", sa.Numeric(78, 0), nullable=False),
+    sa.Column("creator", ADDR, nullable=False),
+    sa.Column("escrow", ADDR),
+    sa.Column("recipient", ADDR),
+    sa.Column("block_number", sa.BigInteger, nullable=False),
+    sa.Column("launched_at", TS),
+    sa.Column("tx_hash", sa.String(66), nullable=False),
+    sa.Column("first_seen_at", TS, nullable=False, server_default=_now()),
+    _addr_check("token"),
+    sa.Index("ix_ascend_launches_pool_id", "pool_id"),
+    sa.Index("ix_ascend_launches_block", "chain_id", "block_number"),
+)
+
 # Telegram UI state per user: selected period, pending conversational input. Survives
 # restarts, so a half-finished custom-range or export flow resumes where it was.
 ui_sessions = sa.Table(
