@@ -202,6 +202,10 @@ class IntelConfig:
     launch_delay_s: int = 120
     # alert when Agora reports a launchpad we have not seen before
     new_launchpad_alerts: bool = True
+    # index Ascend launches from its own hook events (venue, pool, fee, pair, dev buy)
+    ascend_index: bool = True
+    ascend_interval_s: float = 60.0
+    ascend_max_chunks: int = 2              # x 5,000 blocks per tick; backfill is gradual
 
 
 @dataclass

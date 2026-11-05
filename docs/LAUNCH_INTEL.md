@@ -45,6 +45,23 @@ this way also feed the due-diligence pool lookup. For launchpads other than Kleo
 ElysPump the Rabby/OKX/Kleos/BOXA buttons (dead ends there) are replaced by Pool/Curve, Router,
 Token and Tx links on Elyscan.
 
+## Ascend (Uniswap v4 hook launchpad)
+Ascend coins trade in Uniswap v4 pools whose assets all sit in one shared PoolManager
+(`0xe2e1…23f1`). Its balance (thousands of HYPE) is never one token's liquidity; the old curve
+heuristic reported it as such (VOLTA "975 HYPE"). Now:
+
+* `AscendIndexer` reads `Launched` (hook `0xe0de…a8ec`) and `EscrowLaunched` (EscrowFactory)
+  from block 422319, 2 x 5,000 blocks per minute, into `ascend_launches` (migration 0007).
+  Every token in it is labelled **Ascend** on the website and in alerts, whatever Agora says.
+* Due diligence for those tokens reads the pool itself: `getSlot0` / `getLiquidity` (StateView)
+  and `poolStartTick` (hook). Ascend seeds one single-sided position and rejects other liquidity,
+  so the quote reserve is `L·(√P − √P_start)` (coin = currency0) or `L·(1/√P − 1/√P_start')`.
+  Checked on chain: 481.8 KNTQ for a pool whose 1 % sell quotes 87.8 KNTQ and 10 % reverts.
+  Also shown: `currentFee` (warning above 3 %), standing-bid inventory, creator-escrow balance
+  and claimable, unsettled fees, and the hook's `paused()` flag.
+* Any other token whose venue is the PoolManager shows "v4 pool: own liquidity unknown"
+  instead of a number.
+
 ## Paper trading (5)
 Entry is the executed price of the buy that completed the signal, plus `paper_slippage_pct`.
 Later prices come from `token_market_snapshots` (one per ~10 min), so peaks can be missed.

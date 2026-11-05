@@ -443,3 +443,151 @@ def test_muted_token_is_indexed_but_never_alerted_or_clustered(store):
         assert c.execute(sa.text("SELECT count(*) FROM trades WHERE token = :t"),
                          {"t": TOKEN}).scalar() == 3
     assert alerts(store) == [] and signals(store, "cluster_buy") == []
+
+
+# --- Ascend (Uniswap v4 hook) --------------------------------------------------------------------
+# Real values read from chain 99901 on 2026-11-05 (scripts/probe_ascend.py)
+ASC_TOKEN = "0xb9f07c197cc69927ea14240a5c12292d8f272d49"
+ASC_POOL = "0x789b49e4f39d992f"            # prefix of the poolId the chain reported
+
+
+def test_ascend_pool_id_matches_the_chain():
+    assert li.ascend_pool_id(ASC_TOKEN, WHYPE_REAL).startswith(ASC_POOL)
+
+
+WHYPE_REAL = "0xba876237b0f021a6c6d852d6c26e107997cc5e81"
+
+
+def test_v4_reserve_math_on_real_pools():
+    kntq = li.v4_quote_reserve(2823830179493213523424743, int("c43c5437750ef44e88cf49", 16),
+                               -117400, True) / E18
+    assert kntq == pytest.approx(481.79, rel=1e-3)      # quoter: selling 1% -> 87.8 KNTQ, 10% reverts
+    hype = li.v4_quote_reserve(218323400825907916615201, int("0e5e5f0021e92dc94b8466", 16),
+                               -168600, True) / E18
+    assert hype == pytest.approx(0.204, rel=1e-2)
+    untouched = li.v4_quote_reserve(218323400825907916615201,
+                                    int("11e491b0dba1472f7a683e07bfbf", 16), -168600, False)
+    assert untouched / E18 < 1e-6                       # still at its start tick: nothing bought
+    px = li.v4_price_quote_per_token(int("c43c5437750ef44e88cf49", 16), True, 18)
+    assert px * 1e7 == pytest.approx(89.66, rel=1e-3)   # spot value of 1% of supply
+
+
+def asc_logs(token=ASC_TOKEN, quote=WHYPE_REAL, block=500, fee=10000, dev=10 * E18):
+    pid = li.ascend_pool_id(token, quote)
+    data = "0x" + padt(quote)[2:] + word(990 * E18)[2:] + word(dev)[2:] + word(fee)[2:] + word(0)[2:]
+    launched = {"address": li.ASCEND_HOOK, "blockNumber": hex(block), "transactionHash": "0x" + "cd" * 32,
+                "topics": [li.TOPIC_LAUNCHED, pid, padt(token), padt(CREATOR)], "data": data}
+    escrow = {"address": li.ASCEND_ESCROW_FACTORY, "blockNumber": hex(block),
+              "topics": [li.TOPIC_ESCROW_LAUNCHED, pid, padt(A(0xe5)), padt(A(0xe6))],
+              "data": "0x" + "0" * 256}
+    return pid, [launched, escrow]
+
+
+def test_decode_ascend_logs_joins_escrow_and_ignores_impostors():
+    pid, logs = asc_logs()
+    fake = dict(logs[0], address=A(0x99))                  # same event from another contract
+    rows = li.decode_ascend_logs(logs + [fake])
+    assert len(rows) == 1
+    r = rows[0]
+    assert r["token"] == ASC_TOKEN and r["pool_id"] == pid and r["quote"] == WHYPE_REAL
+    assert r["token_is0"] is True and r["fee_pips"] == 10000 and r["dev_buy_tokens"] == 10 * E18
+    assert r["escrow"] == A(0xe5) and r["recipient"] == A(0xe6) and r["creator"] == CREATOR
+
+
+class AscNode:
+    def __init__(self, logs):
+        self.logs, self.head, self.calls = logs, 12000, []
+
+    def call(self, method, params):
+        self.calls.append(method)
+        if method == "eth_blockNumber":
+            return hex(self.head)
+        if method == "eth_getLogs":
+            lo, hi = int(params[0]["fromBlock"], 16), int(params[0]["toBlock"], 16)
+            assert hi - lo < 10_000
+            return [lg for lg in self.logs if lo <= int(lg["blockNumber"], 16) <= hi]
+        raise RuntimeError(method)
+
+    def batch(self, calls):
+        return [{"timestamp": hex(1_793_800_000 + int(p[0], 16))} for _, p in calls]
+
+
+def test_ascend_indexer_backfills_in_bounded_chunks_and_is_idempotent(store):
+    _, logs = asc_logs(block=7000)
+    node = AscNode(logs)
+    ix = li.AscendIndexer(store, node, start_block=1, chunk=5000, max_chunks=1)
+    assert ix.tick() == 0 and store.get_kv(ix.CURSOR) == "5000"     # one chunk per tick
+    assert ix.tick() == 1 and ix.tick() == 0
+    row = store.ascend_launch(ASC_TOKEN)
+    assert row["fee_pips"] == 10000 and row["escrow"] == A(0xe5) and row["launched_at"] is not None
+    store.set_kv(ix.CURSOR, "0")                                    # replay everything
+    for _ in range(3):
+        ix.tick()
+    with store.engine.connect() as c:
+        assert c.execute(sa.text("SELECT count(*) FROM ascend_launches")).scalar() == 1
+
+
+class AscDDNode(FakeNode):
+    """FakeNode plus Ascend's hook / StateView reads for one KNTQ-paired pool."""
+    KNTQ = "0xe45a355d9e9cad2ad85f2d03e3ee3102a036acf0"
+
+    def call(self, method, params):
+        if method == "eth_call":
+            to, data = params[0]["to"], params[0]["data"]
+            sel = data[:10]
+            if to == li.ASCEND_HOOK:
+                return {li.selector("currentFee(bytes32)"): word(50000),
+                        li.selector("poolStartTick(bytes32)"): word((1 << 256) - 117400),
+                        li.selector("bidInventory(bytes32)"): word(3 * E18),
+                        li.selector("accruedFees(bytes32)"): word(E18 // 10),
+                        li.selector("paused()"): word(0)}[sel]
+            if to == li.V4_STATE_VIEW:
+                if sel == li.selector("getSlot0(bytes32)"):
+                    return "0x" + f"{int('c43c5437750ef44e88cf49', 16):064x}" + "0" * 192
+                return word(2823830179493213523424743)
+            if to == self.KNTQ and sel == li.selector("balanceOf(address)"):
+                return word(2 * E18)
+            if to == A(0xe5) and sel == li.selector("claimable(address)"):
+                return word(E18 // 2)
+        if method == "eth_getTransactionByHash":
+            return {"to": "0x1b341fdd55d56f8e08409a2c25ddfad93eb03c1a"}
+        return super().call(method, params)
+
+
+def test_due_diligence_reads_the_ascend_pool_not_the_shared_pool_manager():
+    info = {"pool_id": "0x" + "ab" * 32, "quote": AscDDNode.KNTQ, "token_is0": True,
+            "fee_pips": 10000, "supply_seeded": 1000 * E18, "dev_buy_tokens": 0,
+            "escrow": A(0xe5), "recipient": A(0xe6), "launched_at": None}
+    d = li.DueDiligence(AscDDNode(), wrapped=WHYPE, factories=[FACTORY],
+                        ascend_lookup=lambda t: info if t == TOKEN else None)
+    dd = d.probe(TOKEN, TX)
+    assert dd.venue == "ascend" and dd.quote_symbol == "KNTQ"
+    assert dd.liquidity_quote == pytest.approx(481.79, rel=1e-3) and dd.liquidity_hype is None
+    assert dd.fee_pct == 5 and dd.bid_quote == 3 and dd.unsettled_fees == pytest.approx(0.1)
+    assert dd.escrow_balance == 2 and dd.escrow_claimable == 0.5 and not dd.paused
+    text = "\n".join(cards.dd_lines(dd, L, 40.0))
+    assert "Ascend" in text and "481.8 KNTQ" in text and "fee <b>5%</b>" in text
+    assert "High fee" in text and "Standing bid 3 KNTQ" in text and "Creator escrow 2 KNTQ" in text
+    p = {"type": "cluster", "token": TOKEN, "symbol": "X", "min_hype": 0.5, "window_min": 30,
+         "buyers": buyers(3), "tx": TX}
+    _, kb = cards.render(p, L, None, 40.0, dd=dd)
+    urls = [b["url"] for row in kb["inline_keyboard"] for b in row]
+    assert cards.ASCEND_APP in urls and L.address(li.V4_POOL_MANAGER) not in urls
+    assert not any("kleos" in u or "boxa" in u for u in urls)
+
+
+def test_pool_manager_balance_is_never_shown_as_a_curve():
+    node = FakeNode()
+    orig = node.call
+
+    def call(method, params):
+        if method == "eth_getTransactionByHash":
+            return {"to": li.V4_POOL_MANAGER}
+        if method == "eth_getBalance":
+            return hex(2868 * E18)
+        return orig(method, params)
+    node.call = call
+    dd = li.DueDiligence(node, wrapped=WHYPE, factories=[]).probe(TOKEN, TX)
+    assert dd.venue == "v4" and dd.pool is None and dd.liquidity_hype is None
+    text = "\n".join(cards.dd_lines(dd, L, 40.0))
+    assert "2868" not in text and "PoolManager holds every v4 pool" in text

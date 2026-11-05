@@ -543,6 +543,38 @@ class Store:
                 .returning(lv.c.id)).scalar()
         return got is not None
 
+    def ascend_upsert(self, rows: list[dict]) -> int:
+        """Insert Ascend launches (idempotent: a replayed range changes nothing). Returns new rows."""
+        al = t.ascend_launches
+        n = 0
+        with self.engine.begin() as c:
+            for r in rows:
+                ts_ = r.get("launched_ts")
+                stmt = pg_insert(al).values(
+                    chain_id=self.chain_id, token=r["token"], pool_id=r["pool_id"],
+                    quote=r["quote"], token_is0=r["token_is0"], fee_pips=r["fee_pips"],
+                    builder_fee_pips=r["builder_fee_pips"], supply_seeded=r["supply_seeded"],
+                    dev_buy_tokens=r["dev_buy_tokens"], creator=r["creator"],
+                    escrow=r.get("escrow"), recipient=r.get("recipient"),
+                    block_number=r["block_number"], launched_at=utc(ts_) if ts_ else None,
+                    tx_hash=r["tx_hash"])
+                got = c.execute(stmt.on_conflict_do_update(
+                    index_elements=[al.c.chain_id, al.c.token],
+                    set_={"escrow": sa.func.coalesce(al.c.escrow, stmt.excluded.escrow),
+                          "recipient": sa.func.coalesce(al.c.recipient, stmt.excluded.recipient),
+                          "launched_at": sa.func.coalesce(al.c.launched_at,
+                                                          stmt.excluded.launched_at)})
+                    .returning(sa.literal_column("xmax = 0"))).scalar()
+                n += 1 if got else 0
+        return n
+
+    def ascend_launch(self, token: str) -> dict[str, Any] | None:
+        al = t.ascend_launches
+        with self.engine.connect() as c:
+            r = c.execute(sa.select(al).where(al.c.chain_id == self.chain_id,
+                                              al.c.token == token.lower())).mappings().first()
+        return dict(r) if r else None
+
     def launch_factories(self) -> list[str]:
         """DEX factories that created pools we have seen (for the due-diligence pool lookup)."""
         lv = t.launch_venues
