@@ -200,3 +200,26 @@ h2.ph .right { float: right; padding: 3px 10px; font-size: 12.5px; font-weight: 
 #act-table a.txl { color: inherit; text-decoration: none; border-bottom: 1px dotted var(--faint, #6b7280); }
 #act-table a.txl:hover { color: var(--accent-2); }
 #act-table .lp { white-space: nowrap; }
+
+/* consensus */
+.cons-set h2 { margin-top: 0; }
+.cons-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px 14px; }
+.cons-grid label { display: flex; flex-direction: column; gap: 4px; color: var(--muted); font-size: 12.5px; }
+.cons-grid label.cons-chk { flex-direction: row; align-items: center; gap: 8px; align-self: end; padding-bottom: 8px; color: var(--text); }
+.cons-act { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 12px; }
+.cons-list { display: grid; gap: 12px; }
+.cons-card { margin: 0; border-left: 3px solid var(--line-2); }
+.cons-card.strong { border-left-color: var(--accent); }
+.cons-hd { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; flex-wrap: wrap; }
+.cons-title { font-size: 15px; }
+.cons-tok { text-align: right; display: flex; flex-direction: column; gap: 2px; }
+.cons-tok b { color: var(--warn); font-size: 16px; letter-spacing: .02em; }
+.cons-sum { margin: 8px 0; background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+.cons-mem { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; font-family: var(--mono, ui-monospace, monospace); font-size: 12.5px; }
+.cons-mem li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 12px; padding: 3px 0; border-bottom: 1px dashed var(--line); }
+.cons-mem .cons-t { grid-column: 1 / -1; font-size: 11.5px; }
+.cons-ft { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; margin-top: 10px; font-size: 12.5px; color: var(--muted); }
+.cons-ft b { color: var(--text); }
+.lp-chip { border: 1px solid var(--warn); color: var(--warn); border-radius: 999px; padding: 1px 9px; }
+.cons-links { margin-left: auto; display: flex; gap: 10px; }
+@media (max-width: 640px) { .cons-tok { text-align: left; } .cons-links { margin-left: 0; } }

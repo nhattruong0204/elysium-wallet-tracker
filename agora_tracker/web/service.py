@@ -7,7 +7,9 @@ public wallets and tokens. Results are cached per (section, window, parameters).
 
 from __future__ import annotations
 
+import logging
 import threading
+import time
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -20,6 +22,7 @@ from .activity import (
     encode_cursor,
 )
 from .cache import Hit, TTLCache
+from .consensus import ConsensusParams
 from .params import ListParams, paginate, range_dict, range_key
 from .reports import PublicReports, sort_key
 
@@ -41,6 +44,8 @@ SM_LABELS = {
 PROVIDERS = (("thekleos", "Kleos"), ("boxa", "BOXA"), ("elyspump", "ElysPump"))
 
 
+log = logging.getLogger(__name__)
+
 class NotFound(LookupError):
     pass
 
@@ -59,6 +64,8 @@ class Dashboard:
         # cache: N tabs asking the same question cost one query per few seconds.
         self.act_cache = TTLCache(self.w.activity_cache_ttl_s, 512, 60.0)
         self.links: Any = None        # set by create_app (needs the Links helper)
+        self._bundles: set[str] = set()
+        self._bundles_at = float("-inf")
 
     # --- plumbing ----------------------------------------------------------------------------
     def _cached(self, key: tuple, fn: Callable[[], Any]) -> Hit:
@@ -223,6 +230,21 @@ class Dashboard:
                     "window": t["window"]}
         hit = self._cached(("early", sort, range_key(tr)), build)
         return {"sort": sort, **hit.value, "meta": self._meta(hit, tr, now)}
+
+    # --- consensus ---------------------------------------------------------------------------------
+    def consensus(self, p: ConsensusParams, now: datetime) -> dict[str, Any]:
+        """Consensus cards for these thresholds. Cached per setting (short: it is a live view),
+        bundle wallets per 30 min (they move slowly and cost a 14-day pass)."""
+        if time.monotonic() - self._bundles_at > 1800:
+            self._bundles_at = time.monotonic()      # also on failure: retry next interval
+            try:
+                self._bundles = self.rep.consensus_bundles(now)
+            except Exception:  # noqa: BLE001 - without them buyers are just not collapsed
+                log.warning("consensus: bundle wallet refresh failed", exc_info=True)
+        bundles = self._bundles
+        hit = self._cached(("consensus", p.key()), lambda: self.rep.consensus(p, now, bundles))
+        return {**hit.value, "bundle_wallets": len(bundles),
+                "meta": {"generated_at": now, "age_s": round(hit.age_s), "stale": hit.stale}}
 
     # --- activity ----------------------------------------------------------------------------------
     def activity(self, p: ActivityParams, now: datetime) -> dict[str, Any]:

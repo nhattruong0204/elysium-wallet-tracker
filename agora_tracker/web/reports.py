@@ -28,6 +28,7 @@ from .activity import (
     filter_sql,
     order_and_cursor,
 )
+from .consensus import MAX_CARDS, RANGE_CHOICES, ConsensusParams, build_cards
 from .usd import FX_LATERAL, FxPolicy, format_usd, to_usd
 
 UTC = timezone.utc
@@ -365,6 +366,91 @@ class PublicReports(_BasePublicReports):
             it["market_cap_usd"] = usd
             it["market_cap_source"] = src if usd is not None else None
             it["market_cap_text"] = format_usd(usd) if usd is not None else None
+
+    # --- consensus buys ----------------------------------------------------------------------
+    _CONS_LEGS = """
+        SELECT t.token, t.wallet, t.kind, t.hype_wei, t.block_time, t.block_number, t.tx_hash
+        FROM trades t
+        WHERE t.chain_id = :c AND t.kind IN ('BUY', 'SELL') AND t.confidence = 'high'
+          AND t.hype_wei IS NOT NULL AND t.hype_wei > 0
+          AND t.block_time >= :lo AND t.block_time < :hi
+          AND NOT (t.token = ANY(CAST(:hidden AS text[])))
+          AND t.token IN (
+            SELECT b.token FROM trades b
+            WHERE b.chain_id = :c AND b.kind = 'BUY' AND b.confidence = 'high'
+              AND b.block_time >= :lo AND b.block_time < :hi
+            GROUP BY b.token HAVING count(DISTINCT b.wallet) >= :n)
+        ORDER BY t.token, t.block_time, t.id"""
+
+    # wallets buying a token in the same block as >= 2 other public wallets, >= 5 times
+    _CONS_BUNDLES = """
+        SELECT b.wallet FROM trades b
+        JOIN (SELECT token, block_number FROM trades
+              WHERE chain_id = :c AND kind = 'BUY' AND confidence = 'high' AND block_time >= :lo
+              GROUP BY token, block_number HAVING count(DISTINCT wallet) >= 3) g
+          ON g.token = b.token AND g.block_number = b.block_number
+        WHERE b.chain_id = :c AND b.kind = 'BUY' AND b.confidence = 'high' AND b.block_time >= :lo
+        GROUP BY b.wallet HAVING count(DISTINCT (b.token, b.block_number)) >= 5"""
+
+    _CONS_RANKS = """
+        SELECT e.address, e.rank FROM leaderboard_snapshot_entries e
+        WHERE e.snapshot_id = (SELECT id FROM leaderboard_snapshots
+                               WHERE status IN ('ok', 'imported') ORDER BY captured_at DESC LIMIT 1)
+          AND e.address = ANY(:a)"""
+
+    def consensus_bundles(self, now: datetime) -> set[str]:
+        with self.ro() as c:
+            return {r["wallet"] for r in self._all(c, self._CONS_BUNDLES,
+                                                   lo=now - timedelta(days=14))}
+
+    def consensus(self, p: ConsensusParams, now: datetime, bundles: set[str]) -> dict[str, Any]:
+        since = now - RANGE_CHOICES[p.range]
+        lo = since - timedelta(minutes=p.window_min)
+        n_pre = 2 if p.independent else p.min_traders     # a cheap pre-filter, never stricter
+        with self.ro() as c:
+            rows = self._all(c, self._CONS_LEGS, lo=lo, hi=now, n=min(n_pre, p.min_traders),
+                             hidden=list(self.hidden_tokens))
+            cards = build_cards(rows, p, since, bundles)
+            names = self._activity_names(c, sorted({k["token"] for k in cards}))
+            for k in cards:
+                m = names.get(k["token"], {})
+                k["symbol"] = m.get("symbol")
+                k["launchpad"] = m.get("launchpad")
+                k["launchpad_label"] = launchpad_label(m.get("launchpad"))
+            pads = sorted({k["launchpad"] for k in cards if k["launchpad"]} | (
+                {p.launchpad} if p.launchpad else set()))
+            if p.launchpad:
+                cards = [k for k in cards if (k["launchpad"] or "") == p.launchpad]
+            total = len(cards)
+            cards = cards[:MAX_CARDS]
+            # market cap when the threshold was reached, and the HYPE rate of that moment
+            if cards:
+                mk = {r["id"]: r for r in self._all(
+                    c, _ACT_MARKET, ids=list(range(len(cards))), toks=[k["token"] for k in cards],
+                    ts=[k["trigger_at"] for k in cards], near=MCAP_NEAR_S)}
+                wallets = sorted({m["wallet"] for k in cards for m in k["members"]})
+                ranks = {r["address"]: r["rank"] for r in self._all(c, self._CONS_RANKS,
+                                                                    a=wallets)}
+            else:
+                mk, ranks = {}, {}
+        now_usd = self.latest_usd(sorted({k["token"] for k in cards}), now)
+        for i, k in enumerate(cards):
+            r = mk.get(i) or {}
+            rate, rate_at = r.get("fx_rate"), r.get("fx_at")
+            at = to_usd(r.get("snap_mcap"), rate, rate_at, r.get("snap_at"), self.fx_policy) \
+                if r.get("snap_mcap") is not None else None
+            k["mcap_at_usd"] = at["market_cap_usd"] if at else None
+            k["mcap_now"] = now_usd.get(k["token"])
+            nowv = (k["mcap_now"] or {}).get("market_cap_usd")
+            k["change_x"] = (float(nowv) / float(k["mcap_at_usd"])) \
+                if nowv and k["mcap_at_usd"] else None
+            fx = float(rate) if rate else None
+            k["net_usd"] = k["net_hype"] * fx if fx else None
+            for m in k["members"]:
+                m["rank"] = ranks.get(m["wallet"])
+                m["net_usd"] = m["net_hype"] * fx if fx else None
+        return {"cards": cards, "total": total, "since": since, "launchpads": pads,
+                "legs": len(rows)}
 
     def activity_page(self, p: ActivityParams) -> dict[str, Any]:
         """One keyset page. Fetches size+1 rows to learn whether more exist in that direction."""
