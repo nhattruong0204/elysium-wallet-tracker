@@ -19,7 +19,7 @@ with store.engine.connect() as cn:
         SELECT t.token FROM trades t JOIN ascend_launches a ON a.token = t.token
         WHERE t.kind = 'BUY' AND t.block_time > now() - interval '24 hours'
         GROUP BY t.token ORDER BY max(t.block_time) DESC LIMIT 3"""))]
-dd = DueDiligence(rpc, wrapped=cfg.intel.wrapped_native, factories=cfg.intel.dd_factories,
+dd = DueDiligence(rpc, wrapped=cfg.intel.wrapped_native, factories=cfg.intel.dd_factories, log_blocks=cfg.intel.dd_log_blocks,
                   ascend_lookup=store.ascend_launch, budget_s=8)
 for tk in toks:
     d = dd.probe(tk)
