@@ -237,6 +237,10 @@ for k in d["cards"][:6]:
       done
       curl -s -o /dev/null -w "  /consensus page: HTTP %{http_code} in %{time_total}s\n" http://127.0.0.1:8100/consensus
       ;;
+    audit-launchpads)
+      say "launchpad audit: Ascend launches from chain events and tracked-wallet outcomes per launchpad (read-only)"
+      docker exec -i elysium-wallet-tracker python - < "$REPO/scripts/audit_launchpads.py" 2>&1 | grep -v "^20[0-9-]* .* INFO" | sed 's/^/  /'
+      ;;
     launch-report)
       say "launch intelligence: paper-trading results and launch-watcher state (read-only)"
       docker exec elysium-wallet-tracker python -m agora_tracker --config /config/config.yaml --launch-report 2>&1 | sed 's/^/  /'
