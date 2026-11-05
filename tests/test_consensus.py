@@ -3,12 +3,18 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from test_dashboard_db import (PRIV, PRIVATE_LABEL, PUB1, PUB2, TOK_PRIV, TOK_PUB,  # noqa: F401
-                               seeded)
-from test_web import make_cfg, make_live, web  # noqa: F401
+from test_dashboard_db import (  # noqa: F401
+    PRIV,
+    PRIVATE_LABEL,
+    PUB1,
+    PUB2,
+    TOK_PRIV,
+    TOK_PUB,
+    seeded,
+)
+from test_web import make_live  # noqa: F401
 
-from agora_tracker.web.consensus import (ConsensusParams, Leg, build_cards, parse_params,
-                                         sweep)
+from agora_tracker.web.consensus import ConsensusParams, Leg, build_cards, parse_params, sweep
 
 T0 = datetime(2026, 11, 5, 3, 0, tzinfo=timezone.utc)
 E = 10**18
@@ -82,7 +88,8 @@ def test_params_reject_anything_off_the_menu():
 
 
 # --- page and API against the seeded public views ----------------------------------------------
-def test_consensus_page_and_api_show_public_wallets_only(web):
+def test_consensus_page_and_api_show_public_wallets_only(seeded, make_live):  # noqa: F811
+    web = make_live()
     q = {"traders": "2", "window": "120", "min_net": "0.5", "range": "24h"}
     r = web.get("/consensus", params=q)
     assert r.status_code == 200
@@ -99,7 +106,8 @@ def test_consensus_page_and_api_show_public_wallets_only(web):
     assert PRIV not in body and PRIVATE_LABEL not in body
 
 
-def test_consensus_defaults_render_empty_state(web):
+def test_consensus_defaults_render_empty_state(seeded, make_live):  # noqa: F811
+    web = make_live()
     r = web.get("/consensus")
     assert r.status_code == 200 and "No consensus with these settings" in r.text
     assert web.get("/consensus", params={"traders": "abc"}).status_code == 200
