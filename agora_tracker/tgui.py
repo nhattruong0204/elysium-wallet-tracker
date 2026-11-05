@@ -288,11 +288,23 @@ class IntelBot:
         cmd, _, arg = text.partition(" ")
         cmd = cmd.split("@", 1)[0].lower()
         if cmd == "/start":
-            self.sessions.save(uid, chat, state=None, state_data={})
-            self._send(chat, "⌨️ Menu keyboard enabled. Tap a button or send /menu.",
-                       V.reply_keyboard())
+            self.sessions.save(uid, chat, state=None, state_data={"kb_off": True})
+            if self.cfg.ui.reply_keyboard:
+                self._send(chat, "⌨️ Menu keyboard enabled. Tap a button or send /menu.",
+                           V.reply_keyboard())
+            else:
+                self._send(chat, "☰ Open the menu any time with /menu or the Menu button.",
+                           V.REMOVE_KEYBOARD)
             self._show(chat, None, *self._view(uid, chat, "h"))
             return
+        if not self.cfg.ui.reply_keyboard and not (sess or {}).get("state_data", {}).get("kb_off"):
+            # once per user: clear the pinned keyboard an older version installed
+            self._send(chat, "☰ Keyboard hidden. Open the menu with /menu or the Menu button.",
+                       V.REMOVE_KEYBOARD)
+            sd = dict((sess or {}).get("state_data") or {})
+            sd["kb_off"] = True
+            self.sessions.save(uid, chat, state=(sess or {}).get("state"), state_data=sd)
+            sess = self.sessions.get(uid)
         if cmd == "/cancel":
             self.sessions.save(uid, chat, state=None, state_data=_keep(sess))
             self._show(chat, None, *self._view(uid, chat, "h"))
