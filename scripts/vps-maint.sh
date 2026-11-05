@@ -210,6 +210,17 @@ for i in it[:12]: print(" ", i["block_time"], (i.get("symbol") or "")[:10].ljust
 ' 2>&1 | sed 's/^/  /'
       curl -s -m 20 'http://127.0.0.1:8100/activity' | grep -o '<th[^>]*>[^<]*</th>' | sed 's/<[^>]*>//g' | tr '\n' '|' | sed 's/^/  headers: /'; echo
       ;;
+    token-lookup)
+      say "tokens named WHYPE / KNTQ: addresses and activity in the last 7 days"
+      docker exec -i elysium-postgres psql -U tracker -d tracker -X -A -F ' | ' -c "
+        SELECT a.address, coalesce(p.symbol, m.symbol) sym, p.launchpad,
+               (SELECT count(*) FROM trades t WHERE t.token=a.address AND t.block_time > now()-interval '7 days') legs_7d,
+               (SELECT count(*) FROM notification_outbox o WHERE o.payload->>'token'=a.address AND o.created_at > now()-interval '7 days') alerts_7d
+        FROM (SELECT address FROM token_metadata WHERE upper(symbol) IN ('WHYPE','KNTQ')
+              UNION SELECT address FROM token_profiles WHERE upper(symbol) IN ('WHYPE','KNTQ')) a
+        LEFT JOIN token_profiles p ON p.address=a.address LEFT JOIN token_metadata m ON m.address=a.address
+        ORDER BY legs_7d DESC" 2>&1 | sed 's/^/  /'
+      ;;
     launch-report)
       say "launch intelligence: paper-trading results and launch-watcher state (read-only)"
       docker exec elysium-wallet-tracker python -m agora_tracker --config /config/config.yaml --launch-report 2>&1 | sed 's/^/  /'
