@@ -241,6 +241,10 @@ for k in d["cards"][:6]:
       say "launchpad audit: Ascend launches from chain events and tracked-wallet outcomes per launchpad (read-only)"
       docker exec -i elysium-wallet-tracker python - < "$REPO/scripts/audit_launchpads.py" 2>&1 | grep -v "^20[0-9-]* .* INFO" | sed 's/^/  /'
       ;;
+    probe-ascend)
+      say "ascend probe: v4 pool reads on real pools (read-only)"
+      docker exec -i elysium-wallet-tracker python - < "$REPO/scripts/probe_ascend.py" 2>&1 | grep -v " INFO " | sed 's/^/  /'
+      ;;
     launch-report)
       say "launch intelligence: paper-trading results and launch-watcher state (read-only)"
       docker exec elysium-wallet-tracker python -m agora_tracker --config /config/config.yaml --launch-report 2>&1 | sed 's/^/  /'
