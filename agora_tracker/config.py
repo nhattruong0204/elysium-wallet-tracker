@@ -63,7 +63,10 @@ class AlertConfig:
     cluster_window_s: int = 3600
     cluster_min_wallets: int = 3
     hype_dust: float = 0.0005           # |HYPE delta| below this = no HYPE leg (gas noise)
-    ignore_tokens: list[str] = field(default_factory=list)
+    ignore_tokens: list[str] = field(default_factory=list)   # dropped before indexing
+    # still indexed (positions stay right) but never alerted, never part of a cluster, and
+    # hidden from the website's Activity tab unless that exact token is filtered
+    mute_tokens: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -240,6 +243,7 @@ def load_config(path: str | Path) -> Config:
         alerts_raw.setdefault("pnl_change", alerts_raw.pop("pnl_change_usd"))
     alerts = AlertConfig(**alerts_raw)
     alerts.ignore_tokens = [_norm_addr(t) for t in alerts.ignore_tokens]
+    alerts.mute_tokens = [_norm_addr(t) for t in alerts.mute_tokens]
 
     tg_raw = raw.get("telegram") or {}
     tg = TelegramConfig(

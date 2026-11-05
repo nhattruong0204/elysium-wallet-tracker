@@ -255,10 +255,18 @@ def _like_escape(s: str) -> str:
     return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
-def filter_sql(p: ActivityParams, *, with_cursor: bool = True) -> tuple[str, dict[str, Any]]:
-    """WHERE clause (without the keyword) over `trades t`, plus its bound parameters."""
+def filter_sql(p: ActivityParams, *, with_cursor: bool = True,
+               hidden: tuple[str, ...] = ()) -> tuple[str, dict[str, Any]]:
+    """WHERE clause (without the keyword) over `trades t`, plus its bound parameters.
+
+    `hidden` tokens (alerts.mute_tokens) are left out unless the request filters on exactly
+    that token, so their own token page and an explicit filter still work."""
     cond: list[str] = ["t.chain_id = :c"]
     prm: dict[str, Any] = {}
+    hide = [h for h in hidden if h != p.token]
+    if hide:
+        cond.append("t.token <> ALL(:hidden)")
+        prm["hidden"] = hide
     if p.start is not None:
         cond.append("t.block_time >= :start")
         prm["start"] = p.start
