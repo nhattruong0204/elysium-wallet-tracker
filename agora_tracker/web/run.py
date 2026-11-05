@@ -70,6 +70,7 @@ def build(cfg: Config, url: str | None = None) -> tuple[object, Engine]:
     reports = PublicReports(engine, cfg.chain.chain_id, ui, value_unit="HYPE", market=market,
                             collector_interval_s=cfg.collector.interval_s)
     reports.fx_policy = FxPolicy.from_web(cfg.web)
+    reports.hidden_tokens = tuple(cfg.alerts.mute_tokens)
     return create_app(cfg, Dashboard(reports, cfg), engine), engine
 
 

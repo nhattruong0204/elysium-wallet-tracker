@@ -433,3 +433,13 @@ def test_store_paper_trades_returns_snapshots_after_entry(store):
     assert len(rows) == 1 and [p for _, p in rows[0]["snapshots"]] == [0.002, 0.004]
     s = li.summarize_paper(rows, now=time.time(), slippage_pct=0)
     assert s["median_peak"] == pytest.approx(2.5)
+
+
+def test_muted_token_is_indexed_but_never_alerted_or_clustered(store):
+    st, f, e = build(store, three_buys(same_block=False))
+    e._muted = {TOKEN}
+    e.apply_range(f.scan(1, 40, {W1, W2, W3}), 40)
+    with store.engine.connect() as c:
+        assert c.execute(sa.text("SELECT count(*) FROM trades WHERE token = :t"),
+                         {"t": TOKEN}).scalar() == 3
+    assert alerts(store) == [] and signals(store, "cluster_buy") == []
