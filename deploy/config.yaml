@@ -59,6 +59,9 @@ alerts:
   cluster_min_wallets: 3       # >= 3 tracked wallets buying the same token within the window
   hype_dust: 0.0005
   ignore_tokens: []            # e.g. stablecoins or $AGORA if you don't care about them
+  mute_tokens:                 # indexed, but no Telegram alert and hidden on the Activity tab
+    - "0xba876237b0f021a6c6d852d6c26e107997cc5e81"   # WHYPE (wrapped HYPE)
+    - "0xe45a355d9e9cad2ad85f2d03e3ee3102a036acf0"   # KNTQ
 
 
 links:                         # every alert detail links here (formats verified 2026-11-02)

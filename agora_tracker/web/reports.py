@@ -285,6 +285,7 @@ class PublicReports(_BasePublicReports):
         super().__init__(*a, **kw)
         self._names: dict[str, tuple[float, dict[str, Any]]] = {}
         self._names_lock = threading.Lock()
+        self.hidden_tokens: tuple[str, ...] = ()       # alerts.mute_tokens
 
     _ACT_COLS = ("t.id, t.block_number, t.block_time, t.tx_hash, t.wallet, t.token, t.kind, "
                  "t.confidence, t.hype_method, t.qty, t.hype_wei")
@@ -367,7 +368,7 @@ class PublicReports(_BasePublicReports):
 
     def activity_page(self, p: ActivityParams) -> dict[str, Any]:
         """One keyset page. Fetches size+1 rows to learn whether more exist in that direction."""
-        where, prm = filter_sql(p)
+        where, prm = filter_sql(p, hidden=self.hidden_tokens)
         order, cur_sql, cprm = order_and_cursor(p)
         if cur_sql:
             where += " AND " + cur_sql
@@ -387,7 +388,7 @@ class PublicReports(_BasePublicReports):
 
     def activity_since(self, p: ActivityParams, limit: int) -> dict[str, Any]:
         """Rows inserted after `since_id` that match the filters, newest first."""
-        where, prm = filter_sql(p)
+        where, prm = filter_sql(p, hidden=self.hidden_tokens)
         with self.ro() as c:
             rows = self._all(c, f"""
                 SELECT {self._ACT_COLS} FROM trades t WHERE {where} AND t.id > :since
@@ -401,7 +402,7 @@ class PublicReports(_BasePublicReports):
         return {"items": items, "overflow": overflow}
 
     def activity_total(self, p: ActivityParams) -> dict[str, Any]:
-        where, prm = filter_sql(p)
+        where, prm = filter_sql(p, hidden=self.hidden_tokens)
         with self.ro() as c:
             n = c.execute(sa.text(f"SELECT count(*) FROM (SELECT 1 FROM trades t WHERE {where} "
                                    "LIMIT :cap) x"), {"c": self.chain_id, "cap": TOTAL_CAP + 1,

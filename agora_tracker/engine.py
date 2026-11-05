@@ -51,6 +51,7 @@ class Engine:
                  links: Links | None = None, intel: IntelConfig | None = None):
         self.store, self.tokens = store, tokens
         self.intel = intel or IntelConfig()
+        self._muted = set(alert_cfg.mute_tokens)
         self._bundles_at = float("-inf")
         self._bundles: set[str] = set()
         self.chain_cfg, self.cfg = chain_cfg, alert_cfg
@@ -229,6 +230,8 @@ class Engine:
         return out
 
     def _should_alert(self, ev: TradeEvent, min_wei: int) -> bool:
+        if ev.token in self._muted:
+            return False
         if ev.kind in ("BUY", "SELL"):
             return ev.hype_wei is not None and ev.hype_wei >= min_wei
         if ev.kind == "TRANSFER_OUT" and ev.confidence == "unknown":

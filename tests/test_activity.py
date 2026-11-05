@@ -563,3 +563,15 @@ def test_market_cap_is_valued_at_the_rows_block_time(kinds, make_live):
 def test_market_cap_missing_without_a_rate(kinds, make_live):
     rows = items(make_live(), range="all", limit=100)
     assert all(r["market_cap_usd"] is None and r["market_cap_text"] is None for r in rows)
+
+
+def test_muted_tokens_are_hidden_unless_filtered_for(kinds, make_live):
+    cfg = make_cfg()
+    cfg.alerts.mute_tokens = [TOK_B]
+    lv = make_live(cfg)
+    rows = items(lv, range="all", limit=100)
+    assert rows and all(r["token"] != TOK_B for r in rows)
+    assert get(lv, range="all").json()["total"]["count"] == len(rows)
+    only = items(lv, range="all", token=TOK_B)
+    assert only and all(r["token"] == TOK_B for r in only)           # explicit filter still works
+    assert TOK_B[:8] not in lv.get("/activity", params={"range": "all"}).text
