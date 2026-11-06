@@ -1,4 +1,3 @@
-action=deploy
-backup_run=42159757689
-requested=2026-11-06-wallet-intelligence-scoring-release
-
+action=maint
+steps=wallet-release-verify
+requested=2026-11-06-wallet-intelligence-post-release

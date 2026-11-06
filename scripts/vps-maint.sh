@@ -197,6 +197,21 @@ SQL
       echo "tracker log, last 20 min: 429s=$(docker logs --since 20m elysium-wallet-tracker 2>&1 | grep -c '429') warnings=$(docker logs --since 20m elysium-wallet-tracker 2>&1 | grep -c WARNING) errors=$(docker logs --since 20m elysium-wallet-tracker 2>&1 | grep -c ERROR)"
       docker logs --since 20m elysium-wallet-tracker 2>&1 | grep -E "WARNING|ERROR|scan mode|full scan|tracking " | tail -15 | cut -c1-220
       ;;
+    wallet-release-verify)
+      say "Wallet Intelligence release verification (read-only)"
+      docker exec -i elysium-postgres psql -U tracker -d tracker -X -v ON_ERROR_STOP=1 <<'SQL'
+SELECT version_num FROM alembic_version;
+SELECT version, quality, count(*), max(as_of) FROM wallet_scores GROUP BY 1,2 ORDER BY 1,2;
+SELECT version, config->>'eligibility' AS eligibility FROM score_versions;
+SELECT count(*) AS historical, count(*) FILTER (WHERE status='active') AS active FROM wallet_enrollment WHERE first_top_at IS NOT NULL;
+SQL
+      docker exec elysium-wallet-tracker python -m agora_tracker --config /config/config.yaml --tracking-report
+      docker logs --since 10m elysium-ui 2>&1 | grep -E 'scores:|scoring|ScoringConfigError' | tail -10
+      docker stats --no-stream --format '{{.Name}} cpu={{.CPUPerc}} memory={{.MemUsage}}'
+      for c in elysium-wallet-tracker elysium-ui elysium-web gmgn-revival-radar-radar-1; do
+        docker inspect "$c" --format '{{.Name}} started={{.State.StartedAt}} restarts={{.RestartCount}}'
+      done
+      ;;
     tracking-baseline)
       say "tracking baseline (read-only): revision, resources, scanner state, snapshot quality"
       for c in elysium-wallet-tracker elysium-ui elysium-web elysium-postgres; do
