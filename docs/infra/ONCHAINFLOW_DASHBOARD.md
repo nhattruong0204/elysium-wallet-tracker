@@ -257,6 +257,28 @@ appear: every source is a `public_api` view (migration 0009 adds `public_api.wal
   Text cells starting with `= + - @ TAB CR` get a leading apostrophe (formula injection); numbers
   stay numbers. `Cache-Control: private, no-store`.
 
+#### Wallet scores (`scoring:` config, migration 0010)
+
+An explainable 0-100 number per wallet, shown in the table (`score`, `score_quality`, `min_score`,
+`sort=score`) and broken down on the wallet page / `GET /api/v1/leaderboard/{wallet}/score`.
+Five components in [0, 1], each a documented function of stored facts: `win_rate_lb` (Wilson
+lower bound of measured wins), `return_on_cost` (measured PnL / cost basis, clamped), `recency`
+(half-life decay since the last trade), `list_persistence` (share of accepted lists containing
+the wallet), `rank_strength` (mean position when listed). Weighted mean over the components
+that **have data**; the share of weight that had data is reported (`weight_available`), a
+component without evidence is `available: false` (never 0) and below `min_weight_available` there
+is no score. Quality: `sufficient` (both measured components, >= 80% of the weight), `limited`
+(no measured trade evidence; capped at `limited_cap`), `insufficient` (no score).
+
+* **Point in time.** Every input is strictly older than the row's `as_of`; wallets are scored only
+  from the moment they first appeared on the list. A test adds trades, losses, a list and a wallet
+  after `as_of` and asserts the earlier score is bit-identical. `--score-backfill DAYS` replays
+  00:00 UTC points through the same code.
+* **Immutable versions.** `score_versions` stores the full configuration and its hash; running a
+  version with different weights/parameters is refused. Hourly rows are thinned to daily after 48 h.
+* **Not a confidence.** There is no probability or confidence percentage anywhere; `weight_available`
+  is the share of the model's weight that had data, nothing more.
+
 ### Activity monitor: `/activity`, `GET /api/v1/activity`
 
 Nav: Overview | Activity | Projects | Smart Money | Early Plays | Scanner Health. Overview keeps

@@ -68,7 +68,7 @@ class Dashboard:
         # Activity is polled by every open tab, so it has its own short-lived, single-flight
         # cache: N tabs asking the same question cost one query per few seconds.
         self.act_cache = TTLCache(self.w.activity_cache_ttl_s, 512, 60.0)
-        self.intel = WalletIntel(reports)
+        self.intel = WalletIntel(reports, cfg.scoring.version)
         self.links: Any = None        # set by create_app (needs the Links helper)
         self._bundles: set[str] = set()
         self._bundles_at = float("-inf")
@@ -263,6 +263,7 @@ class Dashboard:
         return {"params": p, "page": paginate(rows, p.page, p.size), "kpis": v["kpis"],
                 "snapshot": v["snapshot"], "truncated": v["truncated"], "window": p.window,
                 "since": v["since"], "filtered": len(rows), "tracked": len(v["wallets"]),
+                "score_version": self.cfg.scoring.version,
                 "sorts": {k: lbl for k, (lbl, _) in INTEL_SORTS.items()},
                 "meta": {"generated_at": now, "age_s": round(hit.age_s), "stale": hit.stale,
                          "timezone": "UTC"}}

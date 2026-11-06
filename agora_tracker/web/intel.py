@@ -39,7 +39,7 @@ SORTS = {                       # key -> (label, default descending)
     "buy": ("Bought (HYPE)", True), "realized": ("Measured PnL", True),
     "last_trade": ("Last trade", True), "appearances": ("Snapshot appearances", True),
     "best_rank": ("Best rank", False), "last_top": ("Last on list", True),
-    "first_top": ("First on list", False),
+    "first_top": ("First on list", False), "score": ("Score", True),
 }
 PAGE_SIZES = (25, 50, 100)
 MAX_ROWS = 20_000
@@ -57,6 +57,7 @@ class IntelParams:
     min_rank: int | None = None             # best (closest to 1) acceptable rank, current rank
     max_rank: int | None = None
     min_pnl: Decimal | None = None          # Agora-reported PnL, HYPE
+    min_score: Decimal | None = None        # 0-100; a wallet with no score never matches
     q: str = ""                             # address fragment
     sort: str = "rank"
     desc: bool = False
@@ -112,6 +113,13 @@ def parse_intel(q: Mapping[str, str], *, default_size: int = 50) -> IntelParams:
             min_pnl = Decimal(raw_pnl)
         except InvalidOperation:   # pragma: no cover - the regex already guarantees validity
             raise ParamError("min_pnl must be a plain decimal number (HYPE)") from None
+    min_score = None
+    raw_score = (q.get("min_score") or "").strip()
+    if raw_score:
+        if not (raw_score.isascii() and re.fullmatch(r"[0-9]{1,3}(?:\.[0-9]{1,2})?", raw_score)
+                and Decimal(raw_score) <= 100):
+            raise ParamError("min_score must be a number from 0 to 100")
+        min_score = Decimal(raw_score)
     text = (q.get("q") or "").strip().lower()[:44]
     if text and not re.fullmatch(r"(0x)?[0-9a-f]{1,40}", text):
         raise ParamError("q must be an address or the start of one (hex)")
@@ -120,7 +128,7 @@ def parse_intel(q: Mapping[str, str], *, default_size: int = 50) -> IntelParams:
     return IntelParams(window=window, membership=membership, quality=quality,
                        active=active_raw in ("1", "true"),
                        min_trades=_int(q.get("min_trades"), "min_trades", 0, 1_000_000) or 0,
-                       min_rank=min_rank, max_rank=max_rank, min_pnl=min_pnl, q=text,
+                       min_rank=min_rank, max_rank=max_rank, min_pnl=min_pnl, min_score=min_score, q=text,
                        sort=sort, desc=desc, page=page, size=size)
 
 
@@ -189,6 +197,10 @@ real AS (
     coalesce(sum(r.pnl_wei) FILTER (WHERE r.status = 'measured'), 0) AS pnl_wei
   FROM realized_pnl r JOIN trades t ON t.id = r.trade_id
   WHERE r.chain_id = :c AND t.block_time >= :since GROUP BY r.wallet),
+sc AS (
+  SELECT DISTINCT ON (address) address, score, quality AS score_quality,
+         weight_available AS score_weight, as_of AS score_as_of, reason AS score_reason
+  FROM wallet_scores WHERE chain_id = :c AND version = :ver ORDER BY address, as_of DESC),
 cov AS (
   SELECT address, count(*) AS intervals, min(from_block) AS first_block,
          bool_or(basis = 'live') AS has_live,
@@ -212,6 +224,7 @@ SELECT e.address AS wallet, e.status AS enrollment, e.in_top, e.first_top_at, e.
   coalesce(r.pnl_wei, 0) AS realized_wei,
   coalesce(cv.intervals, 0) AS intervals, cv.first_block, coalesce(cv.has_live, false) AS has_live,
   coalesce(cv.gaps, 0) AS gaps,
+  sc.score, sc.score_quality, sc.score_weight, sc.score_as_of, sc.score_reason,
   (SELECT b.block_time FROM indexed_blocks b WHERE b.chain_id = :c
      AND b.block_number >= cv.first_block ORDER BY b.block_number LIMIT 1) AS first_scanned_at
 FROM wallet_enrollment e
@@ -221,6 +234,7 @@ LEFT JOIN act a ON a.wallet = e.address
 LEFT JOIN act_all aa ON aa.wallet = e.address
 LEFT JOIN real r ON r.wallet = e.address
 LEFT JOIN cov cv ON cv.address = e.address
+LEFT JOIN sc ON sc.address = e.address
 WHERE e.chain_id = :c
 ORDER BY e.address
 LIMIT :cap"""
@@ -261,6 +275,9 @@ def shape(r: Mapping[str, Any]) -> dict[str, Any]:
                            "live" if r["has_live"] else "derived"),
         "scan_gaps": int(r["gaps"]), "tracked_since": r["first_scanned_at"],
         "enrollment": r["enrollment"],
+        "score": _dec(r["score"]), "score_quality": r["score_quality"],
+        "score_weight_available": _dec(r["score_weight"]), "score_as_of": r["score_as_of"],
+        "score_reason": r["score_reason"],
     }
 
 
@@ -281,6 +298,9 @@ def matches(w: Mapping[str, Any], p: IntelParams) -> bool:
     # NULL PnL is unknown, never zero: it cannot satisfy a PnL floor
     if p.min_pnl is not None and (w["agora_pnl"] is None or w["agora_pnl"] < p.min_pnl):
         return False
+    # no score (not computed yet, or not enough evidence) is unknown, never 0
+    if p.min_score is not None and (w["score"] is None or w["score"] < p.min_score):
+        return False
     if p.q:
         frag = p.q if p.q.startswith("0x") else "0x" + p.q
         if not w["wallet"].startswith(frag) and p.q not in w["wallet"]:
@@ -294,7 +314,7 @@ _SORT_VALUE = {
     "buy": lambda w: w["buy_hype"], "realized": lambda w: w["measured_pnl"],
     "last_trade": lambda w: w["last_trade_at"], "appearances": lambda w: w["appearances"],
     "best_rank": lambda w: w["best_rank"], "last_top": lambda w: w["last_top_at"],
-    "first_top": lambda w: w["first_top_at"],
+    "first_top": lambda w: w["first_top_at"], "score": lambda w: w["score"],
 }
 
 
@@ -334,7 +354,8 @@ CSV_COLUMNS = (
     "last_top_at", "agora_pnl_hype", "agora_worth_hype", "agora_volume_hype", "window",
     "trades_in_window", "buys", "sells", "tokens", "bought_hype", "sold_hype",
     "estimated_legs", "measured_closes", "measured_win_rate", "measured_pnl_hype",
-    "last_trade_at", "data_quality", "tracking_basis", "tracked_since", "scan_gaps")
+    "last_trade_at", "data_quality", "tracking_basis", "tracked_since", "scan_gaps",
+    "score", "score_quality", "score_weight_available", "score_version", "score_as_of")
 _FORMULA = ("=", "+", "-", "@", "\t", "\r")
 
 
@@ -355,7 +376,7 @@ def csv_cell(v: Any) -> Any:
     return "'" + s if s.startswith(_FORMULA) else s
 
 
-def to_csv(rows: list[dict[str, Any]], window: str) -> str:
+def to_csv(rows: list[dict[str, Any]], window: str, score_version: str = "") -> str:
     out = io.StringIO()
     wr = csv.writer(out, lineterminator="\n", quoting=csv.QUOTE_MINIMAL)
     wr.writerow(CSV_COLUMNS)
@@ -366,7 +387,9 @@ def to_csv(rows: list[dict[str, Any]], window: str) -> str:
             w["agora_volume"], window, w["legs"], w["buys"], w["sells"], w["tokens"],
             w["buy_hype"], w["sell_hype"], w["estimated_legs"], w["measured_closes"],
             w["win_rate"], w["measured_pnl"], w["last_trade_at"], w["quality"],
-            w["tracking_basis"], w["tracked_since"], w["scan_gaps"])])
+            w["tracking_basis"], w["tracked_since"], w["scan_gaps"], w["score"],
+            w["score_quality"], w["score_weight_available"],
+            score_version if w["score"] is not None else None, w["score_as_of"])])
     return out.getvalue()
 
 
@@ -374,14 +397,15 @@ def to_csv(rows: list[dict[str, Any]], window: str) -> str:
 class WalletIntel:
     """Runs the queries. `rep` is a PublicReports (read-only connection as dashboard_ro)."""
 
-    def __init__(self, rep: Any) -> None:
+    def __init__(self, rep: Any, score_version: str = "v1") -> None:
         self.rep = rep
+        self.score_version = score_version
 
     def table(self, window: str, now: datetime) -> dict[str, Any]:
         delta = WINDOWS[window]
         since = (now - delta) if delta else datetime(2000, 1, 1, tzinfo=UTC)
         with self.rep.ro() as c:
-            rows = self.rep._all(c, BASE_SQL, since=since, cap=MAX_ROWS + 1)
+            rows = self.rep._all(c, BASE_SQL, since=since, cap=MAX_ROWS + 1, ver=self.score_version)
             snap = self.rep._one(c, """
                 SELECT id, captured_at, row_count FROM leaderboard_snapshots
                 WHERE chain_id = :c AND status IN ('ok', 'imported') AND complete
@@ -445,6 +469,18 @@ class WalletIntel:
                 FROM trades t WHERE t.chain_id = :c AND t.wallet = :w
                 GROUP BY t.token ORDER BY count(*) DESC, t.token LIMIT 25""", w=wallet)
             names = self.rep.token_names(c, [t["token"] for t in tokens])
+            score_now = self.rep._one(c, """
+                SELECT version, as_of, score, weight_available, quality, reason, components
+                FROM wallet_scores WHERE chain_id = :c AND address = :w AND version = :ver
+                ORDER BY as_of DESC LIMIT 1""", w=wallet, ver=self.score_version)
+            score_hist = self.rep._all(c, """
+                SELECT as_of, score, weight_available, quality FROM wallet_scores
+                WHERE chain_id = :c AND address = :w AND version = :ver
+                  AND as_of = date_trunc('day', as_of AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
+                ORDER BY as_of DESC LIMIT 400""", w=wallet, ver=self.score_version)
+            versions = self.rep._all(c, """
+                SELECT version, config, config_hash, created_at FROM score_versions
+                ORDER BY created_at""")
             related = self.rep._all(c, """
                 SELECT o.wallet AS src, i.wallet AS dst, o.token, count(*) AS n,
                        min(o.block_time) AS first_at, max(o.block_time) AS last_at
@@ -472,6 +508,8 @@ class WalletIntel:
                 "rank_history": downsample(hist, step), "rank_history_step": step,
                 "rank_history_points": len(hist), "membership_events": events,
                 "coverage": cover, "tokens": tokens,
+                "score": score_now, "score_history": list(reversed(score_hist)),
+                "score_version": self.score_version, "score_versions": versions,
                 "relationships": [{**r, "evidence": "same-transaction token transfer between two "
                                    "tracked wallets"} for r in related],
                 "relationships_note": "Evidence only: one transaction moved a token from one "

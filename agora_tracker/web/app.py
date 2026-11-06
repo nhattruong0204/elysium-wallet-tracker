@@ -318,7 +318,7 @@ def create_app(cfg: Config, dash: Dashboard, engine: Engine | None = None) -> St
     async def intel_csv(request: Request) -> Response:
         p = intel_params(request)
         rows = await run(request, lambda: dash.intel_export(p))
-        body = to_csv(rows[:MAX_ROWS], p.window)
+        body = to_csv(rows[:MAX_ROWS], p.window, cfg.scoring.version)
         return Response(body, media_type="text/csv; charset=utf-8", headers={
             "Content-Disposition": 'attachment; filename="wallet-intelligence.csv"',
             "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"})
@@ -496,11 +496,14 @@ def create_app(cfg: Config, dash: Dashboard, engine: Engine | None = None) -> St
         Route("/api/v1/leaderboard.csv", intel_csv),
         Route("/api/v1/leaderboard/{addr}", api(intel_part(
             "summary", "performance", "rank_history", "rank_history_step", "rank_history_points",
-            "membership_events", "coverage", "tokens", "relationships", "relationships_note"))),
+            "membership_events", "coverage", "tokens", "score", "score_history", "score_version",
+            "relationships", "relationships_note"))),
         Route("/api/v1/leaderboard/{addr}/performance", api(intel_part("summary", "performance"))),
         Route("/api/v1/leaderboard/{addr}/rank-history", api(intel_part(
             "rank_history", "rank_history_step", "rank_history_points", "membership_events"))),
         Route("/api/v1/leaderboard/{addr}/rank-history.csv", intel_rank_csv),
+        Route("/api/v1/leaderboard/{addr}/score", api(intel_part(
+            "score", "score_history", "score_version", "score_versions"))),
         Route("/api/v1/leaderboard/{addr}/relationships", api(intel_part(
             "relationships", "relationships_note"))),
         Route("/api/v1/tokens", api(api_tokens)),

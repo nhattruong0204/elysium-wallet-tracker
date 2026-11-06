@@ -523,3 +523,33 @@ report_jobs = sa.Table(
     sa.CheckConstraint("fmt IN ('csv','xlsx')", name="fmt"),
     sa.Index("ix_report_jobs_user_created", "user_id", "created_at"),
 )
+
+# Explainable wallet scores (migration 0010). A version row is immutable (configuration + hash);
+# every score row is point-in-time: all of its inputs are strictly older than `as_of`.
+score_versions = sa.Table(
+    "score_versions", metadata,
+    sa.Column("version", sa.Text, primary_key=True),
+    sa.Column("config", JSONB, nullable=False),
+    sa.Column("config_hash", sa.Text, nullable=False),
+    sa.Column("created_at", TS, nullable=False, server_default=_now()),
+)
+
+wallet_scores = sa.Table(
+    "wallet_scores", metadata,
+    sa.Column("id", sa.BigInteger, sa.Identity(), primary_key=True),
+    sa.Column("chain_id", sa.BigInteger, nullable=False),
+    sa.Column("address", ADDR, nullable=False),
+    sa.Column("version", sa.Text, sa.ForeignKey("score_versions.version"), nullable=False),
+    sa.Column("as_of", TS, nullable=False),
+    sa.Column("score", sa.Numeric(6, 2)),
+    sa.Column("weight_available", sa.Numeric(5, 4), nullable=False),
+    sa.Column("quality", sa.Text, nullable=False),
+    sa.Column("reason", sa.Text),
+    sa.Column("components", JSONB, nullable=False),
+    sa.Column("computed_at", TS, nullable=False, server_default=_now()),
+    sa.CheckConstraint("quality IN ('sufficient','limited','insufficient')", name="quality"),
+    sa.CheckConstraint("score IS NULL OR (score >= 0 AND score <= 100)", name="range"),
+    _addr_check("address"),
+    sa.UniqueConstraint("chain_id", "address", "version", "as_of", name="uq_wallet_scores_point"),
+    sa.Index("ix_wallet_scores_version_asof", "version", "as_of"),
+)

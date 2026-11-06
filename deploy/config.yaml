@@ -139,3 +139,16 @@ collector:
   tracked_days: 7              # + tokens tracked wallets traded recently
   max_details_per_round: 20
   retention_days: 30           # ~22k rows/day; pruned daily
+
+# Explainable wallet scores (agora_tracker/scoring.py, shown in Wallet intelligence). A score
+# version is immutable: change any weight or parameter below and you must change `version`,
+# otherwise the job refuses to run. Not a prediction; see /about#scores.
+scoring:
+  enabled: true
+  version: v1
+  interval_s: 3600
+  retention_hourly_h: 48       # older hourly rows are thinned to one per day
+  lookback_days: 30
+  min_closes: 5                # measured closing trades needed for the PnL components
+  min_snapshots: 12            # accepted lists needed for list persistence
+  limited_cap: 50              # a score without measured trade evidence cannot exceed this
