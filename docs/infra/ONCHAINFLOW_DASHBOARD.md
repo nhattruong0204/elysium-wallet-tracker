@@ -240,6 +240,18 @@ the newest-15 preview with a "View All Activity" link (range carried over, 6h ma
   prefixes need >= 6 digits; LIKE wildcards are escaped and everything is bound); `wallet`,
   `token`; `sort` = newest | oldest | largest_buy | largest_sell. Invalid input returns 400, an
   exhausted rate limit 429 (JSON with `Retry-After` under `/api/`).
+* **HYPE amount filter:** `min_hype` / `max_hype` (both optional, inclusive). Plain decimal text,
+  up to 10 integer and 18 fractional digits, at most 1,000,000,000; no sign, exponent, separators
+  or non-ASCII digits (else 400). `min_hype <= max_hype`. Parsed with `Decimal`, converted to wei
+  exactly and compared as `hype_wei >= :min_wei AND hype_wei <= :max_wei` on `NUMERIC(78,0)`, so
+  `0.1` matches 100000000000000000 wei and not 99999999999999999. **Only rows with a known amount
+  match:** `hype_wei IS NOT NULL` and confidence `high` (verified) or `estimated`; transfers,
+  unknown and legacy amounts are excluded and NULL is never read as zero (a stored `0` is a
+  known amount). It composes with action, range, basis, search, sort, keyset cursors, the total
+  count and `since_id` polling (the watermark still advances past rows the filter hides). The
+  response echoes the canonical bounds in `filters.min_hype` / `max_hype` / `amount_filter`; the
+  cache keys include them. UI: Min / Max inputs, preset chips 0.1, 0.5, 1, 5, 10, 25, 50, 100,
+  an active-filter chip, "clear amount" and Reset.
 * **Pagination:** keyset, never OFFSET. Cursor = opaque base64 JSON bound to the sort:
   `(block_time, id)` for newest/oldest, `(hype_wei, id)` for largest_*. `dir=next|prev`, size 50
   (max 100); the query fetches size+1 for `has_next` / `has_prev`. Total is counted with a cap

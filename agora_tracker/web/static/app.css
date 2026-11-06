@@ -223,3 +223,6 @@ h2.ph .right { float: right; padding: 3px 10px; font-size: 12.5px; font-weight: 
 .lp-chip { border: 1px solid var(--warn); color: var(--warn); border-radius: 999px; padding: 1px 9px; }
 .cons-links { margin-left: auto; display: flex; gap: 10px; }
 @media (max-width: 640px) { .cons-tok { text-align: left; } .cons-links { margin-left: 0; } }
+.btn.sm { padding: 3px 9px; font-size: 12px; }
+.btn[aria-current="true"] { border-color: var(--accent); color: var(--accent); }
+.amt-presets { margin-top: -4px; }
