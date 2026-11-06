@@ -287,11 +287,11 @@ SQL
       echo "host: $(nproc) vCPU; $(free -m | awk '/Mem:/{printf "%d MB used of %d MB, %d MB available", $3, $2, $7}'); load $(cut -d' ' -f1-3 /proc/loadavg)"
       docker exec -i elysium-postgres psql -U tracker -d tracker -X -A -F ' | ' <<'SQL' 2>&1 | sed 's/^/  /'
 \echo -- scanner cursor vs newest indexed block, heartbeat age (s)
-SELECT (SELECT block_number FROM indexer_checkpoints WHERE name = 'main' OR true ORDER BY updated_at DESC LIMIT 1) cursor_block,
+SELECT (SELECT block_number FROM indexer_checkpoints WHERE name = 'indexer') cursor_block,
        (SELECT updated_at FROM indexer_checkpoints ORDER BY updated_at DESC LIMIT 1) cursor_updated,
-       (SELECT extract(epoch FROM now() - to_timestamp(value::bigint))::int FROM service_state WHERE key = 'heartbeat') heartbeat_age_s;
+       (SELECT extract(epoch FROM now() - to_timestamp((value #>> '{}')::bigint))::int FROM service_state WHERE key = 'heartbeat') heartbeat_age_s;
 \echo -- rpc_heads (hosts only)
-SELECT left(value, 400) FROM service_state WHERE key = 'rpc_heads';
+SELECT left(value::text, 400) FROM service_state WHERE key = 'rpc_heads';
 \echo -- leaderboard snapshots by status / completeness
 SELECT status, complete, count(*), min(row_count), max(row_count), min(accepted_count), max(accepted_count) FROM leaderboard_snapshots GROUP BY 1, 2 ORDER BY 1, 2;
 \echo -- snapshot cadence (median seconds between accepted snapshots)
@@ -307,6 +307,15 @@ SQL
       echo "-- backups"
       ls -1t /root/onchainflow-backups/daily 2>/dev/null | head -3 | sed 's/^/  daily: /'
       ls -1t /root/onchainflow-backups 2>/dev/null | head -6 | sed 's/^/  dir: /'
+      ;;
+    scan-density)
+      say "chain-wide Transfer volume and fine OR-list limits (read-only; a handful of requests per endpoint)"
+      docker exec -i elysium-postgres psql -U tracker -d tracker -X -A -t -c "SELECT address FROM wallets LIMIT 5" > /tmp/bench-wallets.txt 2>/dev/null
+      for spec in "https://rpc-live.boxa.club 0.3" "https://rpc-live.elyspump.com 0.5" "https://rpc.thekleos.pro/rpc 8" "https://rpc.thekleos.xyz/rpc 8"; do
+        set -- $spec
+        python3 "$REPO/scripts/scan_bench.py" --rpc "$1" --wallets /tmp/bench-wallets.txt --only density --pause "$2" --budget 20 2>&1 | sed 's/^/  /'
+      done
+      rm -f /tmp/bench-wallets.txt
       ;;
     scan-bench)
       say "bounded RPC benchmark of the getLogs strategy (read-only, stdlib client, <=120 requests per endpoint)"
