@@ -154,6 +154,46 @@ except Exception: print("reject")')
         echo "  site ${u%$tok}<token> -> $r"
       done
       ;;
+    tracking-baseline)
+      say "tracking baseline (read-only): revision, resources, scanner state, snapshot quality"
+      for c in elysium-wallet-tracker elysium-ui elysium-web elysium-postgres; do
+        docker inspect "$c" --format '  {{.Name}} image-created={{.Created}} started={{.State.StartedAt}} restarts={{.RestartCount}}' 2>&1 | cut -c1-200
+      done
+      echo "alembic head in the database: $(docker exec elysium-postgres psql -U tracker -d tracker -X -A -t -c 'SELECT version_num FROM alembic_version')"
+      echo "code in the tracker image has: $(docker exec elysium-wallet-tracker sh -c 'ls /app/agora_tracker/migrations/versions 2>/dev/null | grep -c "^0"') migrations"
+      docker stats --no-stream --format '  {{.Name}}: cpu {{.CPUPerc}} mem {{.MemUsage}}' 2>&1 | sort
+      echo "host: $(nproc) vCPU; $(free -m | awk '/Mem:/{printf "%d MB used of %d MB, %d MB available", $3, $2, $7}'); load $(cut -d' ' -f1-3 /proc/loadavg)"
+      docker exec -i elysium-postgres psql -U tracker -d tracker -X -A -F ' | ' <<'SQL' 2>&1 | sed 's/^/  /'
+\echo -- scanner cursor vs newest indexed block, heartbeat age (s)
+SELECT (SELECT block_number FROM indexer_checkpoints WHERE name = 'main' OR true ORDER BY updated_at DESC LIMIT 1) cursor_block,
+       (SELECT updated_at FROM indexer_checkpoints ORDER BY updated_at DESC LIMIT 1) cursor_updated,
+       (SELECT extract(epoch FROM now() - to_timestamp(value::bigint))::int FROM service_state WHERE key = 'heartbeat') heartbeat_age_s;
+\echo -- rpc_heads (hosts only)
+SELECT left(value, 400) FROM service_state WHERE key = 'rpc_heads';
+\echo -- leaderboard snapshots by status / completeness
+SELECT status, complete, count(*), min(row_count), max(row_count), min(accepted_count), max(accepted_count) FROM leaderboard_snapshots GROUP BY 1, 2 ORDER BY 1, 2;
+\echo -- snapshot cadence (median seconds between accepted snapshots)
+SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY gap)::int median_gap_s, max(gap)::int max_gap_s FROM (SELECT extract(epoch FROM captured_at - lag(captured_at) OVER (ORDER BY captured_at)) gap FROM leaderboard_snapshots WHERE status IN ('ok','imported')) g;
+\echo -- database size and the biggest tables
+SELECT pg_size_pretty(pg_database_size('tracker')) db_size;
+SELECT relname, pg_size_pretty(pg_total_relation_size(c.oid)) size FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relkind = 'r' ORDER BY pg_total_relation_size(c.oid) DESC LIMIT 8;
+\echo -- indexed block times: recent rate (blocks seen per minute are sparse; use the cursor delta instead)
+SELECT count(*) trades_last_24h FROM trades WHERE block_time > now() - interval '24 hours';
+SQL
+      echo "-- tracker log: tracking-set changes and RPC trouble, last 6 h (no URLs)"
+      docker logs --since 6h elysium-wallet-tracker 2>&1 | grep -E "tracking [0-9]+ wallets|rate-limited|RPC error|getLogs .* splitting|lagging" | sed -E 's#https?://[^ )]+#<url>#g' | tail -12 | sed 's/^/  /'
+      echo "-- backups"
+      ls -1t /root/onchainflow-backups/daily 2>/dev/null | head -3 | sed 's/^/  daily: /'
+      ls -1t /root/onchainflow-backups 2>/dev/null | head -6 | sed 's/^/  dir: /'
+      ;;
+    scan-bench)
+      say "bounded RPC benchmark of the getLogs strategy (read-only, stdlib client, <=120 requests per endpoint)"
+      docker exec -i elysium-postgres psql -U tracker -d tracker -X -A -t -c "SELECT DISTINCT e.address FROM leaderboard_snapshot_entries e JOIN leaderboard_snapshots s ON s.id=e.snapshot_id WHERE s.status IN ('ok','imported') ORDER BY 1" > /tmp/bench-wallets.txt 2>/dev/null
+      echo "wallet list: $(wc -l < /tmp/bench-wallets.txt) addresses (not printed)"
+      python3 "$REPO/scripts/scan_bench.py" --rpc https://rpc.thekleos.pro/rpc --rpc https://rpc.thekleos.xyz/rpc \
+        --rpc https://rpc-live.boxa.club --wallets /tmp/bench-wallets.txt --budget 120 2>&1 | sed 's/^/  /'
+      rm -f /tmp/bench-wallets.txt
+      ;;
     launch-report)
       say "launch intelligence: paper-trading results and launch-watcher state (read-only)"
       docker exec elysium-wallet-tracker python -m agora_tracker --config /config/config.yaml --launch-report 2>&1 | sed 's/^/  /'
