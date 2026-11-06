@@ -1,3 +1,3 @@
 action=maint
-steps=wallet-census
-requested=2026-11-06T02:45:51Z
+steps=tracking-baseline,scan-bench,wallet-census
+requested=2026-11-06T03:11:16Z
