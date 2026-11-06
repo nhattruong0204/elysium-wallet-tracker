@@ -12,6 +12,8 @@
   <label>From (UTC) <input type="datetime-local" name="start" value="{{ p.start.strftime('%Y-%m-%dT%H:%M') if p.range == 'custom' and p.start else '' }}"></label>
   <label>To (UTC, exclusive) <input type="datetime-local" name="end" value="{{ p.end.strftime('%Y-%m-%dT%H:%M') if p.range == 'custom' and p.end else '' }}"></label>
   <label>Basis <select name="basis">{% for b in d.bases %}<option value="{{ b }}"{% if p.basis == b %} selected{% endif %}>{{ b|capitalize }}</option>{% endfor %}</select></label>
+  <label>Min HYPE <input type="text" name="min_hype" value="{{ p.amount.min_text }}" inputmode="decimal" pattern="[0-9]{1,10}(\.[0-9]{1,18})?" maxlength="30" placeholder="any" size="8" autocomplete="off" title="Smallest known HYPE amount, e.g. 0.5"></label>
+  <label>Max HYPE <input type="text" name="max_hype" value="{{ p.amount.max_text }}" inputmode="decimal" pattern="[0-9]{1,10}(\.[0-9]{1,18})?" maxlength="30" placeholder="any" size="8" autocomplete="off" title="Largest known HYPE amount (optional)"></label>
   <label>Sort <select name="sort">{% for k, label in d.sort_labels.items() %}<option value="{{ k }}"{% if p.sort == k %} selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
   <label>Per page <select name="limit">{% for n in (25, 50, 100) %}<option value="{{ n }}"{% if p.size == n %} selected{% endif %}>{{ n }}</option>{% endfor %}</select></label>
   <input class="grow" type="search" name="q" value="{{ p.q }}" placeholder="Symbol, token or wallet address, tx hash (full or partial)" maxlength="80" aria-label="Search activity" autocomplete="off" spellcheck="false">
@@ -21,6 +23,14 @@
   <button class="btn primary" type="submit">Apply</button>
   <a class="btn" href="/activity">Reset</a>
 </form>
+<p class="chips amt-presets" aria-label="Minimum HYPE presets">Min HYPE
+  {% for v in d.amount_presets %}<a class="btn sm" href="{{ qs(min_hype=v, cursor=None, dir=None, since_id=None) }}"{% if p.amount.min_text == v %} aria-current="true"{% endif %}>{{ v }}+</a>{% endfor %}
+  {% if p.amount.active %}<a href="{{ qs(min_hype=None, max_hype=None, cursor=None, dir=None, since_id=None) }}">clear amount</a>{% endif %}
+</p>
+{% if p.amount.active %}
+<p class="chips"><span class="badge est">amount {{ p.amount.label() }}</span>
+  <span class="faint">Only trades with a known HYPE amount (verified or estimated). Transfers and rows without an amount are not shown.</span></p>
+{% endif %}
 {% if p.wallet or p.token or p.tx %}
 <p class="chips">Filtered to
   {% if p.wallet %}<span class="badge est">wallet {{ p.wallet|short }}</span>{% endif %}

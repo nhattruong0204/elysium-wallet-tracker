@@ -21,6 +21,7 @@ from .activity import (
     ActivityParams,
     encode_cursor,
 )
+from .amounts import fmt_hype
 from .cache import Hit, TTLCache
 from .consensus import ConsensusParams
 from .params import ListParams, paginate, range_dict, range_key
@@ -268,7 +269,8 @@ class Dashboard:
         page_hit = self._acached(("act_page", p.cache_key()), lambda: self.rep.activity_page(p))
         total_key = ("act_total", (p.action, p.range, p.start and int(p.start.timestamp()),
                                    p.end and int(p.end.timestamp()), p.basis, p.wallet, p.token,
-                                   p.tx, p.q, p.sort in ("largest_buy", "largest_sell")))
+                                   p.tx, p.q, p.sort in ("largest_buy", "largest_sell"),
+                                   p.amount.min_hype, p.amount.max_hype))
         total_hit = self._acached(total_key, lambda: self.rep.activity_total(p))
         raw = page_hit.value["items"]
         more = page_hit.value["more"]
@@ -327,7 +329,12 @@ def activity_filters(p: ActivityParams) -> dict[str, Any]:
     """Echo of the filters that were applied, so a client can see how its input was read."""
     return {"action": p.action, "range": p.range, "start": p.start, "end": p.end,
             "sort": p.sort, "basis": p.basis, "wallet": p.wallet, "token": p.token, "tx": p.tx,
-            "q": p.q or None, "limit": p.size}
+            "q": p.q or None, "limit": p.size,
+            "min_hype": fmt_hype(p.amount.min_hype) or None,
+            "max_hype": fmt_hype(p.amount.max_hype) or None,
+            "amount_filter": None if not p.amount.active else {
+                "label": p.amount.label(), "applies_to": ["verified", "estimated"],
+                "excludes": "rows without a known HYPE amount (transfers, unknown, legacy)"}}
 
 
 def activity_freshness(head: dict[str, Any], now: datetime, age_s: float = 0) -> dict[str, Any]:

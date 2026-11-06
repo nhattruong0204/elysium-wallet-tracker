@@ -28,6 +28,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from ..timerange import EARLIEST
+from .amounts import AMOUNT_CONFIDENCES, AmountError, AmountRange, fmt_hype, parse_range
 from .params import BUCKET_S, ParamError, parse_ts
 
 UTC = timezone.utc
@@ -83,6 +84,7 @@ class ActivityParams:
     cursor: tuple[Any, int] | None = None
     direction: str = "next"                # next = further along the order, prev = back
     since_id: int | None = None
+    amount: AmountRange = field(default_factory=AmountRange)   # min_hype / max_hype
     echo: dict[str, Any] = field(default_factory=dict, compare=False)
 
     @property
@@ -94,7 +96,7 @@ class ActivityParams:
         return (self.action, self.range, self.start and int(self.start.timestamp()),
                 self.end and int(self.end.timestamp()), self.sort, self.basis, self.wallet,
                 self.token, self.tx, self.q, self.size, self.cursor, self.direction,
-                self.since_id)
+                self.since_id, fmt_hype(self.amount.min_hype), fmt_hype(self.amount.max_hype))
 
 
 # --- cursors ------------------------------------------------------------------------------------
@@ -239,6 +241,10 @@ def parse_activity(q: Mapping[str, str], now: datetime, *, default_size: int = 5
     direction = (q.get("dir") or "next").strip().lower()
     if direction not in ("next", "prev"):
         raise ParamError("dir must be next or prev")
+    try:
+        amount = parse_range(q.get("min_hype"), q.get("max_hype"))
+    except AmountError as e:
+        raise ParamError(str(e)) from None
     cursor = decode_cursor(q["cursor"], sort) if q.get("cursor") else None
     since_id = _int(q, "since_id", -1, -1, 2 ** 62)
     if since_id >= 0 and (cursor is not None or sort != "newest"):
@@ -247,7 +253,7 @@ def parse_activity(q: Mapping[str, str], now: datetime, *, default_size: int = 5
         action=action, range=rng, start=start, end=end, sort=sort, basis=basis, wallet=wallet,
         token=token, tx=tx, search=search, q=re.sub(r"[\x00-\x1f\x7f]", "", text).strip()[:80],
         size=size, cursor=cursor, direction=direction,
-        since_id=None if since_id < 0 else since_id)
+        since_id=None if since_id < 0 else since_id, amount=amount)
 
 
 # --- SQL ----------------------------------------------------------------------------------------------
@@ -283,6 +289,19 @@ def filter_sql(p: ActivityParams, *, with_cursor: bool = True,
         prm["conf"] = list(conf)
     if p.sort in ("largest_buy", "largest_sell"):
         cond.append("t.hype_wei IS NOT NULL")
+    if p.amount.active:
+        # Only rows with a known amount match: NULL is never read as 0, and legacy amounts of
+        # unknown provenance are left out (see web/amounts.py). Exact NUMERIC comparison.
+        cond.append("t.confidence = ANY(:amt_conf)")
+        prm["amt_conf"] = list(AMOUNT_CONFIDENCES)
+        if p.amount.min_wei is not None:
+            cond.append("t.hype_wei >= :min_wei")
+            prm["min_wei"] = Decimal(p.amount.min_wei)
+        if p.amount.max_wei is not None:
+            cond.append("t.hype_wei <= :max_wei")
+            prm["max_wei"] = Decimal(p.amount.max_wei)
+        if p.amount.min_wei is None:
+            cond.append("t.hype_wei IS NOT NULL")
     if p.wallet:
         cond.append("t.wallet = :w")
         prm["w"] = p.wallet
