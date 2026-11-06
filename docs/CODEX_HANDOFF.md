@@ -153,3 +153,46 @@ Limitations: unverified venue routes intentionally unavailable; background notif
 follow browser throttling/existing polling cadence; cross-tab sound coordination is best-effort
 and storage failures may allow duplicate tones. No desktop/push notification permissions.
 Broader clustering/Consensus v2 work remains separate from this completed issue.
+
+## Additional launchpad shortcuts — ready for approval
+
+PR #81: d911dcf370edd51c29a8d3c1987a8ae98cf73057, currently OPEN/CLEAN.
+Adds owner-supplied homepage shortcuts for Ascend, Montra, Obol, Volta, Eleos and Elyxa.
+API launchpad_url_kind distinguishes platform homepages from verified token URLs.
+SSR/live links have identical attributes and descriptive homepage tooltips. Unknown
+attribution remains plain text. External inspection is blocked by cloud egress; no token
+paths were inferred. Existing Kleos/BOXA/ElysPump token links remain unchanged.
+Local Activity suite: 109 passed, with real Chromium. Ruff and mypy pass.
+CI 42191139065 lint, test and Docker all passed, verified with fresh API job results.
+Prepared ops/activity-more-launchpads branch merges the feature and current ops history.
+Read-only baseline 42191262207 passed. Tracker/UI start times remain 08:02:25 UTC,
+Revival remains 2026-10-16 03:02:20 UTC; restart counts zero.
+Automatic approval review rejected the combined merge-and-web-deploy command before
+execution, citing earlier Docker-in-progress status and unclear authorization for the exact
+follow-up production rollout. Fresh CI confirms all jobs passed. No merge or deployment
+occurred. Obtain explicit approval before retrying the merge and web-only rollout.
+Use existing action=web, backup_run=42159757689 (check freshness again before execution),
+matching-schema guard skips migrations. Compare bot start times after release.
+
+## Montra/Obol routes and PR #81 released — 2026-11-06 09:40 UTC
+
+The earlier approval blocker is resolved by the owner's explicit instruction to fix the PR,
+wait for CI success, merge and deploy. Owner-provided token route examples verify Montra
+/token/<address> and Obol /coin/<address>. These now use kind=token (addresses normalized
+lowercase). Ascend, Volta, Eleos and Elyxa use the supplied kind=platform homepage shortcuts.
+Unknown launchpad attribution remains unlinked. No token routes were inferred for the other four.
+
+PR #81 implementation head 6a71e8632cbda84e97e3aaedf9257ff39da6252f merged normally
+as 07b83f665d3cc7cb681cb79b36843bd39c6b1710 after all CI jobs passed.
+CI 42195624565: 654 tests passed in 136.91s, lint/mypy/audit and Docker passed.
+Local final Activity suite: 112 passed, including real Chromium SSR/live parity for
+Montra/Obol token links and Ascend homepage links; exact supplied address unit tests passed.
+
+Web-only deployment 42196380682 (ops 4e390ef) succeeded. Only elysium-web recreated;
+schema 0010 matched, migration skipped. Live API and Chromium verified Montra /token/
+and Obol /coin/ links, correct link tooltips, mobile layout, and no page JavaScript errors.
+Actual Obol example /coin/0xbf85dcfdd9813d16e9c671afa1e1eaa99861fca7 observed in live API.
+Preflight 42195765872 and post-release verification 42196646277 both passed. Tracker/UI
+healthy; Revival logs show recent scans with errors=0. Start times unchanged before/after:
+tracker 08:02:25.462890682 UTC, UI 08:02:25.251302434 UTC, Revival October 16 03:02:20 UTC;
+all restart counts zero. Scanner logic, polling and database data were not changed.
