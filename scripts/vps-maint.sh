@@ -197,6 +197,14 @@ SQL
       echo "tracker log, last 20 min: 429s=$(docker logs --since 20m elysium-wallet-tracker 2>&1 | grep -c '429') warnings=$(docker logs --since 20m elysium-wallet-tracker 2>&1 | grep -c WARNING) errors=$(docker logs --since 20m elysium-wallet-tracker 2>&1 | grep -c ERROR)"
       docker logs --since 20m elysium-wallet-tracker 2>&1 | grep -E "WARNING|ERROR|scan mode|full scan|tracking " | tail -15 | cut -c1-220
       ;;
+    activity-release-verify)
+      say "Activity web release: read-only bot health checks"
+      healthy_bots
+      docker exec elysium-ui python -m agora_tracker --health-ui
+      for c in elysium-wallet-tracker elysium-ui gmgn-revival-radar-radar-1; do
+        docker inspect "$c" --format '{{.Name}} started={{.State.StartedAt}} restarts={{.RestartCount}}'
+      done
+      ;;
     wallet-release-verify)
       say "Wallet Intelligence release verification (read-only)"
       docker exec -i elysium-postgres psql -U tracker -d tracker -X -v ON_ERROR_STOP=1 <<'SQL'
