@@ -154,6 +154,23 @@ except Exception: print("reject")')
         echo "  site ${u%$tok}<token> -> $r"
       done
       ;;
+    tracking-verify)
+      say "tracking verification (read-only): reconciliation report, scan_stats, resources, 429s"
+      docker exec elysium-wallet-tracker python -m agora_tracker --tracking-report 2>&1 | tail -60
+      docker exec -i elysium-postgres psql -U tracker -d tracker -X -A -F ' | ' <<'SQL' 2>&1 | sed 's/^/  /'
+\echo -- alembic
+SELECT version_num FROM alembic_version;
+\echo -- scan_stats (public aggregate)
+SELECT left(value::text, 900) FROM service_state WHERE key = 'scan_stats';
+\echo -- heartbeat age (s), cursor
+SELECT extract(epoch FROM now() - to_timestamp((value->>'v')::bigint))::int FROM service_state WHERE key = 'heartbeat';
+SELECT block_number, updated_at FROM indexer_checkpoints ORDER BY updated_at DESC LIMIT 1;
+SQL
+      docker stats --no-stream --format '  {{.Name}}: cpu {{.CPUPerc}} mem {{.MemUsage}}' 2>&1 | sort
+      echo "host: $(nproc) vCPU; $(free -m | awk '/Mem:/{printf "%d MB used of %d MB, %d MB available", $3, $2, $7}'); load $(cut -d' ' -f1-3 /proc/loadavg)"
+      echo "tracker log, last 20 min: 429s=$(docker logs --since 20m elysium-wallet-tracker 2>&1 | grep -c '429') warnings=$(docker logs --since 20m elysium-wallet-tracker 2>&1 | grep -c WARNING) errors=$(docker logs --since 20m elysium-wallet-tracker 2>&1 | grep -c ERROR)"
+      docker logs --since 20m elysium-wallet-tracker 2>&1 | grep -E "WARNING|ERROR|scan mode|full scan|tracking " | tail -15 | cut -c1-220
+      ;;
     tracking-baseline)
       say "tracking baseline (read-only): revision, resources, scanner state, snapshot quality"
       for c in elysium-wallet-tracker elysium-ui elysium-web elysium-postgres; do
@@ -167,7 +184,7 @@ except Exception: print("reject")')
 \echo -- scanner cursor vs newest indexed block, heartbeat age (s)
 SELECT (SELECT block_number FROM indexer_checkpoints WHERE name = 'indexer') cursor_block,
        (SELECT updated_at FROM indexer_checkpoints ORDER BY updated_at DESC LIMIT 1) cursor_updated,
-       (SELECT extract(epoch FROM now() - to_timestamp((value #>> '{}')::bigint))::int FROM service_state WHERE key = 'heartbeat') heartbeat_age_s;
+       (SELECT extract(epoch FROM now() - to_timestamp((value->>'v')::bigint))::int FROM service_state WHERE key = 'heartbeat') heartbeat_age_s;
 \echo -- rpc_heads (hosts only)
 SELECT left(value::text, 400) FROM service_state WHERE key = 'rpc_heads';
 \echo -- leaderboard snapshots by status / completeness
