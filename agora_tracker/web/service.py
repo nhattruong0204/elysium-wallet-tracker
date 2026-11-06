@@ -338,6 +338,10 @@ class Dashboard:
 
     def _finish(self, item: dict[str, Any]) -> dict[str, Any]:
         out = {k: v for k, v in item.items() if not k.startswith("_")}
+        from ..cards import Links as CardLinks
+        from ..cards import launchpad_token_url
+        out["launchpad_url"] = launchpad_token_url(
+            self.rep.chain_id, item.get("launchpad"), item["token"], CardLinks(self.cfg.links))
         if self.links is not None:
             out["tx_url"] = self.links.tx(item["tx_hash"])
         return out

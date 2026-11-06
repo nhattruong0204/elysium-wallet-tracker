@@ -57,6 +57,9 @@
   </div>
   <div class="act-tools">
     {% if d.live %}
+    <button type="button" id="act-unread" hidden aria-label="Show newest activity">0 new</button>
+    <button type="button" id="act-sound" aria-pressed="false">Sound: OFF</button>
+    <span id="act-audio-status" class="faint" role="status"></span>
     <button type="button" id="act-auto" aria-pressed="true" title="Check for new activity every {{ d.poll_s }} s while this tab is visible">Auto-refresh: <b>ON</b></button>
     <span class="faint" id="act-refreshed">Browser refreshed <b>just now</b></span>
     {% else %}

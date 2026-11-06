@@ -4,6 +4,7 @@ failure handling, CSP-clean rendering and mobile layout. Skipped when Chromium i
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
 
@@ -19,7 +20,7 @@ pw = pytest.importorskip("playwright.sync_api")
 def browser():
     with pw.sync_playwright() as p:
         try:
-            b = p.chromium.launch()
+            b = p.chromium.launch(executable_path=os.environ.get("TEST_CHROMIUM_EXECUTABLE"))
         except Exception as e:  # noqa: BLE001 - no browser installed: skip, do not fail
             pytest.skip(f"chromium unavailable: {e}")
         yield b
@@ -428,3 +429,132 @@ def test_amount_filter_custom_range_submit(kinds, make_live, ctx):
     page.fill("input[name=min_hype]", "1e3")
     assert page.eval_on_selector("input[name=min_hype]", "e => e.validity.patternMismatch") is True
     assert page.errors == []
+
+
+def test_unread_unique_batches_acknowledge_and_sound(kinds, make_live, ctx):
+    page = open_activity(ctx, live(make_live))
+    title = page.title()
+    page.evaluate("""() => {
+      Object.defineProperty(document, 'hasFocus', {configurable:true, value:()=>false});
+      window.tones=0;
+      window.AudioContext=class {
+        constructor(){this.state='suspended';this.currentTime=0;this.destination={};}
+        resume(){this.state='running';return Promise.resolve();}
+        createOscillator(){return {frequency:{},connect(){},start(){window.tones++;},stop(){}};}
+        createGain(){return {gain:{setValueAtTime(){},exponentialRampToValueAtTime(){}},connect(){}};}
+      };
+    }""")
+    page.click('#act-sound')
+    assert page.inner_text('#act-sound') == 'Sound: ON'
+    for i in range(3):
+        add(kinds, 'BUY', f'0xa79{i}', seconds_ago=1, block=9950+i)
+    page.evaluate('ActivityMonitor.poll()')
+    until(page, "document.getElementById('act-unread').textContent === '3 new'")
+    assert page.title() == '(3) ' + title
+    assert page.evaluate('window.tones') == 1
+    page.evaluate('ActivityMonitor.poll()')
+    advance(page, 1000)
+    assert page.title() == '(3) ' + title
+    assert page.evaluate('window.tones') == 1
+    page.click('#act-unread')
+    assert page.title() == title
+    assert page.locator('#act-unread').is_hidden()
+    assert page.errors == []
+
+
+def test_sound_rejection_keeps_visual_notifications(kinds, make_live, ctx):
+    page = open_activity(ctx, live(make_live))
+    assert page.inner_text('#act-sound') == 'Sound: OFF'
+    page.evaluate("""() => {window.AudioContext=class {
+      resume(){return Promise.reject(new Error('blocked'));}
+    }; }""")
+    page.click('#act-sound')
+    until(page, "document.getElementById('act-audio-status').textContent.includes('blocked')")
+    assert page.get_attribute('#act-sound', 'aria-pressed') == 'false'
+
+
+def test_launchpad_ssr_live_parity(kinds, make_live, ctx):
+    page = open_activity(ctx, live(make_live))
+    ssr = page.locator('#act-body td:nth-child(4) a.lp').first
+    assert ssr.get_attribute('href').startswith('https://')
+    first = page.locator('#act-body tr[data-id]').first.get_attribute('data-id')
+    item = page.request.get(page.url.replace('/activity?', '/api/v1/activity?')).json()['items'][0]
+    page.evaluate('(it) => {document.querySelector("#act-body").prepend(ActivityMonitor.renderRow(it));}', item)
+    links = page.locator(f'#act-body tr[data-id="{first}"] td:nth-child(4) a.lp')
+    assert links.count() == 2
+    assert links.nth(0).get_attribute('href') == links.nth(1).get_attribute('href')
+    assert links.nth(0).inner_text() == links.nth(1).inner_text()
+    assert links.nth(0).get_attribute('rel') == 'noopener noreferrer'
+
+
+def test_duplicate_poll_payload_and_stale_response_do_not_notify(kinds, make_live, ctx):
+    page = open_activity(ctx, live(make_live))
+    original = page.title()
+    item = page.request.get(page.url.replace('/activity?', '/api/v1/activity?')).json()['items'][0]
+    item['id'] = 987654
+    payload = {'items': [item, item, item], 'head_id': 987654, 'meta': {'stale': True}}
+    page.route(re.compile(r'.*/api/v1/activity\?.*since_id.*'),
+               lambda route: route.fulfill(json=payload))
+    page.evaluate("Object.defineProperty(document, 'hasFocus', {configurable:true,value:()=>false})")
+    page.evaluate('ActivityMonitor.poll()')
+    page.wait_for_timeout(200)
+    assert page.title() == original
+    payload['meta']['stale'] = False
+    page.evaluate('ActivityMonitor.poll()')
+    until(page, "document.getElementById('act-unread').textContent === '1 new'")
+    page.evaluate('ActivityMonitor.poll()')
+    page.wait_for_timeout(200)
+    assert page.title() == '(1) ' + original
+    assert page.inner_text('#act-sound') == 'Sound: OFF'
+    page.click('#act-unread')
+    assert page.title() == original
+
+
+def test_overflow_preserves_unread_until_reload(kinds, make_live, ctx):
+    page = open_activity(ctx, live(make_live))
+    title = page.title()
+    item = page.request.get(page.url.replace('/activity?', '/api/v1/activity?')).json()['items'][0]
+    item['id'] = 987654
+    page.route(re.compile(r'.*/api/v1/activity\?.*since_id.*'),
+               lambda route: route.fulfill(json={'items': [item], 'overflow': True, 'head_id': 987654}))
+    page.evaluate("Object.defineProperty(document, 'hasFocus', {configurable:true,value:()=>false})")
+    page.evaluate('ActivityMonitor.poll()')
+    until(page, "document.getElementById('act-unread').textContent === '1 new'")
+    page.click('#act-unread')
+    assert page.title() == '(1) ' + title
+    assert page.locator('#act-new a').inner_text() == 'Reload to see the newest activity'
+
+
+def test_multiple_tabs_coalesce_sound(kinds, make_live, ctx):
+    lv = live(make_live)
+    pages = [open_activity(ctx, lv), open_activity(ctx, lv)]
+    for page in pages:
+        page.evaluate("""() => {
+          Object.defineProperty(document,'hasFocus',{configurable:true,value:()=>false});
+          window.tones=0;
+          window.AudioContext=class {
+            constructor(){this.state='running';this.currentTime=0;this.destination={};}
+            resume(){return Promise.resolve();}
+            createOscillator(){return {frequency:{},connect(){},start(){window.tones++;},stop(){}};}
+            createGain(){return {gain:{setValueAtTime(){},exponentialRampToValueAtTime(){}},connect(){}};}
+          };
+        }""")
+        page.click('#act-sound')
+    add(kinds, 'BUY', '0xa7988', seconds_ago=1, block=9970)
+    for page in pages:
+        page.evaluate('ActivityMonitor.poll()')
+        until(page, "document.getElementById('act-unread').textContent === '1 new'")
+    assert sum(p.evaluate('window.tones') for p in pages) == 1
+    for page in pages:
+        page.evaluate("document.dispatchEvent(new Event('visibilitychange'))")
+        assert page.title().startswith('(1) ')
+
+
+def test_saved_sound_preference_requires_new_gesture(kinds, make_live, ctx):
+    page = open_activity(ctx, live(make_live))
+    page.evaluate("localStorage.setItem('act.sound', '1')")
+    page.reload()
+    page.wait_for_selector('#act-sound')
+    assert page.inner_text('#act-sound') == 'Enable sound'
+    assert page.get_attribute('#act-sound', 'aria-pressed') == 'false'
+    assert 'click to enable' in page.inner_text('#act-audio-status')
