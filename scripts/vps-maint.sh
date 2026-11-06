@@ -250,6 +250,32 @@ for k in d["cards"][:6]:
       docker exec -i elysium-wallet-tracker python - < "$REPO/scripts/check_ascend.py" 2>&1 | grep -v " INFO " | sed 's/^/  /'
       docker logs --since 10m elysium-wallet-tracker 2>&1 | grep -iE "ascend" | tail -5 | sed 's/^/  log: /'
       ;;
+    wallet-census)
+      say "wallet census: leaderboard churn and what is tracked now (counts only)"
+      docker exec -i elysium-postgres psql -U tracker -d tracker -X -A -F ' | ' <<'SQL' 2>&1 | sed 's/^/  /'
+\echo -- accepted leaderboard snapshots
+SELECT count(*) snapshots, min(captured_at) first_snapshot, max(captured_at) last_snapshot
+FROM leaderboard_snapshots WHERE status IN ('ok','imported');
+\echo -- distinct wallets ever in the top list, and in the latest snapshot
+SELECT (SELECT count(DISTINCT e.address) FROM leaderboard_snapshot_entries e JOIN leaderboard_snapshots s ON s.id=e.snapshot_id WHERE s.status IN ('ok','imported')) ever_in_top,
+       (SELECT count(*) FROM leaderboard_snapshot_entries WHERE snapshot_id=(SELECT id FROM leaderboard_snapshots WHERE status IN ('ok','imported') ORDER BY captured_at DESC LIMIT 1)) in_latest;
+\echo -- watchlist by source: tracked now / dropped out (rows) / distinct wallets
+SELECT source, count(*) FILTER (WHERE removed_at IS NULL) tracked_now, count(*) FILTER (WHERE removed_at IS NOT NULL) dropped_rows,
+       count(DISTINCT address) distinct_wallets FROM wallet_watchlist GROUP BY source ORDER BY source;
+\echo -- wallets that left and came back at least once (leaderboard)
+SELECT count(*) FROM (SELECT address FROM wallet_watchlist WHERE source='leaderboard' GROUP BY address HAVING count(*) > 1) x;
+\echo -- new entrants to the top list per day (first ever appearance)
+WITH f AS (SELECT e.address, min(s.captured_at) t FROM leaderboard_snapshot_entries e JOIN leaderboard_snapshots s ON s.id=e.snapshot_id WHERE s.status IN ('ok','imported') GROUP BY e.address)
+SELECT date_trunc('day', t)::date day, count(*) new_wallets FROM f GROUP BY 1 ORDER BY 1;
+\echo -- how long wallets stay in the top list (hours between first and last appearance)
+WITH a AS (SELECT e.address, min(s.captured_at) a, max(s.captured_at) b, count(*) n FROM leaderboard_snapshot_entries e JOIN leaderboard_snapshots s ON s.id=e.snapshot_id WHERE s.status IN ('ok','imported') GROUP BY e.address)
+SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY extract(epoch FROM b-a)/3600)::numeric(10,1) median_span_h,
+       count(*) FILTER (WHERE n = 1) seen_once, count(*) FILTER (WHERE b > now() - interval '15 min') still_in FROM a;
+\echo -- wallets in the database and their trades
+SELECT (SELECT count(*) FROM wallets) wallets_rows, (SELECT count(DISTINCT wallet) FROM trades) wallets_with_trades,
+       (SELECT count(*) FROM trades) trades;
+SQL
+      ;;
     launch-report)
       say "launch intelligence: paper-trading results and launch-watcher state (read-only)"
       docker exec elysium-wallet-tracker python -m agora_tracker --config /config/config.yaml --launch-report 2>&1 | sed 's/^/  /'
