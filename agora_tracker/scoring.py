@@ -193,7 +193,7 @@ def gather(c: Connection, chain_id: int, as_of: datetime, cfg: ScoringConfig
     since = as_of - timedelta(days=cfg.lookback_days)
     p = {"c": chain_id, "as_of": as_of, "since": since}
     ws = [r[0] for r in c.execute(sa.text(
-        "SELECT address FROM wallet_enrollment WHERE chain_id = :c AND status = 'active' "
+        "SELECT address FROM wallet_enrollment WHERE chain_id = :c "
         "AND first_top_at < :as_of ORDER BY address"), p)]
     ev = {w: Evidence() for w in ws}
     if not ws:

@@ -369,3 +369,11 @@ Met on 2026-11-03: `https://onchainflow.app` serves the dashboard over HTTPS wit
 data; the site's DB role cannot write or read private tables; the tracker's heartbeat and cursor
 stayed fresh under load; both bots kept working. See the open item about recreating the tracker
 and ui containers in OPERATIONS.md ("Dashboard").
+
+Historical score eligibility uses first Top-100 appearance, independent of today's scanner
+exclusion status. Excluding a contract from scanning must not erase its earlier research
+score. The eligibility rule is included in the immutable model fingerprint. If an earlier
+build already registered the same scoring version without this rule, select a new scoring
+version; do not overwrite the stored configuration or historical scores. Historical replay
+uses event-time observations currently stored and is not proof that late-ingested evidence
+was available to the scanner at the original time.

@@ -374,3 +374,11 @@ def test_csv_has_score_columns(scored, make_live):
     vals = dict(zip(cols, row.split(","), strict=False))
     assert vals["score_version"] == "t1" and vals["score_quality"] == "sufficient"
     assert Decimal(vals["score"]) > 0
+
+
+def test_later_tracking_exclusion_does_not_rewrite_historical_score(scored):
+    before = rows_at(scored, cfg(), AS_OF)
+    with scored.tx() as conn:
+        conn.execute(sa.text("UPDATE wallet_enrollment SET status = 'excluded', "
+                             "excluded_reason = 'contract' WHERE address = :w"), {"w": PUB1})
+    assert rows_at(scored, cfg(), AS_OF) == before

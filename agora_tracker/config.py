@@ -179,7 +179,8 @@ class ScoringConfig:
         "list_persistence": 0.15, "rank_strength": 0.20})
 
     def model(self) -> dict[str, Any]:
-        return {"lookback_days": self.lookback_days, "min_closes": self.min_closes,
+        return {"eligibility": "historical-top-membership-v2",
+                "lookback_days": self.lookback_days, "min_closes": self.min_closes,
                 "min_snapshots": self.min_snapshots, "wilson_z": self.wilson_z,
                 "return_cap": self.return_cap,
                 "recency_half_life_days": self.recency_half_life_days, "top_n": self.top_n,
