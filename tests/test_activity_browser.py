@@ -548,3 +548,13 @@ def test_multiple_tabs_coalesce_sound(kinds, make_live, ctx):
     for page in pages:
         page.evaluate("document.dispatchEvent(new Event('visibilitychange'))")
         assert page.title().startswith('(1) ')
+
+
+def test_saved_sound_preference_requires_new_gesture(kinds, make_live, ctx):
+    page = open_activity(ctx, live(make_live))
+    page.evaluate("localStorage.setItem('act.sound', '1')")
+    page.reload()
+    page.wait_for_selector('#act-sound')
+    assert page.inner_text('#act-sound') == 'Enable sound'
+    assert page.get_attribute('#act-sound', 'aria-pressed') == 'false'
+    assert 'click to enable' in page.inner_text('#act-audio-status')

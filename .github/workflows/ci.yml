@@ -53,6 +53,15 @@ jobs:
           sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client-16
           echo "/usr/lib/postgresql/16/bin" >> "$GITHUB_PATH"
       - run: pip install -r requirements.txt pytest playwright
+      - name: Avoid JIT compilation overhead in the disposable test database
+        run: |
+          python - <<'PYTHON'
+          import os
+          import psycopg
+          url = os.environ["TEST_DATABASE_URL"].replace("postgresql+psycopg://", "postgresql://")
+          with psycopg.connect(url, autocommit=True) as conn:
+              conn.execute("ALTER DATABASE tracker_test SET jit = off")
+          PYTHON
       - name: Chromium for the Activity browser tests
         run: python -m playwright install --with-deps chromium
       - run: python -m pytest -v -rs

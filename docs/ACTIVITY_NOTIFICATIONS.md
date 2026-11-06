@@ -15,7 +15,8 @@ Returning to the tab alone does not clear pending activity. Filters/navigation e
 a fresh baseline; loading older rows does not notify. Overflow retains the existing
 reload-to-see-newest behavior; the unread count covers returned distinct rows only.
 
-Sound defaults OFF on every page load. Click Sound to unlock Web Audio; ON appears
+Sound defaults OFF. The enabled preference is saved, but a new page only offers Enable
+sound until clicked again to satisfy autoplay rules. Click Sound to unlock Web Audio; ON appears
 only once the context is running. A short generated tone is coalesced to one per batch
 and a five-second cooldown. A localStorage timestamp suppresses simultaneous tones
 across tabs on a best-effort basis; unavailable storage may permit cross-tab duplicates.
