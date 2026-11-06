@@ -54,13 +54,18 @@
     } catch (e) { setText('act-audio-status', 'Sound unavailable'); }
   }
   var soundButton = $('act-sound');
+  if (soundButton && store('act.sound') === '1') {
+    soundButton.textContent = 'Enable sound';
+    setText('act-audio-status', 'Sound preference saved; click to enable in this tab');
+  }
   if (soundButton) soundButton.addEventListener('click', function () {
-    if (sound) { sound = false; soundButton.textContent = 'Sound: OFF'; soundButton.setAttribute('aria-pressed', 'false'); return; }
+    if (sound) { sound = false; store('act.sound', '0'); soundButton.textContent = 'Sound: OFF'; soundButton.setAttribute('aria-pressed', 'false'); return; }
     try {
       var Context = window.AudioContext || window.webkitAudioContext;
       audio = audio || new Context();
       Promise.resolve(audio.resume()).then(function () {
         sound = audio.state === 'running';
+        if (sound) store('act.sound', '1');
         soundButton.textContent = sound ? 'Sound: ON' : 'Enable sound';
         soundButton.setAttribute('aria-pressed', String(sound));
         setText('act-audio-status', sound ? '' : 'Click to enable sound; browser blocked audio');
