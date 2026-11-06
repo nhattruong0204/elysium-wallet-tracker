@@ -225,6 +225,38 @@ Rollback options, fastest first:
 
 ## Activity monitor and USD market cap (migration 0005)
 
+### Wallet Intelligence: `/leaderboard`, `/leaderboard/{wallet}`, `/api/v1/leaderboard...`
+
+Population: **every wallet that has ever been in an accepted, complete Top-100 snapshot**
+(`public_api.wallet_enrollment`), not only today's list. Private manual / Telegram wallets cannot
+appear: every source is a `public_api` view (migration 0009 adds `public_api.wallet_scan_coverage`).
+
+* **Row** (`GET /api/v1/leaderboard`): status (`current` = on the latest accepted list, else
+  `former`), current / best / last rank, snapshot appearances, entries (re-entries), first / last
+  time on the list; **Agora** PnL / worth / volume (latest known value, Agora's accounting);
+  window activity (trades, buys, sells, transfers, tokens, bought / sold HYPE from *verified*
+  amounts only, estimated legs counted apart); **measured** closes, win rate and PnL (only sells
+  whose cost basis is known); last trade; `quality` + `tracking_basis` + `tracked_since`.
+  Unknown is `null`, never 0 (no measured close -> `measured_pnl: null`; no Agora PnL -> null).
+  Agora and measured figures are never combined.
+* **Data quality:** `complete` (scanned without gaps since first appearing on the list),
+  `partial` (first scanned later, or only *derived* coverage), `gaps`, `unscanned`, `excluded`.
+* **Filters:** `window` 24h|7d|30d|all (activity metrics), `membership` all|current|former,
+  `quality`, `active=1`, `min_trades`, `min_rank` / `max_rank` (current rank; former members have
+  none), `min_pnl` (latest known Agora PnL; unknown never matches), `q` (address fragment),
+  `sort` rank|pnl|worth|volume|legs|buy|realized|last_trade|appearances|best_rank|last_top|first_top,
+  `dir`, `limit` 1-100, `page`. Rows with no value for the sort key always go last. KPIs count the
+  whole tracked set, not the page. Page-based pagination is deliberate: the set is bounded
+  (<= 20,000 rows, held in the page cache) and sorts are arbitrary.
+* **Wallet profile** (`/api/v1/leaderboard/{wallet}`, plus `/performance`, `/rank-history`,
+  `/relationships`): performance for 24h / 7d / 30d / all, rank history (`step` snapshot|hour|day,
+  last observation per bucket), membership events, scan coverage, tokens traded, and
+  **relationship evidence** = same-transaction token transfers between two tracked wallets. That
+  is evidence of a transfer, not of common control; no accusation is made anywhere.
+* **CSV:** `GET /api/v1/leaderboard.csv` (same filters, fixed columns), `.../{wallet}/rank-history.csv`.
+  Text cells starting with `= + - @ TAB CR` get a leading apostrophe (formula injection); numbers
+  stay numbers. `Cache-Control: private, no-store`.
+
 ### Activity monitor: `/activity`, `GET /api/v1/activity`
 
 Nav: Overview | Activity | Projects | Smart Money | Early Plays | Scanner Health. Overview keeps

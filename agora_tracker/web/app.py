@@ -47,6 +47,17 @@ from .amounts import PRESETS as AMOUNT_PRESETS
 from .consensus import NET_CHOICES, TRADER_CHOICES, WINDOW_CHOICES, ConsensusParams
 from .consensus import RANGE_LABELS as CONS_RANGE_LABELS
 from .consensus import parse_params as parse_consensus
+from .intel import (
+    CSV_COLUMNS,
+    MAX_ROWS,
+    MEMBERSHIPS,
+    PAGE_SIZES,
+    QUALITIES,
+    WINDOWS,
+    parse_intel,
+    to_csv,
+)
+from .intel import QUALITY_NOTES as INTEL_QUALITY_NOTES
 from .jsonutil import to_jsonable
 from .params import ADDR_RE, PRESET_ORDER, ParamError, list_params, parse_range
 from .reports import launchpad_label
@@ -59,7 +70,7 @@ CSP = ("default-src 'none'; img-src 'self' data:; style-src 'self'; script-src '
        "font-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'; "
        "frame-ancestors 'none'")
 NAV = (("overview", "/", "Overview"), ("activity", "/activity", "Activity"), ("tokens", "/tokens", "Projects"),
-       ("smart", "/smart-money", "Smart money"), ("consensus", "/consensus", "Consensus"),
+       ("intel", "/leaderboard", "Wallet intelligence"), ("smart", "/smart-money", "Smart money"), ("consensus", "/consensus", "Consensus"),
        ("early", "/early", "Early plays"),
        ("health", "/scanner", "Scanner health"))
 RANGE_LABELS = {"15m": "15 min", "1h": "1 hour", "6h": "6 hours", "24h": "24 hours",
@@ -267,6 +278,68 @@ def create_app(cfg: Config, dash: Dashboard, engine: Engine | None = None) -> St
             return Response(status_code=304, headers=headers)
         return JSONResponse(to_jsonable(d), headers=headers)
 
+    def intel_params(request: Request) -> Any:
+        return parse_intel(request.query_params, default_size=50)
+
+    def rank_step(request: Request) -> str:
+        step = (request.query_params.get("step") or "hour").strip().lower()
+        if step not in ("snapshot", "hour", "day"):
+            raise ParamError("step must be snapshot, hour or day")
+        return step
+
+    @guarded
+    async def intel_page(request: Request) -> Response:
+        p = intel_params(request)
+        d = await run(request, lambda: dash.intel_table(p, now_utc()))
+        ctx = {**d, "windows": list(WINDOWS), "memberships": list(MEMBERSHIPS),
+               "qualities": list(QUALITIES), "quality_notes": INTEL_QUALITY_NOTES,
+               "page_sizes": PAGE_SIZES}
+        return page(request, "leaderboard.html", "intel", ctx, None, title="Wallet intelligence")
+
+    @guarded
+    async def intel_wallet_page(request: Request) -> Response:
+        addr = addr_or_404(request.path_params["addr"])
+        d = await run(request, lambda: dash.intel_wallet(addr, rank_step(request), now_utc()))
+        return page(request, "leaderboard_wallet.html", "intel", d, None,
+                    title=fmt.short_addr(addr))
+
+    def api_intel(request: Request) -> Any:
+        d = dash.intel_table(intel_params(request), now_utc())
+        return d
+
+    def intel_part(*keys: str) -> Callable[[Request], Any]:
+        def build(request: Request) -> Any:
+            d = dash.intel_wallet(addr_or_404(request.path_params["addr"]), rank_step(request),
+                                  now_utc())
+            return {"wallet": d["wallet"], **{k: d[k] for k in keys}, "meta": d["meta"]}
+        return build
+
+    @guarded
+    async def intel_csv(request: Request) -> Response:
+        p = intel_params(request)
+        rows = await run(request, lambda: dash.intel_export(p))
+        body = to_csv(rows[:MAX_ROWS], p.window)
+        return Response(body, media_type="text/csv; charset=utf-8", headers={
+            "Content-Disposition": 'attachment; filename="wallet-intelligence.csv"',
+            "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"})
+
+    @guarded
+    async def intel_rank_csv(request: Request) -> Response:
+        addr = addr_or_404(request.path_params["addr"])
+        d = await run(request, lambda: dash.intel_wallet(addr, rank_step(request), now_utc()))
+        import csv as _csv
+        import io as _io
+        out = _io.StringIO()
+        wr = _csv.writer(out, lineterminator="\n")
+        wr.writerow(["captured_at", "rank", "agora_pnl_hype", "agora_worth_hype"])
+        for r in d["rank_history"]:
+            wr.writerow([to_jsonable(r["captured_at"]), r["rank"],
+                         "" if r["pnl"] is None else format(r["pnl"], "f"),
+                         "" if r["worth"] is None else format(r["worth"], "f")])
+        return Response(out.getvalue(), media_type="text/csv; charset=utf-8", headers={
+            "Content-Disposition": f'attachment; filename="rank-history-{addr[:10]}.csv"',
+            "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"})
+
     @guarded
     async def tokens(request: Request) -> Response:
         tr = get_range(request)
@@ -381,6 +454,11 @@ def create_app(cfg: Config, dash: Dashboard, engine: Engine | None = None) -> St
                              "default_limit": w.activity_page_size,
                              "max_limit": w.activity_max_page_size,
                              "poll_interval_s": w.activity_poll_s},
+                "leaderboard": {"windows": list(WINDOWS), "memberships": list(MEMBERSHIPS),
+                                "qualities": list(QUALITIES), "page_sizes": list(PAGE_SIZES),
+                                "csv_columns": list(CSV_COLUMNS), "max_rows": MAX_ROWS,
+                                "population": "every wallet that has ever been in an accepted, "
+                                              "complete Top-100 snapshot"},
                 "units": {"market_cap_usd": "USD", "amount_hype": "HYPE",
                           "decimals": "exact decimals are strings"}}
 
@@ -407,12 +485,24 @@ def create_app(cfg: Config, dash: Dashboard, engine: Engine | None = None) -> St
 
     routes = [
         Route("/", overview), Route("/activity", activity), Route("/tokens", tokens), Route("/tokens/{addr}", token),
+        Route("/leaderboard", intel_page), Route("/leaderboard/{addr}", intel_wallet_page),
         Route("/smart-money", smart), Route("/wallets/{addr}", wallet), Route("/early", early), Route("/consensus", consensus),
         Route("/scanner", scanner), Route("/about", about), Route("/search", search),
         Route("/healthz", healthz), Route("/robots.txt", robots),
         Route("/api/v1/meta", api(api_meta)),
         Route("/api/v1/activity", api_activity),
         Route("/api/v1/overview", api(lambda r: dash.overview(get_range(r), now_utc()))),
+        Route("/api/v1/leaderboard", api(api_intel)),
+        Route("/api/v1/leaderboard.csv", intel_csv),
+        Route("/api/v1/leaderboard/{addr}", api(intel_part(
+            "summary", "performance", "rank_history", "rank_history_step", "rank_history_points",
+            "membership_events", "coverage", "tokens", "relationships", "relationships_note"))),
+        Route("/api/v1/leaderboard/{addr}/performance", api(intel_part("summary", "performance"))),
+        Route("/api/v1/leaderboard/{addr}/rank-history", api(intel_part(
+            "rank_history", "rank_history_step", "rank_history_points", "membership_events"))),
+        Route("/api/v1/leaderboard/{addr}/rank-history.csv", intel_rank_csv),
+        Route("/api/v1/leaderboard/{addr}/relationships", api(intel_part(
+            "relationships", "relationships_note"))),
         Route("/api/v1/tokens", api(api_tokens)),
         Route("/api/v1/tokens/{addr}", api(api_token)),
         Route("/api/v1/smart-money", api(lambda r: dash.smart_money(

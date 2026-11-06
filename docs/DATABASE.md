@@ -95,3 +95,10 @@ requests Transfer logs. Launchpad adapters (#7) will add their own decoded-event
   If that session drops, the indexer stops (Docker restarts it and it re-acquires).
 * Notifiers claim alerts with `SELECT … FOR UPDATE SKIP LOCKED`, so several can run.
 * All writes for one block range happen in one transaction with the checkpoint.
+
+## Migration 0009: Wallet Intelligence read model
+
+Adds `public_api.wallet_scan_coverage` (public wallets only) so the website can label each
+wallet's data quality without reading the private `wallet_scan_coverage` table (which also holds
+intervals for manual / Telegram wallets). One view, one grant, no table change; downgrade drops
+the view.
