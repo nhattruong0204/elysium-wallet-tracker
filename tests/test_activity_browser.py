@@ -358,3 +358,63 @@ def test_other_pages_still_load_cleanly_with_usd(kinds, make_live, ctx):
         page.goto(lv.base + path)
         assert page.locator("h1").count() == 1
     assert errors == []
+
+
+# --- HYPE amount filter -------------------------------------------------------------------------
+def plain_page(ctx, lv, query):
+    """A page without the fake clock, for tests that navigate (form submits, links)."""
+    page = ctx.new_page()
+    page.errors = []
+    page.on("pageerror", lambda e: page.errors.append(str(e)))
+    page.on("console", lambda m: page.errors.append(m.text) if m.type == "error" else None)
+    page.goto(f"{lv.base}/activity?{query}")
+    page.wait_for_selector("form#act-form")
+    return page
+
+
+def test_amount_filter_keeps_polling_filtered(kinds, make_live, ctx):
+    lv = live(make_live)
+    page = open_activity(ctx, lv, "range=all&min_hype=2")
+    assert page.input_value("input[name=min_hype]") == "2"
+    calls: list[str] = []
+    page.on("request", lambda r: calls.append(r.url) if "/api/v1/activity" in r.url else None)
+    small = add(kinds, "BUY", "0xd1", seconds_ago=2, block=9910, hype=0.2)
+    big = add(kinds, "BUY", "0xd2", seconds_ago=1, block=9911, hype=8)
+    advance(page, 7000)
+    wait_row(page, big)
+    assert small not in row_ids(page)                              # filtered out of live updates too
+    assert calls and all("min_hype=2" in c and "since_id=" in c for c in calls)
+    assert page.errors == []
+
+
+def test_amount_filter_preset_and_reset(kinds, make_live, ctx):
+    lv = live(make_live)
+    page = plain_page(ctx, lv, "range=all&min_hype=2&action=buy")
+    page.click('a.btn.sm:text-is("1+")')
+    page.wait_for_url(re.compile(r"min_hype=1(&|$)"))
+    assert "range=all" in page.url and "action=buy" in page.url          # other filters survive
+    assert page.input_value("input[name=min_hype]") == "1"
+    assert "amount at least 1 HYPE" in page.inner_text("body")
+    page.click("a >> text=clear amount")
+    page.wait_for_url(re.compile(r"^(?!.*min_hype)"))
+    assert "action=buy" in page.url and page.input_value("input[name=min_hype]") == ""
+    page.goto(f"{lv.base}/activity?range=all&min_hype=2&max_hype=9")
+    page.click("a.btn >> text=Reset")
+    page.wait_for_url(re.compile(r"/activity$"))
+    assert page.input_value("input[name=min_hype]") == "" and page.input_value("input[name=max_hype]") == ""
+    assert page.errors == []
+
+
+def test_amount_filter_custom_range_submit(kinds, make_live, ctx):
+    lv = live(make_live)
+    page = plain_page(ctx, lv, "range=all")
+    page.fill("input[name=min_hype]", "1")
+    page.fill("input[name=max_hype]", "3")
+    page.click("#act-form button[type=submit]")
+    page.wait_for_url(re.compile(r"min_hype=1"))
+    assert "max_hype=3" in page.url
+    assert "amount 1 to 3 HYPE" in page.inner_text("body")
+    # an invalid value is stopped by the browser before the server sees it
+    page.fill("input[name=min_hype]", "1e3")
+    assert page.eval_on_selector("input[name=min_hype]", "e => e.validity.patternMismatch") is True
+    assert page.errors == []

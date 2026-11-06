@@ -43,6 +43,7 @@ from .activity import (
 from .activity import (
     RANGE_LABELS as ACT_RANGE_LABELS,
 )
+from .amounts import PRESETS as AMOUNT_PRESETS
 from .consensus import NET_CHOICES, TRADER_CHOICES, WINDOW_CHOICES, ConsensusParams
 from .consensus import RANGE_LABELS as CONS_RANGE_LABELS
 from .consensus import parse_params as parse_consensus
@@ -247,6 +248,7 @@ def create_app(cfg: Config, dash: Dashboard, engine: Engine | None = None) -> St
         d = await run(request, lambda: dash.activity(p, now_utc()))
         ctx = {**d, "p": p, "action_labels": ACTION_LABELS, "range_labels": ACT_RANGE_LABELS,
                "sort_labels": SORT_LABELS, "bases": list(BASES),
+               "amount_presets": AMOUNT_PRESETS,
                "poll_s": w.activity_poll_s, "hidden_poll_s": w.activity_hidden_poll_s}
         return page(request, "activity.html", "activity", ctx, None, title="Activity")
 
@@ -372,6 +374,10 @@ def create_app(cfg: Config, dash: Dashboard, engine: Engine | None = None) -> St
                 "early_sorts": list(EARLY_SORTS), "token_sorts": list(TOKEN_SORTS),
                 "activity": {"actions": list(ACTION_LABELS), "ranges": list(ACT_RANGE_LABELS)
                              + ["custom"], "sorts": list(SORT_LABELS), "bases": list(BASES),
+                             "amount_filter": {"params": ["min_hype", "max_hype"], "unit": "HYPE",
+                                               "presets": list(AMOUNT_PRESETS),
+                                               "max": "1000000000", "max_decimals": 18,
+                                               "applies_to": ["verified", "estimated"]},
                              "default_limit": w.activity_page_size,
                              "max_limit": w.activity_max_page_size,
                              "poll_interval_s": w.activity_poll_s},
