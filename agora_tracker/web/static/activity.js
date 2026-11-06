@@ -236,13 +236,13 @@
   function setPendingBanner() {
     var n = state.pending.length, box = $('act-new');
     if (!box) return;
-    box.hidden = n === 0;
+    box.hidden = n === 0 && !state.overflow;
     setText('act-new-n', String(n) + (state.overflow ? '+' : ''));
     setText('act-new-t', n === 1 && !state.overflow ? 'new activity' : 'new activities');
   }
   function flushPending() {
-    if (!state.pending.length) return;
-    if (body.children.length + state.pending.length > MAX_ROWS) {      // keep the DOM bounded
+    if (!state.pending.length && !state.overflow) return;
+    if (state.overflow || body.children.length + state.pending.length > MAX_ROWS) {      // keep the DOM bounded
       var b = $('act-new'); b.hidden = false;
       b.textContent = '';
       var a = el('a', null, 'Reload to see the newest activity'); a.setAttribute('href', location.pathname + location.search);
