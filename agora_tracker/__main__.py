@@ -650,6 +650,10 @@ def run_ui(cfg: Config) -> None:
         from . import scoring
         threading.Thread(target=scoring.loop, args=(store, cfg.scoring, stop), name="scoring",
                          daemon=True).start()
+    if cfg.clustering.enabled:
+        from . import clustering
+        threading.Thread(target=clustering.loop, args=(store, cfg.clustering, stop),
+                         name="clustering", daemon=True).start()
     try:
         bot.run(stop)
     finally:
@@ -728,6 +732,11 @@ def main(argv: list[str] | None = None) -> None:
                     help="print paper-trading results and launch-watcher state, then exit")
     ap.add_argument("--tracking-report", action="store_true",
                     help="reconcile the tracked-wallet universe (counts only), then exit")
+    ap.add_argument("--cluster-now", action="store_true",
+                    help="run the wallet-cluster evaluation for the current interval and exit")
+    ap.add_argument("--cluster-backfill", type=int, metavar="DAYS",
+                    help="replay point-in-time cluster runs at 00:00 UTC for the last DAYS days "
+                         "(only forward from the latest existing run)")
     ap.add_argument("--score-now", action="store_true",
                     help="compute the wallet scores for the current hour and exit")
     ap.add_argument("--score-backfill", type=int, metavar="DAYS",
@@ -788,6 +797,13 @@ def main(argv: list[str] | None = None) -> None:
         return
     if args.launch_report:
         launch_report(cfg)
+        return
+    if args.cluster_now or args.cluster_backfill is not None:
+        from . import clustering
+        st = Store(chain_id=cfg.chain.chain_id)
+        out = clustering.run_once(st, cfg.clustering) if args.cluster_now else \
+            clustering.backfill(st, cfg.clustering, args.cluster_backfill)
+        print(json.dumps(out))
         return
     if args.score_now or args.score_backfill is not None:
         from . import scoring

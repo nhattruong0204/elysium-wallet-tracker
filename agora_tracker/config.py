@@ -189,6 +189,39 @@ class ScoringConfig:
 
 
 @dataclass
+class ClusteringConfig:
+    """Evidence-based wallet clusters (agora_tracker/clustering.py). `model()` defines a cluster
+    version and is immutable once used; the other fields only schedule the job. A cluster says
+    "these addresses behave as one operator would" from observable evidence; it never says who."""
+    enabled: bool = True
+    version: str = "v1"
+    interval_s: float = 21600.0              # a run every 6 h, aligned to the interval
+    retention_all_days: int = 7              # every run's edges kept this long ...
+    retention_daily_days: int = 90           # ... then only the 00:00 UTC run, up to this age
+    store_weak_edges: bool = False           # weak edges are counted per run, not stored
+    lookback_days: int = 30
+    same_block_crowd_cap: int = 6            # >cap tracked wallets buying a token in one block is a crowd, not a pair
+    co_entry_window_s: int = 120             # first buys of a token this close (different blocks) ...
+    co_entry_max_wallets: int = 8            # ... on tokens first-bought by at most this many tracked wallets
+    strong_same_block: int = 3               # distinct tokens bought in the same block by both
+    strong_transfers: int = 3                # distinct same-transaction transfers between them
+    moderate_same_block: int = 2
+    moderate_transfers: int = 2
+    moderate_co_entry: int = 5
+    weak_co_entry: int = 3
+    combo_co_entry: int = 2                  # co-entries that upgrade a same-block / transfer link
+    min_cluster_size: int = 2
+    max_cluster_size: int = 50               # a bigger connected component is reported, not formed
+
+    def model(self) -> dict[str, Any]:
+        return {k: getattr(self, k) for k in (
+            "lookback_days", "same_block_crowd_cap", "co_entry_window_s", "co_entry_max_wallets",
+            "strong_same_block", "strong_transfers", "moderate_same_block", "moderate_transfers",
+            "moderate_co_entry", "weak_co_entry", "combo_co_entry", "min_cluster_size",
+            "max_cluster_size")}
+
+
+@dataclass
 class WebConfig:
     """Public research dashboard (the `web` service). See docs/infra/ONCHAINFLOW_DASHBOARD.md."""
     host: str = "127.0.0.1"
@@ -284,6 +317,7 @@ class Config:
     intel: IntelConfig = field(default_factory=IntelConfig)
     tracking: TrackingConfig = field(default_factory=TrackingConfig)
     scoring: ScoringConfig = field(default_factory=ScoringConfig)
+    clustering: ClusteringConfig = field(default_factory=ClusteringConfig)
     db_path: str = "tracker.db"
     watchlist_file: str | None = None
     exclude_contracts: bool = True
@@ -344,12 +378,13 @@ def load_config(path: str | Path) -> Config:
     intel = IntelConfig(**(raw.get("intel") or {}))
     tracking = TrackingConfig(**(raw.get("tracking") or {}))
     scoring = ScoringConfig(**(raw.get("scoring") or {}))
+    clustering = ClusteringConfig(**(raw.get("clustering") or {}))
     intel.wrapped_native = _norm_addr(intel.wrapped_native)
     intel.dd_factories = [_norm_addr(a) for a in intel.dd_factories]
     intel.launch_factories = [_norm_addr(a) for a in intel.launch_factories]
     return Config(chain=chain, leaderboard=lb, alerts=alerts, telegram=tg, links=links,
                   market=market, ui=ui, collector=collector, web=web, intel=intel,
-                  tracking=tracking, scoring=scoring, db_path=db_path,
+                  tracking=tracking, scoring=scoring, clustering=clustering, db_path=db_path,
                   watchlist_file=wl,
                   exclude_contracts=raw.get("exclude_contracts", True))
 

@@ -553,3 +553,90 @@ wallet_scores = sa.Table(
     sa.UniqueConstraint("chain_id", "address", "version", "as_of", name="uq_wallet_scores_point"),
     sa.Index("ix_wallet_scores_version_asof", "version", "as_of"),
 )
+
+
+# Evidence-based wallet clusters (migration 0011). A cluster is a set of public wallets joined by
+# observable evidence; it never says who operates them. Versioned and point-in-time: membership
+# has validity intervals, and lifecycle changes (merge / split / invalidate) are recorded.
+cluster_versions = sa.Table(
+    "cluster_versions", metadata,
+    sa.Column("version", sa.Text, primary_key=True),
+    sa.Column("config", JSONB, nullable=False),
+    sa.Column("config_hash", sa.Text, nullable=False),
+    sa.Column("created_at", TS, nullable=False, server_default=_now()),
+)
+
+cluster_runs = sa.Table(
+    "cluster_runs", metadata,
+    sa.Column("id", sa.BigInteger, sa.Identity(), primary_key=True),
+    sa.Column("version", sa.Text, sa.ForeignKey("cluster_versions.version"), nullable=False),
+    sa.Column("as_of", TS, nullable=False),
+    sa.Column("edges_n", sa.Integer, nullable=False),
+    sa.Column("clusters_n", sa.Integer, nullable=False),
+    sa.Column("created_at", TS, nullable=False, server_default=_now()),
+    sa.UniqueConstraint("version", "as_of", name="uq_cluster_runs_point"),
+)
+
+wallet_clusters = sa.Table(
+    "wallet_clusters", metadata,
+    sa.Column("id", sa.BigInteger, sa.Identity(), primary_key=True),
+    sa.Column("chain_id", sa.BigInteger, nullable=False),
+    sa.Column("version", sa.Text, sa.ForeignKey("cluster_versions.version"), nullable=False),
+    sa.Column("status", sa.Text, nullable=False, server_default="active"),
+    sa.Column("created_run_id", sa.BigInteger, sa.ForeignKey("cluster_runs.id"), nullable=False),
+    sa.Column("ended_run_id", sa.BigInteger, sa.ForeignKey("cluster_runs.id")),
+    sa.Column("merged_into", sa.BigInteger, sa.ForeignKey("wallet_clusters.id")),
+    sa.Column("split_from", sa.BigInteger, sa.ForeignKey("wallet_clusters.id")),
+    sa.Column("created_at", TS, nullable=False),
+    sa.Column("ended_at", TS),
+    sa.CheckConstraint("status IN ('active','merged','invalidated')", name="status"),
+    sa.Index("ix_wallet_clusters_status", "version", "status"),
+)
+
+wallet_cluster_members = sa.Table(
+    "wallet_cluster_members", metadata,
+    sa.Column("id", sa.BigInteger, sa.Identity(), primary_key=True),
+    sa.Column("cluster_id", sa.BigInteger, sa.ForeignKey("wallet_clusters.id"), nullable=False),
+    sa.Column("chain_id", sa.BigInteger, nullable=False),
+    sa.Column("address", ADDR, nullable=False),
+    sa.Column("valid_from", TS, nullable=False),
+    sa.Column("valid_to", TS),
+    sa.Column("from_run_id", sa.BigInteger, nullable=False),
+    sa.Column("to_run_id", sa.BigInteger),
+    sa.CheckConstraint("valid_to IS NULL OR valid_to >= valid_from", name="order"),
+    _addr_check("address"),
+    sa.Index("ux_wallet_cluster_members_open", "cluster_id", "address", unique=True,
+             postgresql_where=sa.text("valid_to IS NULL")),
+    sa.Index("ix_wallet_cluster_members_address", "chain_id", "address", "valid_from"),
+)
+
+wallet_edges = sa.Table(
+    "wallet_edges", metadata,
+    sa.Column("id", sa.BigInteger, sa.Identity(), primary_key=True),
+    sa.Column("run_id", sa.BigInteger, sa.ForeignKey("cluster_runs.id", ondelete="CASCADE"),
+              nullable=False),
+    sa.Column("chain_id", sa.BigInteger, nullable=False),
+    sa.Column("wallet_a", ADDR, nullable=False),
+    sa.Column("wallet_b", ADDR, nullable=False),
+    sa.Column("strength", sa.Text, nullable=False),
+    sa.Column("evidence", JSONB, nullable=False),
+    sa.CheckConstraint("wallet_a < wallet_b", name="order"),
+    sa.CheckConstraint("strength IN ('strong','moderate','weak')", name="strength"),
+    sa.UniqueConstraint("run_id", "wallet_a", "wallet_b", name="uq_wallet_edges_pair"),
+    sa.Index("ix_wallet_edges_a", "wallet_a"),
+    sa.Index("ix_wallet_edges_b", "wallet_b"),
+)
+
+cluster_events = sa.Table(
+    "cluster_events", metadata,
+    sa.Column("id", sa.BigInteger, sa.Identity(), primary_key=True),
+    sa.Column("cluster_id", sa.BigInteger, sa.ForeignKey("wallet_clusters.id"), nullable=False),
+    sa.Column("run_id", sa.BigInteger, sa.ForeignKey("cluster_runs.id"), nullable=False),
+    sa.Column("at", TS, nullable=False),
+    sa.Column("kind", sa.Text, nullable=False),
+    sa.Column("detail", JSONB, nullable=False),
+    sa.CheckConstraint(
+        "kind IN ('CREATED','EXTENDED','REDUCED','ABSORBED','MERGED_INTO','SPLIT_FROM',"
+        "'INVALIDATED')", name="kind"),
+    sa.Index("ix_cluster_events_cluster", "cluster_id", "at"),
+)

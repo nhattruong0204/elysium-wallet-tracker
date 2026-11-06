@@ -142,3 +142,18 @@ scoring:
   min_closes: 5                # measured closing trades needed for the PnL components
   min_snapshots: 12            # accepted lists needed for list persistence
   limited_cap: 50              # a score without measured trade evidence cannot exceed this
+
+# Evidence-based wallet clusters (agora_tracker/clustering.py, shown under /clusters). A cluster
+# version is immutable: change any threshold below and you must change `version`. A cluster says
+# "these addresses behaved as one operator would", never who the operator is; see /about#clusters.
+clustering:
+  enabled: true
+  version: v1
+  interval_s: 21600            # every 6 h, aligned to the interval
+  retention_all_days: 7        # every run's edges kept this long, then only the 00:00 UTC run ...
+  retention_daily_days: 90     # ... until this age
+  store_weak_edges: false      # weak pairs are counted per run, not stored
+  lookback_days: 30
+  same_block_crowd_cap: 6      # more wallets than this buying a token in one block = a crowd, ignored
+  co_entry_window_s: 120
+  co_entry_max_wallets: 8
