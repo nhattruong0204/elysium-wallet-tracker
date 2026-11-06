@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% from "_macros.html" import kpi, badge, empty, copy, taddr with context %}
+{% set s = d.summary %}
+{% block body %}
+<h1>Wallet <span class="addr">{{ d.wallet|short(10, 6) }}{{ copy(d.wallet) }}</span></h1>
+<p class="lead">{% if s %}{{ badge('ok' if s.status == 'current' else 'est', s.status) }}
+  {% if s.rank %}rank <b>#{{ s.rank }}</b> now · {% endif %}best <b>#{{ s.best_rank }}</b> · seen in <b>{{ s.appearances|number }}</b> accepted lists · first on the list {{ s.first_top_at|ts }}, last {{ s.last_top_at|ts }}{% if s.re_entered %} · re-entered {{ s.entries - 1 }} time(s){% endif %}.
+  Data quality: {{ badge('ok' if s.quality == 'complete' else 'est', s.quality) }} <span class="faint">{{ s.quality_note }}</span>{% endif %}</p>
+<p><a href="/wallets/{{ d.wallet }}">Open the classic wallet page</a> · <a href="/api/v1/leaderboard/{{ d.wallet }}">JSON</a> · <a href="/api/v1/leaderboard/{{ d.wallet }}/rank-history.csv">Rank history CSV</a> · <a href="/leaderboard">Back to all wallets</a></p>
+
+{% if s %}<section class="kpis" aria-label="Agora figures">
+  {{ kpi('Agora PnL', (s.agora_pnl|signed if s.agora_pnl is not none else '–'), "Agora's accounting, latest known", 'HYPE') }}
+  {{ kpi('Agora worth', (s.agora_worth|hype if s.agora_worth is not none else '–'), 'latest known', 'HYPE') }}
+  {{ kpi('Agora volume', (s.agora_volume|hype if s.agora_volume is not none else '–'), 'latest known', 'HYPE') }}
+  {{ kpi('Tracked since', (s.tracked_since|ts if s.tracked_since else '–'), 'basis: ' ~ s.tracking_basis ~ ' · ' ~ s.scan_gaps ~ ' gap(s)') }}
+</section>{% endif %}
+
+<h2>Measured activity</h2>
+<div class="panel flush"><div class="tw"><table>
+  <thead><tr><th>Window</th><th class="r">Trades</th><th class="r">Buys</th><th class="r">Sells</th><th class="r">Transfers</th><th class="r">Tokens</th><th class="r">Bought (HYPE)</th><th class="r">Sold (HYPE)</th><th class="r">Estimated legs</th><th class="r">Measured closes</th><th class="r">Win rate</th><th class="r">Measured PnL (HYPE)</th></tr></thead>
+  <tbody>{% for name in ['24h', '7d', '30d', 'all'] %}{% set x = d.performance[name] %}
+  <tr><td>{{ name }}</td><td class="r">{{ x.trades }}</td><td class="r">{{ x.buys }}</td><td class="r">{{ x.sells }}</td><td class="r">{{ x.transfers }}</td><td class="r">{{ x.tokens }}</td><td class="r">{{ x.bought_hype|hype }}</td><td class="r">{{ x.sold_hype|hype }}</td><td class="r muted">{{ x.estimated_legs }}</td><td class="r">{{ x.measured_closes }}</td><td class="r">{{ ('%.0f%%'|format(x.win_rate * 100)) if x.win_rate is not none else '–' }}</td><td class="r {{ x.measured_pnl_hype|tone }}">{{ x.measured_pnl_hype|signed if x.measured_pnl_hype is not none else '–' }}</td></tr>
+  {% endfor %}</tbody>
+</table></div></div>
+<p class="faint note">Bought and sold count verified amounts only; estimated legs are counted separately and never added. Measured PnL covers only sells whose cost basis is known. A dash means unknown, never zero.</p>
+
+<h2>Rank history</h2>
+{% if d.rank_history %}
+<div class="panel flush"><div class="tw"><table>
+  <thead><tr><th>Captured (UTC)</th><th class="r">Rank</th><th class="r">Agora PnL</th><th class="r">Worth</th></tr></thead>
+  <tbody>{% for r in d.rank_history[-60:]|reverse %}<tr><td>{{ r.captured_at|ts }}</td><td class="r">{{ r.rank }}</td><td class="r {{ r.pnl|tone }}">{{ r.pnl|signed if r.pnl is not none else '–' }}</td><td class="r">{{ r.worth|hype if r.worth is not none else '–' }}</td></tr>{% endfor %}</tbody>
+</table></div></div>
+<p class="faint note">Last observation per {{ d.rank_history_step }} ({{ d.rank_history_points }} accepted snapshots in total); newest 60 shown. Full series: CSV above or <code>step=snapshot|hour|day</code>.</p>
+{% else %}{{ empty('No snapshot history', '') }}{% endif %}
+
+<h2>Membership changes</h2>
+{% if d.membership_events %}
+<div class="panel flush"><div class="tw"><table>
+  <thead><tr><th>When (UTC)</th><th>Event</th><th class="r">Rank</th></tr></thead>
+  <tbody>{% for e in d.membership_events|reverse %}<tr><td>{{ e.at|ts }}</td><td>{{ e.kind|lower }}</td><td class="r">{{ e.rank }}</td></tr>{% endfor %}</tbody>
+</table></div></div>
+{% else %}{{ empty('No membership events', '') }}{% endif %}
+
+<h2>Tokens traded</h2>
+{% if d.tokens %}
+<div class="panel flush"><div class="tw"><table>
+  <thead><tr><th>Token</th><th class="r">Legs</th><th class="r">Buys</th><th class="r">Sells</th><th class="r">Bought</th><th class="r">Sold</th><th>First</th><th>Last</th></tr></thead>
+  <tbody>{% for t in d.tokens %}<tr><td><a href="/tokens/{{ t.token }}">{{ t.symbol or t.token|short }}</a></td><td class="r">{{ t.legs }}</td><td class="r">{{ t.buys }}</td><td class="r">{{ t.sells }}</td><td class="r">{{ t.buy_hype|hype }}</td><td class="r">{{ t.sell_hype|hype }}</td><td>{{ t.first_at|ts }}</td><td>{{ t.last_at|ts }}</td></tr>{% endfor %}</tbody>
+</table></div></div>
+{% else %}{{ empty('No trades recorded', 'Nothing indexed for this wallet yet.') }}{% endif %}
+
+<h2>Relationships (evidence only)</h2>
+<p class="faint">{{ d.relationships_note }}</p>
+{% if d.relationships %}
+<div class="panel flush"><div class="tw"><table>
+  <thead><tr><th>From</th><th>To</th><th>Token</th><th class="r">Transfers</th><th>First</th><th>Last</th></tr></thead>
+  <tbody>{% for r in d.relationships %}<tr><td><a href="/leaderboard/{{ r.src }}">{{ r.src|short }}</a></td><td><a href="/leaderboard/{{ r.dst }}">{{ r.dst|short }}</a></td><td>{{ taddr(r.token) }}</td><td class="r">{{ r.n }}</td><td>{{ r.first_at|ts }}</td><td>{{ r.last_at|ts }}</td></tr>{% endfor %}</tbody>
+</table></div></div>
+{% else %}{{ empty('No evidence found', 'No same-transaction transfer between this and another tracked wallet.') }}{% endif %}
+{% endblock %}
