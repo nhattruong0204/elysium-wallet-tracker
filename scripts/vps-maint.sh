@@ -156,7 +156,7 @@ except Exception: print("reject")')
       ;;
     tracking-verify)
       say "tracking verification (read-only): reconciliation report, scan_stats, resources, 429s"
-      docker exec elysium-wallet-tracker python -m agora_tracker --tracking-report 2>&1 | tail -60
+      docker exec elysium-wallet-tracker python -m agora_tracker --config /config/config.yaml --tracking-report 2>&1 | tail -60
       docker exec -i elysium-postgres psql -U tracker -d tracker -X -A -F ' | ' <<'SQL' 2>&1 | sed 's/^/  /'
 \echo -- alembic
 SELECT version_num FROM alembic_version;
