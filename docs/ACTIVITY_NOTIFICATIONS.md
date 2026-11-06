@@ -5,8 +5,10 @@ Kleos `https://www.thekleos.pro/token/<address>`, BOXA
 `https://boxa.club/token?address=<address>`, and ElysPump
 `https://elysp.com/#/token/<address>`. These routes are defined by the existing Links
 helpers and centrally allowlisted by `launchpad_token_url` in cards.py. Attribution
-comes from the stored token launchpad, not a transaction router. Montra and all other
-unverified venues remain plain labels. No third-party validation requests are made.
+comes from the stored token launchpad, not a transaction router. For Ascend, Montra, Obol, Volta, Eleos and Elyxa, the owner-supplied platform
+homepages are available as shortcuts. Their tooltip explicitly says platform (homepage),
+and the API marks them with `launchpad_url_kind: platform`; verified token routes use
+`token`. No token path is guessed. Other unregistered venues remain plain labels. No third-party validation requests are made.
 
 The existing incremental Activity poller counts distinct new matching event legs.
 Background, unfocused, or scrolled-away arrivals remain pending. The tab title and
@@ -25,3 +27,19 @@ visibility-aware polling cadence and browser throttling; it is not instantaneous
 
 Tests can use the installed Chromium with `TEST_CHROMIUM_EXECUTABLE=/usr/bin/chromium`.
 CI otherwise uses Playwright's downloaded browser. No database migration is needed.
+
+
+Platform shortcut registry (`LAUNCHPAD_PLATFORMS` in cards.py):
+
+| Venue | Platform homepage |
+| --- | --- |
+| Ascend | https://app.ascendlaunch.xyz/ |
+| Montra | https://montramarkets.xyz/ |
+| Obol | https://tryobol.world/ |
+| Volta | https://www.volta.family/ |
+| Eleos | https://eleos.fun/ |
+| Elyxa | https://elyxa.trade/ |
+
+The stored launchpad attribution selects the shortcut; "other venue" is not inferred
+from a token name or execution router. A platform shortcut opens the homepage, not a
+verified token detail page. Third-party availability is outside the dashboard's control.
