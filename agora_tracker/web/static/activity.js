@@ -29,6 +29,45 @@
 
   function store(k, v) { try { if (v === undefined) return localStorage.getItem(k); localStorage.setItem(k, v); } catch (e) { return null; } }
 
+  var originalTitle = document.title, unread = Object.create(null), notified = Object.create(null);
+  var audio = null, sound = false, lastTone = 0;
+  function paintUnread() {
+    var n = Object.keys(unread).length, button = $('act-unread');
+    document.title = n ? '(' + n + ') ' + originalTitle : originalTitle;
+    if (button) { button.hidden = !n; button.textContent = n + ' new'; }
+  }
+  function acknowledge() { unread = Object.create(null); paintUnread(); }
+  function viewingNewest() { return !document.hidden && document.hasFocus() && atTop(); }
+  function tone(items) {
+    if (!sound || !audio || audio.state !== 'running' || Date.now() - lastTone < 5000) return;
+    // A synchronous shared lease suppresses duplicate tones in other Activity tabs.
+    var previous;
+    try { previous = JSON.parse(store('act.lastTone') || '{}'); } catch (e) { previous = {}; }
+    if (previous.at && Date.now() - previous.at < 5000) return;
+    store('act.lastTone', JSON.stringify({ at: Date.now() }));
+    try {
+      var osc = audio.createOscillator(), gain = audio.createGain();
+      osc.frequency.value = 660; gain.gain.setValueAtTime(0.04, audio.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, audio.currentTime + 0.15);
+      osc.connect(gain); gain.connect(audio.destination); osc.start(); osc.stop(audio.currentTime + 0.15);
+      lastTone = Date.now();
+    } catch (e) { setText('act-audio-status', 'Sound unavailable'); }
+  }
+  var soundButton = $('act-sound');
+  if (soundButton) soundButton.addEventListener('click', function () {
+    if (sound) { sound = false; soundButton.textContent = 'Sound: OFF'; soundButton.setAttribute('aria-pressed', 'false'); return; }
+    try {
+      var Context = window.AudioContext || window.webkitAudioContext;
+      audio = audio || new Context();
+      Promise.resolve(audio.resume()).then(function () {
+        sound = audio.state === 'running';
+        soundButton.textContent = sound ? 'Sound: ON' : 'Enable sound';
+        soundButton.setAttribute('aria-pressed', String(sound));
+        setText('act-audio-status', sound ? '' : 'Click to enable sound; browser blocked audio');
+      }).catch(function () { setText('act-audio-status', 'Sound blocked; click to try again'); });
+    } catch (e) { setText('act-audio-status', 'Sound unavailable in this browser'); }
+  });
+
   var fmtTip = null;                       // same tooltip app.js puts on server-rendered times
   try { fmtTip = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }); } catch (e) {}
 
@@ -76,7 +115,11 @@
     a.setAttribute('title', it.token); a.appendChild(b); td.appendChild(a); tr.appendChild(td);
 
     td = el('td');
-    if (it.launchpad_label) td.appendChild(el('span', 'lp', it.launchpad_label));
+    if (it.launchpad_label) {
+      var lp = safeHttps(it.launchpad_url), label = el(lp ? 'a' : 'span', 'lp', it.launchpad_label + (lp ? ' ↗' : ''));
+      if (lp) { label.href = lp; label.target = '_blank'; label.rel = 'noopener noreferrer'; }
+      td.appendChild(label);
+    }
     else { var nl = el('span', 'faint', '–'); nl.setAttribute('title', 'Agora has no launchpad profile for this token'); td.appendChild(nl); }
     tr.appendChild(td);
 
@@ -205,7 +248,7 @@
       var a = el('a', null, 'Reload to see the newest activity'); a.setAttribute('href', location.pathname + location.search);
       b.appendChild(a); return;
     }
-    insertItems(state.pending); state.pending = []; state.overflow = false; setPendingBanner();
+    insertItems(state.pending); state.pending = []; state.overflow = false; setPendingBanner(); acknowledge();
   }
 
   // ---- polling -------------------------------------------------------------------------------------
@@ -245,12 +288,20 @@
         return r.json();
       })
       .then(function (j) {
+        if (j.meta && j.meta.stale) return;
         state.errors = 0; state.lastOk = Date.now(); setError('');
         setFresh(j.freshness);
         if (typeof j.head_id === 'number' && j.head_id > state.head) state.head = j.head_id;
-        var items = (j.items || []).filter(function (it) { return !state.seen[it.id]; });
+        if (!state.auto) return;
+        var items = (j.items || []).filter(function (it) {
+          if (state.seen[it.id] || notified[it.id]) return false;
+          notified[it.id] = true; return true;
+        });
         if (items.length) {
-          if (atTop() && !state.pending.length) insertItems(items);
+          items.forEach(function (it) { unread[it.id] = true; }); paintUnread(); tone(items);
+        }
+        if (items.length) {
+          if (viewingNewest() && !state.pending.length) { insertItems(items); acknowledge(); }
           else {
             items.forEach(function (it) { if (!state.pending.some(function (p) { return p.id === it.id; })) state.pending.push(it); });
             setPendingBanner();
@@ -281,6 +332,11 @@
     state.auto = !state.auto; store('act.auto', state.auto ? '1' : '0'); paintAuto();
     if (state.auto) { poll(); } else { clearTimeout(state.timer); state.timer = null; if (state.inflight) state.inflight.abort(); }
   });
+  var unreadButton = $('act-unread');
+  if (unreadButton) unreadButton.addEventListener('click', function () {
+    flushPending(); window.scrollTo(0, 0);
+    if (!state.pending.length) acknowledge();
+  });
   var show = $('act-show');
   if (show) show.addEventListener('click', function () {
     flushPending(); window.scrollTo(0, 0);
@@ -289,7 +345,7 @@
     var t = null;
     return function () {
       if (t) return;
-      t = setTimeout(function () { t = null; if (atTop() && state.auto && state.pending.length) flushPending(); }, 150);
+      t = setTimeout(function () { t = null; if (viewingNewest() && state.auto && state.pending.length) flushPending(); }, 150);
     };
   })(), { passive: true });
   document.addEventListener('visibilitychange', function () {
