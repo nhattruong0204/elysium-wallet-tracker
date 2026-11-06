@@ -68,6 +68,10 @@ class Tracker:
         lb = cfg.leaderboard
         self.leaderboard = HttpLeaderboard(lb) if lb.enabled and lb.url else None
         self.tracked: set[str] = set()
+        self.tracked_leaderboard: set[str] = set()   # top | ever-in-top, no manual/Telegram
+        self._covered: set[str] = set()      # the set wallet_scan_coverage currently reflects
+        self._warned_capacity = False
+        self._ema_s = 0.0
         self._warned_idle = False
         self._next_lb = 0.0
         self._next_heads = 0.0
@@ -175,6 +179,21 @@ class Tracker:
             + (f" (-{best - h})" if h is not None and best is not None and best > h else "")
             for u, h in heads.items()))
 
+    def prepare_registry(self) -> None:
+        """Start-up, before the first tracking set is built: rebuild the wallet registry from
+        stored snapshots if it is behind (idempotent) and reconstruct scan coverage for what
+        was scanned before coverage was recorded. Never blocks start-up."""
+        try:
+            rebuilt = self.store.ensure_enrollment()
+            if rebuilt:
+                log.info("wallet registry rebuilt from stored snapshots: %s", rebuilt)
+            n = self.store.derive_legacy_coverage()
+            if n:
+                log.info("reconstructed %d legacy scan-coverage intervals (approximate)", n)
+        except Exception:  # noqa: BLE001
+            log.exception("wallet registry preparation failed; continuing with the "
+                          "snapshot-based tracking set")
+
     def refresh_leaderboard(self) -> None:
         self._next_lb = time.monotonic() + self.cfg.leaderboard.refresh_s
         prev = self.store.top_traders()
@@ -216,20 +235,47 @@ class Tracker:
                 self.store.record_snapshot([], source="agora", status="failed", complete=False,
                                            row_count=0, request_meta={**lb.last_meta,
                                                                       "error": str(e)[:300]})
-        if self.cfg.exclude_contracts and top:
+        # Cumulative tracking: everyone ever in an accepted, complete top list stays in the set
+        # (leaving the list changes membership, not eligibility). A failed or degraded
+        # snapshot adds nothing and removes nothing: the registry lives in the database.
+        hist: set[str] = set()
+        if self.cfg.tracking.cumulative:
             try:
-                top = self.follower.filter_eoas(top)
+                hist = self.store.enrolled_addresses()
+            except Exception as e:  # noqa: BLE001 - a DB hiccup must never shrink the scan set
+                log.warning("enrollment registry unavailable, keeping the current set: %s", e)
+                hist = set(self.tracked_leaderboard)
+        universe = top | hist
+        if self.cfg.exclude_contracts and universe:
+            try:
+                kept = self.follower.filter_eoas(universe)
+                top, hist = top & kept, hist & kept
             except RpcError as e:
                 log.warning("contract filter skipped: %s", e)
+            try:
+                self.store.sync_exclusions(True)
+            except Exception as e:  # noqa: BLE001
+                log.warning("recording contract exclusions failed: %s", e)
         try:
             via_bot = self.store.watchlist_addresses("telegram")
         except Exception as e:  # noqa: BLE001 - never let the bot's list block tracking
             log.warning("telegram watchlist unavailable: %s", e)
             via_bot = set()
-        new_set = top | set(self.watchlist) | via_bot
+        self.tracked_leaderboard = top | hist
+        new_set = top | hist | set(self.watchlist) | via_bot
         added, removed = new_set - self.tracked, self.tracked - new_set
         if added or removed:
-            log.info("tracking %d wallets (+%d / -%d)", len(new_set), len(added), len(removed))
+            log.info("tracking %d wallets (+%d / -%d): %d current top, %d ever in top, "
+                     "%d manual, %d telegram", len(new_set), len(added), len(removed),
+                     len(top), len(hist), len(self.watchlist), len(via_bot))
+        cap = self.cfg.tracking.capacity_warn
+        if len(new_set) > cap and not self._warned_capacity:
+            log.warning("tracking %d wallets, above the configured capacity %d: scan cost grows "
+                        "linearly with wallets; watch scan_stats / lag and see docs/OPERATIONS.md",
+                        len(new_set), cap)
+            self._warned_capacity = True
+        elif len(new_set) <= cap:
+            self._warned_capacity = False
         self.tracked = new_set
 
     def scan_step(self) -> bool:
@@ -263,14 +309,63 @@ class Tracker:
                 self._warned_idle = True
             return None
         self._warned_idle = False
-        to = min(head, cursor + c.max_block_range)
-        return self.follower.scan(cursor + 1, to, self.tracked), cursor + 1, to, head
+        self._sync_coverage(cursor)
+        to = min(head, cursor + self.follower.next_span(len(self.tracked)))
+        m0, t0 = dict(getattr(self.rpc, "metrics", None) or {}), time.monotonic()
+        scan = self.follower.scan(cursor + 1, to, self.tracked)
+        self._record_scan_stats(m0, t0, cursor + 1, to, head)
+        return scan, cursor + 1, to, head
+
+    def _sync_coverage(self, cursor: int) -> None:
+        """Record which wallets this range really scans (opened at cursor+1, closed at the
+        cursor when a wallet leaves the set). Metadata only: a failure never blocks scanning,
+        it only makes the coverage report more conservative."""
+        if self.tracked == self._covered:
+            return
+        try:
+            opened, closed = self.store.sync_coverage(self.tracked, cursor)
+            self._covered = set(self.tracked)
+            if opened or closed:
+                log.info("scan coverage: +%d wallets from block %d, -%d", opened, cursor + 1,
+                         closed)
+        except Exception as e:  # noqa: BLE001
+            log.warning("recording scan coverage failed (will retry): %s", e)
+
+    def _record_scan_stats(self, m0: dict, t0: float, frm: int, to: int, head: int) -> None:
+        """Price of the last scanned range: HTTP requests, getLogs calls, wall time, lag. The
+        public dashboard reads the key; it holds aggregates only, never wallet identities."""
+        try:
+            m1, dt = getattr(self.rpc, "metrics", None) or {}, time.monotonic() - t0
+            blocks = to - frm + 1
+            per_1k = dt / blocks * 1000
+            self._ema_s = per_1k if not self._ema_s else 0.8 * self._ema_s + 0.2 * per_1k
+            n = len(self.tracked_leaderboard)
+            self.store.set_kv("scan_stats", json.dumps({
+                "at": int(time.time()), "from_block": frm, "to_block": to, "blocks": blocks,
+                "head": head, "lag_blocks": head - to,
+                "http_requests": int(m1.get("http", 0) - m0.get("http", 0)),
+                "rpc_calls": int(m1.get("calls", 0) - m0.get("calls", 0)),
+                "get_logs": int(m1.get("m:eth_getLogs", 0) - m0.get("m:eth_getLogs", 0)),
+                "rpc_seconds": round(m1.get("seconds", 0) - m0.get("seconds", 0), 2),
+                "scan_seconds": round(dt, 2), "seconds_per_1k_blocks": round(per_1k, 2),
+                "ema_seconds_per_1k_blocks": round(self._ema_s, 2),
+                "scan_mode": "full" if self.follower.uses_full_scan(len(self.tracked))
+                else "filtered",
+                "chain_logs_per_block": round(self.follower.last_density, 3),
+                "wallet_chunk": self.follower.wallet_chunk(),
+                "wallets_leaderboard": n,
+                "capacity_warn": self.cfg.tracking.capacity_warn,
+                "over_capacity": len(self.tracked) > self.cfg.tracking.capacity_warn,
+                "falling_behind": head - to > self.cfg.tracking.lag_warn_blocks}))
+        except Exception as e:  # noqa: BLE001 - instrumentation must never stop the scanner
+            log.debug("recording scan stats failed: %s", e)
 
     def run(self, once: bool = False) -> None:
         if not self.store.acquire_indexer_lock():
             raise SystemExit(f"another indexer already holds the lock for chain "
                              f"{self.cfg.chain.chain_id}; refusing to run a second one")
         self.check_chain()
+        self.prepare_registry()
         self.refresh_leaderboard()
         if not self.tracked:
             log.warning("no wallets tracked: configure leaderboard.url or watchlist_file")
@@ -342,6 +437,21 @@ def launch_report(cfg: Config) -> None:
             lv.c.alerted_at.is_(None))).scalar()
     print(f"pools waiting for liquidity/delay: {pend}; watcher cursor: "
           f"{store.get_kv('launch_watch_cursor')}")
+
+
+def tracking_report(cfg: Config, backfill: bool = False) -> None:
+    """Reconciliation of the tracked-wallet universe (counts only, no addresses, no RPC).
+    With --tracking-backfill the registry and legacy coverage are rebuilt first (idempotent)."""
+    store = Store(chain_id=cfg.chain.chain_id)
+    if backfill:
+        print("registry:", store.ensure_enrollment() or "already up to date")
+        print("legacy coverage intervals written:", store.derive_legacy_coverage())
+    rep = store.tracking_report()
+    for k, v in rep.items():
+        print(f"{k}: {v}")
+    raw = store.get_kv("scan_stats")
+    if raw:
+        print("scan_stats:", raw)
 
 
 def test_telegram(cfg: Config) -> int:
@@ -612,6 +722,11 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--port", type=int, default=None, help="--web port (default web.port)")
     ap.add_argument("--launch-report", action="store_true",
                     help="print paper-trading results and launch-watcher state, then exit")
+    ap.add_argument("--tracking-report", action="store_true",
+                    help="reconcile the tracked-wallet universe (counts only), then exit")
+    ap.add_argument("--tracking-backfill", action="store_true",
+                    help="rebuild the wallet registry from stored snapshots (idempotent), "
+                         "then print the reconciliation")
     ap.add_argument("--collect-once", action="store_true",
                     help="take one market snapshot round and exit")
     ap.add_argument("--log-level", default="INFO")
@@ -665,6 +780,9 @@ def main(argv: list[str] | None = None) -> None:
         return
     if args.launch_report:
         launch_report(cfg)
+        return
+    if args.tracking_report or args.tracking_backfill:
+        tracking_report(cfg, backfill=args.tracking_backfill)
         return
     if args.top:
         top(cfg, args.top)

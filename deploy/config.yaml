@@ -15,11 +15,21 @@ chain:
   max_block_range: 2000        # auto-halves if the node rejects a range
   confirmations: 0             # single sequencer, so reorgs are very unlikely; replays are deduped anyway
   backfill_blocks: 2000        # first run only
-  wallet_chunk: 50             # addresses per eth_getLogs OR-list
+  wallet_chunk: 50             # addresses per eth_getLogs OR-list (BOXA allows <100: learned automatically)
+  scan_mode: auto              # filtered | full | auto: see docs/OPERATIONS.md (Wallet universe and scan cost)
+  full_scan_above_calls: 2     # auto: one unfiltered Transfer query per range once filtering would need more calls than this
+  full_scan_max_span: 1000     # Kleos limits unfiltered log searches to 1,000 blocks
+  full_scan_max_logs_per_block: 25   # busier than this (mainnet launch?): wallet filters for 10 min, then retest
+  min_block_range: 50          # floor when a node rejects a range and the span is halved
   rpc_batch_size: 50           # upper bound; smaller per-node limits are learned
   max_head_lag: 50             # skip a node this many blocks behind the best one
   head_check_s: 60             # how often node heads are compared
   wrapped_native: null         # set to WHYPE's address on Elysium if routers use it
+
+tracking:
+  cumulative: true             # keep every wallet that was ever in an accepted top list (false = old behaviour)
+  capacity_warn: 1000          # wallets; a warning level, never a cap. Set from measured capacity
+  lag_warn_blocks: 3000        # scanner lag that is reported as falling behind
 
 leaderboard:
   # Found by `--discover` from the VPS on 2026-11-02 (100 rows). Values are in HYPE.

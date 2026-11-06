@@ -24,6 +24,7 @@ import logging
 import random
 import re
 import time
+from collections import defaultdict
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
@@ -44,6 +45,12 @@ RANGE_ERROR_MSG = re.compile(r"range|too many (results|logs|blocks)|more than \d
                              r"exceed|response size|query timeout|block range", re.I)
 
 
+# A topic OR-list longer than the node allows ("Too many topic alternatives", BOXA caps it
+# between 50 and 99): shrink the wallet chunk, do not split the block range.
+TOPIC_LIMIT_MSG = re.compile(r"topic alternatives|too many topics|too many addresses|"
+                             r"topics? (list|array)? ?(is )?too (long|large)", re.I)
+
+
 # Elysium nodes: "block range extends beyond current head block"
 _BEYOND_HEAD_MSG = re.compile(r"beyond (the )?(current )?head|header not found|unknown block", re.I)
 _BATCH_LIMIT_MSG = re.compile(r"batch[^0-9]{0,40}?(?:\d+\s*(?:to|-)\s*)?(\d+)", re.I)
@@ -61,8 +68,14 @@ class RpcError(Exception):
         return self.code in _RETRYABLE_CODES or bool(_RETRYABLE_MSG.search(str(self)))
 
     @property
+    def is_topic_limit(self) -> bool:
+        return bool(TOPIC_LIMIT_MSG.search(str(self)))
+
+    @property
     def is_range_error(self) -> bool:
         msg = str(self)
+        if self.is_topic_limit:
+            return False
         if _BEYOND_HEAD_MSG.search(msg):
             return False  # the node is behind: splitting would not help, retry the range
         return bool(RANGE_ERROR_MSG.search(msg)) and not _RETRYABLE_MSG.search(msg)
@@ -111,6 +124,9 @@ class RpcClient:
         self._lagging: set[str] = set()            # behind / unreachable: skipped for now
         self._pinned: str | None = None
         self.heads: dict[str, int | None] = {}
+        # Cumulative cost counters (monotonic). Callers diff two snapshots to price one piece
+        # of work: HTTP requests, JSON-RPC calls, seconds spent waiting, per-method calls.
+        self.metrics: dict[str, float] = defaultdict(float)
         self.session = requests.Session()
         self.session.headers["Content-Type"] = "application/json"
 
@@ -191,6 +207,19 @@ class RpcClient:
         return heads
 
     def _raw_post(self, url: str, payload: Any) -> Any:
+        m = self.metrics
+        m["http"] += 1
+        for item in (payload if isinstance(payload, list) else [payload]):
+            m["calls"] += 1
+            if isinstance(item, dict):
+                m["m:" + str(item.get("method"))] += 1
+        t0 = time.monotonic()
+        try:
+            return self._raw_post_inner(url, payload)
+        finally:
+            m["seconds"] += time.monotonic() - t0
+
+    def _raw_post_inner(self, url: str, payload: Any) -> Any:
         r = self.session.post(url, json=payload, timeout=self.timeout)
         if r.status_code == 429 or r.status_code >= 500:
             raise RpcError(f"HTTP {r.status_code}", 429 if r.status_code == 429 else None)

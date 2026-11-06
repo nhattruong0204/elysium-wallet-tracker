@@ -187,6 +187,56 @@ docker compose run --rm tracker --reset-cursor 190000   # replay from a block (s
 
 Database shell: `docker compose exec postgres psql -U tracker -d tracker`.
 
+## Wallet universe and scan cost
+
+**Policy.** The scanner follows `tracked = every wallet ever in an accepted top list ∪ manual
+watchlist ∪ Telegram watchlist` (`tracking.cumulative: true`). "Accepted" means a snapshot with
+status `ok`/`imported` **and** `complete` (the collector marks a response with fewer than
+`top_n` rows incomplete; a response that shrank by half is `degraded`; errors are `failed`).
+Only accepted lists are evidence: incidental senders, recipients and pools never become
+tracked. Leaving the Top 100 flips `wallet_enrollment.in_top` and records an EXITED event; it
+does not change tracking eligibility. Contracts are the one explicit exclusion
+(`status='excluded'`, reason `contract`) and are still counted in the registry.
+
+Three different facts, three records: **membership** (`in_top`, `leaderboard_membership_events`),
+**eligibility** (`wallet_enrollment.status`), **coverage** (`wallet_scan_coverage`: the block
+intervals in which a wallet was really scanned). A wallet that is enrolled today was not scanned
+yesterday, and that gap is stored. Trades in a gap are **not recorded**; history older than the
+first interval is unknown. Nothing in the registry says otherwise. (Re-fetching old blocks is not
+done automatically: positions and PnL are computed in block order, so inserting old trades after
+newer ones would corrupt cost basis. Tracked in #5.)
+
+```
+python -m agora_tracker --config /config/config.yaml --tracking-report      # counts only
+python -m agora_tracker --config /config/config.yaml --tracking-backfill    # rebuild registry first (idempotent)
+```
+
+The report prints: snapshots accepted / not accepted, wallets ever in the list, current, former,
+manual, manual-only, scanned now, enrolled-but-not-scanned, excluded by policy (with reasons),
+history incomplete (never scanned, gaps, or first scanned after their first appearance),
+re-entered. The tracker also runs the rebuild at start-up when the registry is behind.
+
+**Rollback.** `tracking.cumulative: false` in `config.yaml` and restart the tracker: the scan set
+is again `latest snapshot ∪ watchlists`. Evidence keeps being recorded; nothing is deleted.
+Migration 0008 is additive; `alembic downgrade 0007` drops the three new tables and two views.
+
+**Scan cost.** Per range the filtered strategy issues `2 × ceil(wallets / wallet_chunk)`
+`eth_getLogs` calls (Transfer from-side and to-side per chunk) no matter how short the range is,
+and the tracker polls every `poll_interval_s`. The full strategy issues **one** unfiltered
+Transfer query and filters locally, so its cost does not depend on the wallet count (the response
+grows with the chain's Transfer volume instead). `scan_mode: auto` stays filtered until it would
+need more than `full_scan_above_calls` calls and then switches; if a node refuses unfiltered
+queries the tracker falls back to filters for 10 minutes. Node limits are learned at run time:
+a topic OR-list the node rejects ("Too many topic alternatives") halves `wallet_chunk`; a block
+range it rejects halves the span (floor `min_block_range`) and doubles back after 20 clean ranges.
+
+`service_state.scan_stats` (public, aggregates only) holds the cost of the last range: HTTP
+requests, getLogs calls, seconds, lag in blocks, scan mode, leaderboard-wallet count, and two
+flags: `over_capacity` (wallets above `tracking.capacity_warn`) and `falling_behind` (lag above
+`tracking.lag_warn_blocks`). Neither flag drops a wallet: they are the signal to add RPC capacity
+or move to a dedicated node. `scripts/scan_bench.py` and the `scan-bench` / `scan-density` /
+`tracking-baseline` maintenance steps measure the providers (bounded, read-only).
+
 ## RPC endpoints
 
 `chain.rpc_urls` is an ordered list. The first healthy node is used; on failure the tracker

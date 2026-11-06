@@ -63,6 +63,10 @@ erDiagram
 | No `wallet_position_history` table | Replaying `trades` + `realized_pnl` in id order reconstructs any past position exactly; a copy would only drift. |
 | `realized_pnl` per sell, with `status` measured / estimated / unknown | Audit trail behind every PnL number; unknown cost stays unknown. |
 | Leaderboard snapshots are append-only | Rank history for backtesting; degraded and failed collections are recorded too. |
+| `wallet_enrollment` is evidence, not a watchlist | One row per wallet that was ever in an accepted (`ok`/`imported` and `complete`) top list: first/last seen, best/last rank, appearances, entries/exits, `in_top`. It is rebuilt from the append-only snapshots by `backfill_enrollment` (idempotent) and kept current incrementally; a test asserts both paths give identical rows. Incidental senders, recipients and pools never enter it. |
+| Leaderboard membership, tracking eligibility, scan coverage are three records | `in_top` (membership) can flip freely; `status` (`active`/`excluded` + reason, i.e. eligibility) only changes by explicit policy (contracts); `wallet_scan_coverage` (which blocks were really scanned) is written by the scanner. Leaving the Top 100 never touches eligibility or coverage. |
+| `leaderboard_membership_events` | ENTERED / EXITED against the previous accepted list, unique per (wallet, snapshot, kind): rank timeline and re-entry history without scanning 100k snapshot rows. |
+| `wallet_scan_coverage` intervals | One open interval per scanned wallet. `live` intervals start at the scanner cursor + 1; `derived` ones were reconstructed once from watchlist timestamps and are approximate. A gap between intervals means trades were **not recorded**; the registry never implies otherwise. Private (manual/Telegram) wallets have rows too, so the table is not exposed. |
 | `wallet_watchlist` rows are never deleted | `removed_at` + `status` keep the membership history (who was top 100 when). |
 | Outbox `dedup_key` unique, deliveries logged separately | At-least-once delivery with a full attempt history. |
 

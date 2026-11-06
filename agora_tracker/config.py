@@ -19,6 +19,21 @@ class ChainConfig:
     confirmations: int = 0
     backfill_blocks: int = 2000
     wallet_chunk: int = 50              # addresses per eth_getLogs topic OR-list
+    # How Transfer logs are fetched. "filtered": 2 eth_getLogs per wallet chunk (topic OR-lists,
+    # cost grows with the wallet count). "full": ONE unfiltered Transfer query per range,
+    # wallets filtered locally (cost independent of the wallet count, response grows with the
+    # chain's Transfer volume). "auto": filtered until it would need more than
+    # `full_scan_above_calls` calls per range, then full.
+    # Measured 2026-11-06: the whole chain emits ~0.35 Transfer logs per block (about 460 KiB per
+    # 2,000 blocks), so one unfiltered query is far cheaper than 2 x ceil(wallets / 50) filtered
+    # ones, and the Kleos nodes only allow unfiltered queries up to 1,000 blocks.
+    scan_mode: str = "auto"
+    full_scan_above_calls: int = 2
+    full_scan_max_span: int = 1000
+    # auto: if the unfiltered scan sees more logs per block than this (a busier chain after
+    # mainnet launch), use wallet filters for 10 minutes, then test again.
+    full_scan_max_logs_per_block: float = 25.0
+    min_block_range: int = 50           # floor when the span is shrunk after a node rejects it
     rpc_timeout_s: float = 15.0
     rpc_max_retries: int = 4
     rpc_batch_size: int = 50           # upper bound; smaller per-endpoint limits are learned
@@ -174,6 +189,19 @@ class WebConfig:
 
 
 @dataclass
+class TrackingConfig:
+    """Which wallets the scanner follows. `cumulative` keeps every wallet that has ever been in
+    an accepted, complete top list (wallet_enrollment); turn it off to go back to
+    "latest snapshot + watchlists" without touching the database."""
+    cumulative: bool = True
+    # Wallet count above which a warning is raised (log + health). It is a *signal*, never a
+    # cap: nothing is dropped. Set it from measured capacity (scripts/scan_bench.py).
+    capacity_warn: int = 1000
+    # Scanner lag (blocks behind head) that counts as "falling behind" in the health output.
+    lag_warn_blocks: int = 3000
+
+
+@dataclass
 class IntelConfig:
     """Launch intelligence (alerts only; nothing here signs or sends a transaction)."""
     # independent-wallet scoring: bundle wallets (same-block multi-wallet buyers) count once
@@ -221,6 +249,7 @@ class Config:
     collector: CollectorConfig = field(default_factory=CollectorConfig)
     web: WebConfig = field(default_factory=WebConfig)
     intel: IntelConfig = field(default_factory=IntelConfig)
+    tracking: TrackingConfig = field(default_factory=TrackingConfig)
     db_path: str = "tracker.db"
     watchlist_file: str | None = None
     exclude_contracts: bool = True
@@ -279,11 +308,13 @@ def load_config(path: str | Path) -> Config:
     collector = CollectorConfig(**(raw.get("collector") or {}))
     web = WebConfig(**(raw.get("web") or {}))
     intel = IntelConfig(**(raw.get("intel") or {}))
+    tracking = TrackingConfig(**(raw.get("tracking") or {}))
     intel.wrapped_native = _norm_addr(intel.wrapped_native)
     intel.dd_factories = [_norm_addr(a) for a in intel.dd_factories]
     intel.launch_factories = [_norm_addr(a) for a in intel.launch_factories]
     return Config(chain=chain, leaderboard=lb, alerts=alerts, telegram=tg, links=links,
-                  market=market, ui=ui, collector=collector, web=web, intel=intel, db_path=db_path,
+                  market=market, ui=ui, collector=collector, web=web, intel=intel,
+                  tracking=tracking, db_path=db_path,
                   watchlist_file=wl,
                   exclude_contracts=raw.get("exclude_contracts", True))
 
