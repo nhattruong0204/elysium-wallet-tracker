@@ -19,6 +19,21 @@ class ChainConfig:
     confirmations: int = 0
     backfill_blocks: int = 2000
     wallet_chunk: int = 50              # addresses per eth_getLogs topic OR-list
+    # How Transfer logs are fetched. "filtered": 2 eth_getLogs per wallet chunk (topic OR-lists,
+    # cost grows with the wallet count). "full": ONE unfiltered Transfer query per range,
+    # wallets filtered locally (cost independent of the wallet count, response grows with the
+    # chain's Transfer volume). "auto": filtered until it would need more than
+    # `full_scan_above_calls` calls per range, then full.
+    # Measured 2026-11-06: the whole chain emits ~0.35 Transfer logs per block (about 460 KiB per
+    # 2,000 blocks), so one unfiltered query is far cheaper than 2 x ceil(wallets / 50) filtered
+    # ones, and the Kleos nodes only allow unfiltered queries up to 1,000 blocks.
+    scan_mode: str = "auto"
+    full_scan_above_calls: int = 2
+    full_scan_max_span: int = 1000
+    # auto: if the unfiltered scan sees more logs per block than this (a busier chain after
+    # mainnet launch), use wallet filters for 10 minutes, then test again.
+    full_scan_max_logs_per_block: float = 25.0
+    min_block_range: int = 50           # floor when the span is shrunk after a node rejects it
     rpc_timeout_s: float = 15.0
     rpc_max_retries: int = 4
     rpc_batch_size: int = 50           # upper bound; smaller per-endpoint limits are learned

@@ -310,7 +310,7 @@ class Tracker:
             return None
         self._warned_idle = False
         self._sync_coverage(cursor)
-        to = min(head, cursor + c.max_block_range)
+        to = min(head, cursor + self.follower.next_span(len(self.tracked)))
         m0, t0 = dict(getattr(self.rpc, "metrics", None) or {}), time.monotonic()
         scan = self.follower.scan(cursor + 1, to, self.tracked)
         self._record_scan_stats(m0, t0, cursor + 1, to, head)
@@ -349,6 +349,10 @@ class Tracker:
                 "rpc_seconds": round(m1.get("seconds", 0) - m0.get("seconds", 0), 2),
                 "scan_seconds": round(dt, 2), "seconds_per_1k_blocks": round(per_1k, 2),
                 "ema_seconds_per_1k_blocks": round(self._ema_s, 2),
+                "scan_mode": "full" if self.follower.uses_full_scan(len(self.tracked))
+                else "filtered",
+                "chain_logs_per_block": round(self.follower.last_density, 3),
+                "wallet_chunk": self.follower.wallet_chunk(),
                 "wallets_leaderboard": n,
                 "capacity_warn": self.cfg.tracking.capacity_warn,
                 "over_capacity": len(self.tracked) > self.cfg.tracking.capacity_warn,
