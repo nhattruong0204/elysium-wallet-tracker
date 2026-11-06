@@ -24,6 +24,10 @@ from .activity import (
 from .amounts import fmt_hype
 from .cache import Hit, TTLCache
 from .consensus import ConsensusParams
+from .intel import SORTS as INTEL_SORTS
+from .intel import IntelParams, WalletIntel
+from .intel import matches as intel_matches
+from .intel import order as intel_order
 from .params import ListParams, paginate, range_dict, range_key
 from .reports import PublicReports, sort_key
 
@@ -64,6 +68,7 @@ class Dashboard:
         # Activity is polled by every open tab, so it has its own short-lived, single-flight
         # cache: N tabs asking the same question cost one query per few seconds.
         self.act_cache = TTLCache(self.w.activity_cache_ttl_s, 512, 60.0)
+        self.intel = WalletIntel(reports, cfg.scoring.version)
         self.links: Any = None        # set by create_app (needs the Links helper)
         self._bundles: set[str] = set()
         self._bundles_at = float("-inf")
@@ -246,6 +251,39 @@ class Dashboard:
         hit = self._cached(("consensus", p.key()), lambda: self.rep.consensus(p, now, bundles))
         return {**hit.value, "bundle_wallets": len(bundles),
                 "meta": {"generated_at": now, "age_s": round(hit.age_s), "stale": hit.stale}}
+
+    # --- wallet intelligence -----------------------------------------------------------------------
+    def _intel_rows(self, p: IntelParams) -> tuple[dict[str, Any], list[dict[str, Any]], Hit]:
+        hit = self._cached(("intel", p.window), lambda: self.intel.table(p.window, datetime.now(UTC)))
+        v = hit.value
+        return v, intel_order([w for w in v["wallets"] if intel_matches(w, p)], p), hit
+
+    def intel_table(self, p: IntelParams, now: datetime) -> dict[str, Any]:
+        v, rows, hit = self._intel_rows(p)
+        return {"params": p, "page": paginate(rows, p.page, p.size), "kpis": v["kpis"],
+                "snapshot": v["snapshot"], "truncated": v["truncated"], "window": p.window,
+                "since": v["since"], "filtered": len(rows), "tracked": len(v["wallets"]),
+                "score_version": self.cfg.scoring.version,
+                "sorts": {k: lbl for k, (lbl, _) in INTEL_SORTS.items()},
+                "meta": {"generated_at": now, "age_s": round(hit.age_s), "stale": hit.stale,
+                         "timezone": "UTC"}}
+
+    def intel_export(self, p: IntelParams) -> list[dict[str, Any]]:
+        return self._intel_rows(p)[1]
+
+    def intel_wallet(self, addr: str, step: str, now: datetime) -> dict[str, Any]:
+        v, _, _ = self._intel_rows(IntelParams(window="all"))     # outside the build: no nesting
+        base = next((w for w in v["wallets"] if w["wallet"] == addr), None)
+        if base is None:
+            raise NotFound("this wallet has never been on the public leaderboard")
+
+        def build() -> dict[str, Any]:
+            return self.intel.profile(addr, datetime.now(UTC), base, step=step)
+        hit = self._cached(("intel_wallet", addr, step), build)
+        if not hit.value:
+            raise NotFound("this wallet has never been on the public leaderboard")
+        return {**hit.value, "meta": {"generated_at": now, "age_s": round(hit.age_s),
+                                      "stale": hit.stale, "timezone": "UTC"}}
 
     # --- activity ----------------------------------------------------------------------------------
     def activity(self, p: ActivityParams, now: datetime) -> dict[str, Any]:

@@ -156,6 +156,40 @@ class CollectorConfig:
 
 
 @dataclass
+class ScoringConfig:
+    """Explainable wallet scores (agora_tracker/scoring.py). `model()` is what defines a score
+    version; the other fields only schedule the job. A version is immutable: change a weight or
+    a parameter and you must change `version`, or the job refuses to run."""
+    enabled: bool = True
+    version: str = "v1"
+    interval_s: float = 3600.0
+    retention_hourly_h: int = 48             # older rows are thinned to one per day
+    lookback_days: int = 30
+    min_closes: int = 5                      # measured closing trades needed for the PnL components
+    min_snapshots: int = 12                  # accepted lists needed for list persistence
+    wilson_z: float = 1.645                  # one-sided lower bound on the win rate
+    return_cap: float = 1.0                  # measured return on cost mapped from [-cap, +cap]
+    recency_half_life_days: float = 7.0
+    top_n: int = 100
+    min_weight_available: float = 0.5        # below this share of weight with data: no score
+    sufficient_weight: float = 0.8           # ... and both measured components: "sufficient"
+    limited_cap: float = 50.0                # a score without measured trade evidence is capped
+    weights: dict[str, float] = field(default_factory=lambda: {
+        "win_rate_lb": 0.25, "return_on_cost": 0.25, "recency": 0.15,
+        "list_persistence": 0.15, "rank_strength": 0.20})
+
+    def model(self) -> dict[str, Any]:
+        return {"eligibility": "historical-top-membership-v2",
+                "lookback_days": self.lookback_days, "min_closes": self.min_closes,
+                "min_snapshots": self.min_snapshots, "wilson_z": self.wilson_z,
+                "return_cap": self.return_cap,
+                "recency_half_life_days": self.recency_half_life_days, "top_n": self.top_n,
+                "min_weight_available": self.min_weight_available,
+                "sufficient_weight": self.sufficient_weight, "limited_cap": self.limited_cap,
+                "weights": dict(sorted(self.weights.items()))}
+
+
+@dataclass
 class WebConfig:
     """Public research dashboard (the `web` service). See docs/infra/ONCHAINFLOW_DASHBOARD.md."""
     host: str = "127.0.0.1"
@@ -250,6 +284,7 @@ class Config:
     web: WebConfig = field(default_factory=WebConfig)
     intel: IntelConfig = field(default_factory=IntelConfig)
     tracking: TrackingConfig = field(default_factory=TrackingConfig)
+    scoring: ScoringConfig = field(default_factory=ScoringConfig)
     db_path: str = "tracker.db"
     watchlist_file: str | None = None
     exclude_contracts: bool = True
@@ -309,12 +344,13 @@ def load_config(path: str | Path) -> Config:
     web = WebConfig(**(raw.get("web") or {}))
     intel = IntelConfig(**(raw.get("intel") or {}))
     tracking = TrackingConfig(**(raw.get("tracking") or {}))
+    scoring = ScoringConfig(**(raw.get("scoring") or {}))
     intel.wrapped_native = _norm_addr(intel.wrapped_native)
     intel.dd_factories = [_norm_addr(a) for a in intel.dd_factories]
     intel.launch_factories = [_norm_addr(a) for a in intel.launch_factories]
     return Config(chain=chain, leaderboard=lb, alerts=alerts, telegram=tg, links=links,
                   market=market, ui=ui, collector=collector, web=web, intel=intel,
-                  tracking=tracking, db_path=db_path,
+                  tracking=tracking, scoring=scoring, db_path=db_path,
                   watchlist_file=wl,
                   exclude_contracts=raw.get("exclude_contracts", True))
 
