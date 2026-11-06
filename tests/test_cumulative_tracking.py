@@ -459,8 +459,10 @@ def test_role_cannot_read_raw_registry_or_coverage(store, dash):
     for table in ("wallet_enrollment", "leaderboard_membership_events", "wallet_scan_coverage"):
         with pytest.raises(sa.exc.DBAPIError):
             q(dash, f"SELECT * FROM public.{table}")
-    with pytest.raises(sa.exc.DBAPIError):
-        q(dash, "SELECT * FROM public_api.wallet_scan_coverage")
+    # migration 0009 exposes coverage through a view restricted to public wallets: it works, and
+    # the private (manual) wallet's intervals are not in it
+    seen = {r["address"] for r in q(dash, "SELECT address FROM public_api.wallet_scan_coverage")}
+    assert A in seen and MANUAL not in seen
 
 
 def test_scan_stats_is_visible_but_private_state_is_not(store, dash):
