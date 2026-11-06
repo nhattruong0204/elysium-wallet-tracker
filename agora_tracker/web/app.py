@@ -44,6 +44,16 @@ from .activity import (
     RANGE_LABELS as ACT_RANGE_LABELS,
 )
 from .amounts import PRESETS as AMOUNT_PRESETS
+from .clusters import (
+    STATUSES,
+    WITHIN,
+    bundles_csv,
+    clusters_csv,
+    parse_bundles,
+    parse_clusters,
+    parse_within,
+)
+from .clusters import WINDOWS as CL_WINDOWS
 from .consensus import NET_CHOICES, TRADER_CHOICES, WINDOW_CHOICES, ConsensusParams
 from .consensus import RANGE_LABELS as CONS_RANGE_LABELS
 from .consensus import parse_params as parse_consensus
@@ -70,7 +80,7 @@ CSP = ("default-src 'none'; img-src 'self' data:; style-src 'self'; script-src '
        "font-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'; "
        "frame-ancestors 'none'")
 NAV = (("overview", "/", "Overview"), ("activity", "/activity", "Activity"), ("tokens", "/tokens", "Projects"),
-       ("intel", "/leaderboard", "Wallet intelligence"), ("smart", "/smart-money", "Smart money"), ("consensus", "/consensus", "Consensus"),
+       ("intel", "/leaderboard", "Wallet intelligence"), ("clusters", "/clusters", "Clusters"), ("smart", "/smart-money", "Smart money"), ("consensus", "/consensus", "Consensus"),
        ("early", "/early", "Early plays"),
        ("health", "/scanner", "Scanner health"))
 RANGE_LABELS = {"15m": "15 min", "1h": "1 hour", "6h": "6 hours", "24h": "24 hours",
@@ -323,6 +333,74 @@ def create_app(cfg: Config, dash: Dashboard, engine: Engine | None = None) -> St
             "Content-Disposition": 'attachment; filename="wallet-intelligence.csv"',
             "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"})
 
+    # -- wallet clusters ----------------------------------------------------------------------
+    def cluster_id(request: Request) -> int:
+        raw = request.path_params["cid"]
+        if not (raw.isascii() and raw.isdigit() and len(raw) <= 12):
+            raise NotFound("that is not a valid cluster id")
+        return int(raw)
+
+    def clean(d: dict[str, Any]) -> dict[str, Any]:
+        return {k: v for k, v in d.items() if k != "all_rows"}
+
+    @guarded
+    async def clusters_page(request: Request) -> Response:
+        p = parse_clusters(request.query_params)
+        d = await run(request, lambda: dash.cluster_table(p, now_utc()))
+        return page(request, "clusters.html", "clusters", clean(d), None, title="Clusters")
+
+    @guarded
+    async def cluster_page(request: Request) -> Response:
+        cid = cluster_id(request)
+        d = await run(request, lambda: dash.cluster_detail(cid, now_utc()))
+        within = parse_within(request.query_params)
+        d["launch"] = await run(request, lambda: dash.cluster_launch(cid, within, now_utc()))
+        return page(request, "cluster.html", "clusters", d, None, title=f"Cluster #{cid}")
+
+    @guarded
+    async def bundles_page(request: Request) -> Response:
+        p = parse_bundles(request.query_params)
+        d = await run(request, lambda: dash.cluster_bundles(p, now_utc()))
+        return page(request, "bundles.html", "clusters", clean(d), None, title="Bundled activity")
+
+    def api_clusters(request: Request) -> Any:
+        return clean(dash.cluster_table(parse_clusters(request.query_params), now_utc()))
+
+    def api_cluster(request: Request) -> Any:
+        return dash.cluster_detail(cluster_id(request), now_utc())
+
+    def api_cluster_part(*keys: str) -> Callable[[Request], Any]:
+        def build(request: Request) -> Any:
+            d = dash.cluster_detail(cluster_id(request), now_utc())
+            return {"cluster": d["cluster"], "version": d["version"], "note": d["note"],
+                    **{k: d[k] for k in keys}, "meta": d["meta"]}
+        return build
+
+    def api_cluster_launch(request: Request) -> Any:
+        return dash.cluster_launch(cluster_id(request), parse_within(request.query_params),
+                                   now_utc())
+
+    def api_bundles(request: Request) -> Any:
+        return clean(dash.cluster_bundles(parse_bundles(request.query_params), now_utc()))
+
+    def csv_response(body: str, name: str) -> Response:
+        return Response(body, media_type="text/csv; charset=utf-8", headers={
+            "Content-Disposition": f'attachment; filename="{name}"',
+            "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"})
+
+    @guarded
+    async def clusters_csv_view(request: Request) -> Response:
+        p = parse_clusters(request.query_params)
+        d = await run(request, lambda: dash.cluster_table(p, now_utc()))
+        return csv_response(clusters_csv(d["all_rows"][:MAX_ROWS], d["version"]), "wallet-clusters.csv")
+
+    @guarded
+    async def bundles_csv_view(request: Request) -> Response:
+        p = parse_bundles(request.query_params)
+        d = await run(request, lambda: dash.cluster_bundles(p, now_utc()))
+        return csv_response(bundles_csv(d["all_rows"][:MAX_ROWS], p.window, d["version"]),
+                            "bundled-activity.csv")
+
     @guarded
     async def intel_rank_csv(request: Request) -> Response:
         addr = addr_or_404(request.path_params["addr"])
@@ -459,6 +537,10 @@ def create_app(cfg: Config, dash: Dashboard, engine: Engine | None = None) -> St
                                 "csv_columns": list(CSV_COLUMNS), "max_rows": MAX_ROWS,
                                 "population": "every wallet that has ever been in an accepted, "
                                               "complete Top-100 snapshot"},
+                "clusters": {"version": cfg.clustering.version, "statuses": list(STATUSES),
+                             "windows": list(CL_WINDOWS), "launch_proximity_minutes": list(WITHIN),
+                             "evidence_classes": ["same_block_buy", "direct_transfer", "co_entry"],
+                             "not_an_allegation": True},
                 "units": {"market_cap_usd": "USD", "amount_hype": "HYPE",
                           "decimals": "exact decimals are strings"}}
 
@@ -486,18 +568,33 @@ def create_app(cfg: Config, dash: Dashboard, engine: Engine | None = None) -> St
     routes = [
         Route("/", overview), Route("/activity", activity), Route("/tokens", tokens), Route("/tokens/{addr}", token),
         Route("/leaderboard", intel_page), Route("/leaderboard/{addr}", intel_wallet_page),
+        Route("/clusters", clusters_page), Route("/clusters/bundled", bundles_page),
+        Route("/clusters/{cid}", cluster_page),
         Route("/smart-money", smart), Route("/wallets/{addr}", wallet), Route("/early", early), Route("/consensus", consensus),
         Route("/scanner", scanner), Route("/about", about), Route("/search", search),
         Route("/healthz", healthz), Route("/robots.txt", robots),
         Route("/api/v1/meta", api(api_meta)),
         Route("/api/v1/activity", api_activity),
         Route("/api/v1/overview", api(lambda r: dash.overview(get_range(r), now_utc()))),
+        Route("/api/v1/clusters", api(api_clusters)),
+        Route("/api/v1/clusters.csv", clusters_csv_view),
+        Route("/api/v1/clusters/bundled", api(api_bundles)),
+        Route("/api/v1/clusters/bundled.csv", bundles_csv_view),
+        Route("/api/v1/clusters/{cid}", api(api_cluster)),
+        Route("/api/v1/clusters/{cid}/members", api(api_cluster_part("members", "current"))),
+        Route("/api/v1/clusters/{cid}/edges", api(api_cluster_part("edges", "edges_run",
+                                                                   "evidence"))),
+        Route("/api/v1/clusters/{cid}/events", api(api_cluster_part("events", "related"))),
+        Route("/api/v1/clusters/{cid}/launch-proximity", api(api_cluster_launch)),
         Route("/api/v1/leaderboard", api(api_intel)),
         Route("/api/v1/leaderboard.csv", intel_csv),
         Route("/api/v1/leaderboard/{addr}", api(intel_part(
             "summary", "performance", "rank_history", "rank_history_step", "rank_history_points",
             "membership_events", "coverage", "tokens", "score", "score_history", "score_version",
-            "relationships", "relationships_note"))),
+            "relationships", "relationships_note", "clusters", "clusters_version",
+            "clusters_note"))),
+        Route("/api/v1/leaderboard/{addr}/clusters", api(intel_part(
+            "clusters", "clusters_version", "clusters_note"))),
         Route("/api/v1/leaderboard/{addr}/performance", api(intel_part("summary", "performance"))),
         Route("/api/v1/leaderboard/{addr}/rank-history", api(intel_part(
             "rank_history", "rank_history_step", "rank_history_points", "membership_events"))),

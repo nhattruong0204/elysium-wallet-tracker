@@ -226,3 +226,11 @@ h2.ph .right { float: right; padding: 3px 10px; font-size: 12.5px; font-weight: 
 .btn.sm { padding: 3px 9px; font-size: 12px; }
 .btn[aria-current="true"] { border-color: var(--accent); color: var(--accent); }
 .amt-presets { margin-top: -4px; }
+
+/* wallet cluster graph */
+figure.graph { margin: 0 0 1rem; max-width: 400px; }
+figure.graph svg { width: 100%; height: auto; display: block; background: var(--panel, transparent); border-radius: 8px; }
+.graph .edge { stroke: var(--muted, #888); opacity: .55; }
+.graph .edge.strong { stroke: var(--accent, #3b82f6); opacity: .9; }
+.graph .node { fill: var(--accent, #3b82f6); stroke: var(--bg, #fff); stroke-width: 1.5; }
+.graph a:focus .node, .graph a:hover .node { stroke: var(--fg, #000); stroke-width: 2.5; }

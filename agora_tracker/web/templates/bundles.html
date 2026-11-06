@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% from "_macros.html" import kpi, pager, badge, empty, token with context %}
+{% set pg = d.page %}{% set p = d.params %}{% set k = d.kpis %}
+{% block body %}
+<h1>Bundled activity</h1>
+<p class="lead">The trades of clustered wallets, collapsed to <b>one action per cluster and token</b>. Where the Activity tab shows every wallet separately, this view counts a cluster once, using the membership that was valid <b>when each trade happened</b> (later merges and splits never rewrite it). Amounts are verified or estimated HYPE, kept apart; a leg without an amount is counted, never valued at zero.</p>
+
+<section class="kpis" aria-label="Summary">
+  {{ kpi('Bundled actions', k.actions, 'cluster x token x side, last ' ~ p.window) }}
+  {{ kpi('Underlying trades', k.legs|number, 'legs by clustered wallets') }}
+  {{ kpi('Clustered wallets trading', k.wallets, 'distinct') }}
+  {{ kpi('Multi-wallet actions', k.multi_wallet, 'two or more wallets, one token, one side') }}
+</section>
+
+<form class="controls act-filters" method="get" action="/clusters/bundled" id="bundles-form">
+  <label>Window <select name="window">{% for x in ['24h', '7d', '30d'] %}<option value="{{ x }}"{% if p.window == x %} selected{% endif %}>{{ x }}</option>{% endfor %}</select></label>
+  <label>Side <select name="kind">{% for x in ['all', 'buy', 'sell'] %}<option value="{{ x }}"{% if p.kind == x %} selected{% endif %}>{{ x|capitalize }}</option>{% endfor %}</select></label>
+  <label>Min wallets <input type="text" name="min_wallets" value="{{ p.min_wallets if p.min_wallets > 1 else '' }}" inputmode="numeric" pattern="[0-9]{1,2}" size="3" placeholder="1"></label>
+  <label>Per page <select name="size">{% for n in [25, 50, 100] %}<option value="{{ n }}"{% if p.size == n %} selected{% endif %}>{{ n }}</option>{% endfor %}</select></label>
+  <button class="btn primary" type="submit">Apply</button>
+  <a class="btn" href="/clusters/bundled">Reset</a>
+  <a class="btn" href="/clusters">Clusters</a>
+  <a class="btn" href="/api/v1/clusters/bundled.csv{{ qs(page=None) }}" rel="nofollow">Export CSV</a>
+</form>
+{% if d.truncated %}<div class="banner warn">More bundled actions exist than this view loads; the newest are shown.</div>{% endif %}
+<div class="panel flush">
+{% if not pg['items'] %}
+  {{ empty('No bundled activity', 'No clustered wallet traded in this window, or no cluster exists yet.') }}
+{% else %}
+  <div class="tw"><table>
+    <thead><tr><th>Last trade (UTC)</th><th>Cluster</th><th>Token</th><th>Side</th><th class="r">Wallets</th><th class="r">Trades</th><th class="r">Verified HYPE</th><th class="r">Estimated HYPE</th><th class="r" title="Legs with no usable amount">No amount</th><th>Span</th></tr></thead>
+    <tbody>{% for b in pg['items'] %}
+    <tr>
+      <td>{{ b.last_at|ts }}</td>
+      <td><a href="/clusters/{{ b.cluster_id }}">#{{ b.cluster_id }}</a></td>
+      <td>{{ token(b) }}</td>
+      <td>{{ badge('ok' if b.kind == 'BUY' else 'est', b.kind|lower) }}</td>
+      <td class="r" title="{% for a in b.wallets_list %}{{ a }} {% endfor %}">{{ b.wallets }}</td>
+      <td class="r">{{ b.legs }}</td>
+      <td class="r">{{ b.high_hype|hype }}</td>
+      <td class="r muted">{{ b.est_hype|hype if b.est_wei else '–' }}</td>
+      <td class="r muted">{{ b.unknown_legs or '–' }}</td>
+      <td class="faint">{{ ((b.last_at - b.first_at).total_seconds() / 60)|round(1) }} min</td>
+    </tr>
+    {% endfor %}</tbody>
+  </table></div>
+  {{ pager(pg, qs) }}
+{% endif %}
+</div>
+<p class="faint note">{{ d.note }} Membership is as known at trade time, evaluated every few hours; a trade that happens before a cluster is first recognised is not bundled.</p>
+{% endblock %}

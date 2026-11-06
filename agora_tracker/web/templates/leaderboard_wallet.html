@@ -33,6 +33,16 @@
 {% if d.score_history|length > 1 %}<p class="faint">Daily history (point-in-time, newest last): {% for h in d.score_history[-14:] %}{{ h.as_of.strftime('%m-%d') }} <b>{{ '%.0f'|format(h.score) if h.score is not none else '–' }}</b>{% if not loop.last %} · {% endif %}{% endfor %}</p>{% endif %}
 {% else %}{{ empty('No score yet', 'Scores are computed hourly once the scoring job has run for this model version.') }}{% endif %}
 
+<h2>Clusters <small class="faint">{{ d.clusters_version }}</small></h2>
+{% if d.clusters %}
+<div class="panel flush"><div class="tw"><table>
+  <thead><tr><th>Cluster</th><th>Status</th><th>Member from</th><th>Until</th></tr></thead>
+  <tbody>{% for c in d.clusters %}<tr><td><a href="/clusters/{{ c.cluster_id }}">#{{ c.cluster_id }}</a>{% if c.merged_into %} <span class="faint">→ <a href="/clusters/{{ c.merged_into }}">#{{ c.merged_into }}</a></span>{% endif %}</td>
+    <td>{{ badge('ok' if c.status == 'active' else 'est', c.status) }}</td><td>{{ c.valid_from|ts }}</td><td>{{ c.valid_to|ts if c.valid_to else 'now' }}</td></tr>{% endfor %}</tbody>
+</table></div></div>
+<p class="faint note">{{ d.clusters_note }}</p>
+{% else %}<p class="faint">Not part of any cluster: no group of wallets has produced enough on-chain evidence together with this one. That is not evidence of independence either.</p>{% endif %}
+
 <h2>Measured activity</h2>
 <div class="panel flush"><div class="tw"><table>
   <thead><tr><th>Window</th><th class="r">Trades</th><th class="r">Buys</th><th class="r">Sells</th><th class="r">Transfers</th><th class="r">Tokens</th><th class="r">Bought (HYPE)</th><th class="r">Sold (HYPE)</th><th class="r">Estimated legs</th><th class="r">Measured closes</th><th class="r">Win rate</th><th class="r">Measured PnL (HYPE)</th></tr></thead>

@@ -23,6 +23,8 @@ from .activity import (
 )
 from .amounts import fmt_hype
 from .cache import Hit, TTLCache
+from .clusters import NOTE as CLUSTER_NOTE
+from .clusters import BundleParams, ClusterParams, ClusterViews
 from .consensus import ConsensusParams
 from .intel import SORTS as INTEL_SORTS
 from .intel import IntelParams, WalletIntel
@@ -69,6 +71,7 @@ class Dashboard:
         # cache: N tabs asking the same question cost one query per few seconds.
         self.act_cache = TTLCache(self.w.activity_cache_ttl_s, 512, 60.0)
         self.intel = WalletIntel(reports, cfg.scoring.version)
+        self.clusters = ClusterViews(reports, cfg.clustering.version)
         self.links: Any = None        # set by create_app (needs the Links helper)
         self._bundles: set[str] = set()
         self._bundles_at = float("-inf")
@@ -278,12 +281,63 @@ class Dashboard:
             raise NotFound("this wallet has never been on the public leaderboard")
 
         def build() -> dict[str, Any]:
-            return self.intel.profile(addr, datetime.now(UTC), base, step=step)
+            prof = self.intel.profile(addr, datetime.now(UTC), base, step=step)
+            if prof:
+                prof["clusters"] = self.clusters.for_wallet(addr)
+                prof["clusters_version"] = self.cfg.clustering.version
+                prof["clusters_note"] = CLUSTER_NOTE
+            return prof
         hit = self._cached(("intel_wallet", addr, step), build)
         if not hit.value:
             raise NotFound("this wallet has never been on the public leaderboard")
         return {**hit.value, "meta": {"generated_at": now, "age_s": round(hit.age_s),
                                       "stale": hit.stale, "timezone": "UTC"}}
+
+    # --- wallet clusters ---------------------------------------------------------------------------
+    def _meta_now(self, hit: Hit, now: datetime) -> dict[str, Any]:
+        return {"generated_at": now, "age_s": round(hit.age_s), "stale": hit.stale,
+                "timezone": "UTC"}
+
+    def cluster_table(self, p: ClusterParams, now: datetime) -> dict[str, Any]:
+        hit = self._cached(("clusters",), lambda: self.clusters.table(datetime.now(UTC)))
+        v = hit.value
+        rows = [r for r in v["clusters"] if p.status == "all" or
+                (p.status == "active") == (r["status"] == "active")]
+        if p.q:
+            q = p.q.lstrip("#")
+            rows = [r for r in rows if q.isdigit() and str(r["id"]) == q
+                    or any(q in m for m in r["members"])]
+        rows.sort(key=lambda r: (r["status"] != "active", -r["size"], r["id"]))
+        active = [r for r in v["clusters"] if r["status"] == "active"]
+        return {"params": p, "page": paginate(rows, p.page, p.size), "run": v["run"],
+                "version": self.cfg.clustering.version, "versions": v["versions"],
+                "kpis": {"active": len(active), "ended": len(v["clusters"]) - len(active),
+                         "wallets": sum(r["size"] for r in active),
+                         "largest": max((r["size"] for r in active), default=0)},
+                "filtered": len(rows), "truncated": v["truncated"], "note": CLUSTER_NOTE,
+                "all_rows": rows, "meta": self._meta_now(hit, now)}
+
+    def cluster_detail(self, cid: int, now: datetime) -> dict[str, Any]:
+        hit = self._cached(("cluster", cid), lambda: self.clusters.detail(cid, datetime.now(UTC)))
+        if not hit.value:
+            raise NotFound("no such cluster (or it includes a wallet that is not public)")
+        return {**hit.value, "meta": self._meta_now(hit, now)}
+
+    def cluster_bundles(self, p: BundleParams, now: datetime) -> dict[str, Any]:
+        hit = self._cached(("bundles", p.window, p.kind, p.min_wallets),
+                           lambda: self.clusters.bundles(p, datetime.now(UTC)))
+        v = hit.value
+        return {"params": p, "page": paginate(v["items"], p.page, p.size), "kpis": v["kpis"],
+                "run": v["run"], "since": v["since"], "truncated": v["truncated"],
+                "version": self.cfg.clustering.version, "note": CLUSTER_NOTE,
+                "all_rows": v["items"], "meta": self._meta_now(hit, now)}
+
+    def cluster_launch(self, cid: int, within: int, now: datetime) -> dict[str, Any]:
+        hit = self._cached(("cluster_launch", cid, within),
+                           lambda: self.clusters.launch_proximity(cid, within))
+        if not hit.value:
+            raise NotFound("no such cluster (or it includes a wallet that is not public)")
+        return {**hit.value, "meta": self._meta_now(hit, now)}
 
     # --- activity ----------------------------------------------------------------------------------
     def activity(self, p: ActivityParams, now: datetime) -> dict[str, Any]:

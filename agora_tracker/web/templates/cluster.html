@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% from "_macros.html" import kpi, badge, empty, copy with context %}
+{% set k = d.cluster %}{% set ev = d.evidence %}
+{% block body %}
+<h1>Cluster #{{ k.id }} <small class="faint">{{ d.version }}</small></h1>
+<p class="lead">{{ badge('ok' if k.status == 'active' else 'est', k.status) }}
+  {{ d.ever|length }} wallet(s) ever, {{ d.current|length }} now · recognised {{ k.created_at|ts }}{% if k.ended_at %} · ended {{ k.ended_at|ts }}{% endif %}.
+  {% if k.merged_into %}Merged into <a href="/clusters/{{ k.merged_into }}">cluster #{{ k.merged_into }}</a>. {% endif %}{% if k.split_from %}Split off from <a href="/clusters/{{ k.split_from }}">cluster #{{ k.split_from }}</a>. {% endif %}</p>
+<div class="banner">{{ d.note }}</div>
+<p><a href="/clusters">All clusters</a> · <a href="/clusters/bundled">Bundled activity</a> · <a href="/api/v1/clusters/{{ k.id }}">JSON</a></p>
+
+<section class="kpis" aria-label="Evidence summary">
+  {{ kpi('Strong pairs', ev.strong, 'several independent kinds of evidence') }}
+  {{ kpi('Moderate pairs', ev.moderate, 'repeated evidence of one kind') }}
+  {{ kpi('Same-block tokens', ev.same_block_tokens, 'summed over pairs') }}
+  {{ kpi('Same-tx transfers', ev.transfers, 'summed over pairs') }}
+  {{ kpi('Co-entries', ev.co_entries, 'first buys within seconds') }}
+</section>
+
+<h2>Evidence graph</h2>
+{% if d.graph.nodes %}
+<figure class="graph" aria-label="Wallets in the cluster joined by evidence">
+<svg viewBox="0 0 {{ d.graph.size }} {{ d.graph.size }}" role="img" width="{{ d.graph.size }}" height="{{ d.graph.size }}">
+  <title>Cluster {{ k.id }}: {{ d.graph.nodes|length }} wallets, {{ d.graph.edges|length }} evidence links</title>
+  {% for e in d.graph.edges %}<line class="edge {{ e.strength }}" x1="{{ e.x1 }}" y1="{{ e.y1 }}" x2="{{ e.x2 }}" y2="{{ e.y2 }}" stroke-width="{{ e.w }}"><title>{{ e.a|short }} – {{ e.b|short }} · {{ e.label }}</title></line>{% endfor %}
+  {% for n in d.graph.nodes %}<a href="/leaderboard/{{ n.addr }}"><circle class="node" cx="{{ n.x }}" cy="{{ n.y }}" r="{{ 7 + [n.degree, 6]|min }}"><title>{{ n.addr }} · {{ n.degree }} link(s)</title></circle></a>{% endfor %}
+</svg>
+<figcaption class="faint">Line width = strength (thick: strong, thin: moderate). Hover a line for its evidence, click a dot for the wallet. Position is only a layout, not a measure.{% if not d.edges_retained %} Edge details are no longer retained for this cluster's last run (retention policy), so no lines are drawn.{% endif %}</figcaption>
+</figure>
+{% else %}{{ empty('No members', '') }}{% endif %}
+
+<h2>Members</h2>
+<div class="panel flush"><div class="tw"><table>
+  <thead><tr><th>Wallet</th><th>In cluster from</th><th>Until</th></tr></thead>
+  <tbody>{% for m in d.members %}<tr>
+    <td><span class="addr"><a href="/leaderboard/{{ m.address }}" title="{{ m.address }}">{{ m.address|short }}</a>{{ copy(m.address) }}</span></td>
+    <td>{{ m.valid_from|ts }}</td><td>{{ m.valid_to|ts if m.valid_to else 'now' }}</td></tr>{% endfor %}</tbody>
+</table></div></div>
+
+<h2>Pairwise evidence</h2>
+{% if d.edges %}
+<div class="panel flush"><div class="tw"><table>
+  <thead><tr><th>Pair</th><th>Strength</th><th class="r">Same-block tokens</th><th class="r">Same-tx transfers</th><th class="r">Co-entries</th><th>First seen</th><th>Last seen</th></tr></thead>
+  <tbody>{% for e in d.edges %}{% set x = e.evidence %}<tr>
+    <td><a href="/leaderboard/{{ e.wallet_a }}" title="{{ e.wallet_a }}">{{ e.wallet_a|short }}</a> – <a href="/leaderboard/{{ e.wallet_b }}" title="{{ e.wallet_b }}">{{ e.wallet_b|short }}</a></td>
+    <td title="{{ d.strength_notes.get(e.strength, '') }}">{{ badge('ok' if e.strength == 'strong' else 'est', e.strength) }}</td>
+    <td class="r">{{ x.same_block_buy.tokens }}</td><td class="r">{{ x.direct_transfer.transfers }}</td><td class="r">{{ x.co_entry.tokens }}</td>
+    <td>{{ x.first_at or '–' }}</td><td>{{ x.last_at or '–' }}</td></tr>{% endfor %}</tbody>
+</table></div></div>
+<p class="faint note">From the evaluation at {{ d.edges_run.as_of|ts }}. Examples (tokens, blocks, transaction hashes) are in the <a href="/api/v1/clusters/{{ k.id }}/edges">JSON</a>. Weak pairs are never used to form or merge a cluster.</p>
+{% else %}{{ empty('No pair details retained', 'Pairwise rows are kept in full for 7 days and daily after that; this cluster\'s last evaluation is outside that window, or its members are only linked transitively.') }}{% endif %}
+
+<h2>History</h2>
+{% if d.events %}
+<div class="panel flush"><div class="tw"><table>
+  <thead><tr><th>When (UTC)</th><th>Event</th><th>Detail</th></tr></thead>
+  <tbody>{% for e in d.events %}<tr><td>{{ e.at|ts }}</td><td>{{ e.kind|lower|replace('_', ' ') }}</td>
+    <td class="faint">{% set dt = e.detail %}{% if dt.added %}added {{ dt.added|length }} · {% endif %}{% if dt.removed %}removed {{ dt.removed|length }} · {% endif %}{% if dt.members %}{{ dt.members|length }} wallet(s) · {% endif %}{% if dt.into %}into <a href="/clusters/{{ dt.into }}">#{{ dt.into }}</a> · {% endif %}{% if dt.from %}from <a href="/clusters/{{ dt.from }}">#{{ dt.from }}</a> · {% endif %}{% if dt.clusters %}absorbed {% for x in dt.clusters %}<a href="/clusters/{{ x }}">#{{ x }}</a> {% endfor %}{% endif %}{% if dt.reason %}{{ dt.reason }}{% endif %}</td></tr>{% endfor %}</tbody>
+</table></div></div>
+{% else %}{{ empty('No events', '') }}{% endif %}
+{% if d.related %}<p class="faint">Related clusters: {% for r in d.related %}<a href="/clusters/{{ r.id }}">#{{ r.id }}</a> ({{ r.relation }}) {% endfor %}</p>{% endif %}
+
+<h2>Launch proximity <small class="faint">research, not an accusation</small></h2>
+{% set L = d.launch %}
+<form class="controls" method="get" action="/clusters/{{ k.id }}"><label>First buy within <select name="within" onchange="this.form.submit()">{% for m in L.windows %}<option value="{{ m }}"{% if L.within_min == m %} selected{% endif %}>{{ m }} min</option>{% endfor %}</select> of launch</label><noscript><button class="btn" type="submit">Apply</button></noscript></form>
+{% if L.enough %}
+<p>{{ L.near }} of {{ L.sample }} first buys with a known launch time ({{ '%.0f%%'|format(L.share * 100) }}) were made within {{ L.within_min }} minute(s) of launch.
+  {% if L.baseline.share is not none %}For all public wallets: {{ L.baseline.near }} of {{ L.baseline.sample }} ({{ '%.0f%%'|format(L.baseline.share * 100) }}).{% endif %}</p>
+{% else %}<p>Not enough data for a statistic: {{ L.sample }} first buy(s) with a known launch time, at least {{ L.min_sample }} are needed.</p>{% endif %}
+<p class="faint note">{{ L.first_buys }} first buys in total · {{ L.without_launch_time }} on tokens with no known launch time · {{ L.before_launch }} recorded before the stored launch time (not counted). {{ L.note }}</p>
+{% endblock %}

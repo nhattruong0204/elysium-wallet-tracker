@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% from "_macros.html" import kpi, pager, badge, empty, copy with context %}
+{% set pg = d.page %}{% set p = d.params %}{% set k = d.kpis %}
+{% block body %}
+<h1>Wallet clusters</h1>
+<p class="lead">Groups of public wallets that left <b>observable on-chain evidence</b> of behaving as one operator would: buying the same token in the same block, moving a token to each other inside one transaction, or entering the same selective tokens within seconds. A cluster is a research aid for counting independent actors honestly. It says nothing about who controls the wallets and is <b>not an allegation</b>: it can be a team, a shared bot or copy-trading.</p>
+
+<section class="kpis" aria-label="Summary">
+  {{ kpi('Active clusters', k.active, 'model ' ~ d.version) }}
+  {{ kpi('Clustered wallets', k.wallets, 'in active clusters') }}
+  {{ kpi('Largest cluster', k.largest, 'wallets') }}
+  {{ kpi('Ended clusters', k.ended, 'merged or no longer supported by evidence') }}
+  {{ kpi('Last evaluation', (d.run.as_of|ts if d.run else '–'), (d.run.edges_n ~ ' linked pairs' if d.run else 'no run yet')) }}
+</section>
+
+<form class="controls act-filters" method="get" action="/clusters" id="clusters-form">
+  <label>Status <select name="status">{% for x in ['active', 'ended', 'all'] %}<option value="{{ x }}"{% if p.status == x %} selected{% endif %}>{{ x|capitalize }}</option>{% endfor %}</select></label>
+  <label>Per page <select name="size">{% for n in [25, 50, 100] %}<option value="{{ n }}"{% if p.size == n %} selected{% endif %}>{{ n }}</option>{% endfor %}</select></label>
+  <input class="grow" type="search" name="q" value="{{ p.q }}" placeholder="Cluster number or wallet address fragment" maxlength="44" aria-label="Search clusters" autocomplete="off" spellcheck="false">
+  <button class="btn primary" type="submit">Apply</button>
+  <a class="btn" href="/clusters">Reset</a>
+  <a class="btn" href="/clusters/bundled">Bundled activity</a>
+  <a class="btn" href="/api/v1/clusters.csv{{ qs(page=None) }}" rel="nofollow">Export CSV</a>
+</form>
+{% if d.truncated %}<div class="banner warn">There are more clusters than this view loads; only the newest are listed.</div>{% endif %}
+<p class="faint">{{ d.filtered|number }} cluster(s) match · evaluated every few hours, each run uses only data older than its timestamp · times in UTC</p>
+
+<div class="panel flush">
+{% if not pg['items'] %}
+  {{ empty('No clusters', 'Either no group of wallets has produced enough evidence yet, or none matches the filter. Absence of a cluster is not evidence of independence.') }}
+{% else %}
+  <div class="tw"><table>
+    <thead><tr><th class="r">#</th><th>Status</th><th class="r">Wallets</th><th>Members</th><th class="r" title="Pairs with strong / moderate evidence">Strong / moderate pairs</th><th class="r" title="Distinct tokens bought in the same block, same-transaction transfers, near-simultaneous first buys (summed over pairs)">Evidence (blocks / transfers / co-entries)</th><th>Since</th></tr></thead>
+    <tbody>{% for c in pg['items'] %}
+    <tr>
+      <td class="r"><a href="/clusters/{{ c.id }}">#{{ c.id }}</a></td>
+      <td>{{ badge('ok' if c.status == 'active' else 'est', c.status) }}{% if c.merged_into %} <span class="faint">→ <a href="/clusters/{{ c.merged_into }}">#{{ c.merged_into }}</a></span>{% endif %}{% if c.split_from %} <span class="faint">split of <a href="/clusters/{{ c.split_from }}">#{{ c.split_from }}</a></span>{% endif %}</td>
+      <td class="r">{{ c.size }}</td>
+      <td>{% for m in c.members[:4] %}<a href="/leaderboard/{{ m }}" title="{{ m }}">{{ m|short }}</a>{% if not loop.last %}, {% endif %}{% endfor %}{% if c.members|length > 4 %} <span class="faint">+{{ c.members|length - 4 }} more</span>{% endif %}</td>
+      <td class="r">{% if c.evidence %}{{ c.evidence.strong }} / {{ c.evidence.moderate }}{% else %}–{% endif %}</td>
+      <td class="r">{% if c.evidence %}{{ c.evidence.same_block_tokens }} / {{ c.evidence.transfers }} / {{ c.evidence.co_entries }}{% else %}–{% endif %}</td>
+      <td>{{ c.created_at|ts }}{% if c.ended_at %} <span class="faint">to {{ c.ended_at|ts }}</span>{% endif %}</td>
+    </tr>
+    {% endfor %}</tbody>
+  </table></div>
+  {{ pager(pg, qs) }}
+{% endif %}
+</div>
+<p class="faint note">{{ d.note }} Model <b>{{ d.version }}</b> is immutable; a different threshold would be a new version, never a rewrite of old results. <a href="/about#clusters">Method and limits</a>.</p>
+{% endblock %}
