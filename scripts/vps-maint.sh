@@ -154,6 +154,32 @@ except Exception: print("reject")')
         echo "  site ${u%$tok}<token> -> $r"
       done
       ;;
+    activity-filter-probe)
+      say "Activity HYPE filter probe (read-only, via the dashboard container's loopback port)"
+      docker exec -i elysium-web python - <<'PY' 2>&1 | sed 's/^/  /'
+import json, urllib.error, urllib.parse, urllib.request
+from decimal import Decimal
+B = "http://127.0.0.1:8100/api/v1/activity"
+def get(**q):
+    try:
+        with urllib.request.urlopen(B + "?" + urllib.parse.urlencode(q), timeout=20) as r:
+            return r.status, json.load(r)
+    except urllib.error.HTTPError as e:
+        return e.code, None
+base = get(range="7d", limit=100)[1]
+print("unfiltered 7d: total", base["total"]["count"], "capped", base["total"].get("capped"))
+for lo, hi in (("0.5", None), ("5", None), ("1", "10"), ("100", None)):
+    q = dict(range="7d", limit=100, min_hype=lo)
+    if hi: q["max_hype"] = hi
+    st, j = get(**q)
+    amts = [Decimal(i["amount_hype"]) for i in j["items"]]
+    ok = all(Decimal(lo) <= a and (hi is None or a <= Decimal(hi)) for a in amts) and \
+         all(i["basis"] in ("verified", "estimated") for i in j["items"])
+    print(f"min={lo} max={hi}: status {st} total {j['total']['count']} page {len(amts)} bounds+basis {'OK' if ok else 'VIOLATION'} echo {j['filters']['min_hype']}/{j['filters']['max_hype']}")
+for bad in ({"min_hype": "-1"}, {"min_hype": "1e3"}, {"min_hype": "10", "max_hype": "5"}, {"max_hype": "x'--"}):
+    print("invalid", bad, "->", get(range="7d", **bad)[0])
+PY
+      ;;
     tracking-verify)
       say "tracking verification (read-only): reconciliation report, scan_stats, resources, 429s"
       docker exec elysium-wallet-tracker python -m agora_tracker --config /config/config.yaml --tracking-report 2>&1 | tail -60
