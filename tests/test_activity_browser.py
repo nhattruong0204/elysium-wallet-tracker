@@ -508,3 +508,43 @@ def test_duplicate_poll_payload_and_stale_response_do_not_notify(kinds, make_liv
     assert page.inner_text('#act-sound') == 'Sound: OFF'
     page.click('#act-unread')
     assert page.title() == original
+
+
+def test_overflow_preserves_unread_until_reload(kinds, make_live, ctx):
+    page = open_activity(ctx, live(make_live))
+    title = page.title()
+    item = page.request.get(page.url.replace('/activity?', '/api/v1/activity?')).json()['items'][0]
+    item['id'] = 987654
+    page.route(re.compile(r'.*/api/v1/activity\?.*since_id.*'),
+               lambda route: route.fulfill(json={'items': [item], 'overflow': True, 'head_id': 987654}))
+    page.evaluate("Object.defineProperty(document, 'hasFocus', {configurable:true,value:()=>false})")
+    page.evaluate('ActivityMonitor.poll()')
+    until(page, "document.getElementById('act-unread').textContent === '1 new'")
+    page.click('#act-unread')
+    assert page.title() == '(1) ' + title
+    assert page.locator('#act-new a').inner_text() == 'Reload to see the newest activity'
+
+
+def test_multiple_tabs_coalesce_sound(kinds, make_live, ctx):
+    lv = live(make_live)
+    pages = [open_activity(ctx, lv), open_activity(ctx, lv)]
+    for page in pages:
+        page.evaluate("""() => {
+          Object.defineProperty(document,'hasFocus',{configurable:true,value:()=>false});
+          window.tones=0;
+          window.AudioContext=class {
+            constructor(){this.state='running';this.currentTime=0;this.destination={};}
+            resume(){return Promise.resolve();}
+            createOscillator(){return {frequency:{},connect(){},start(){window.tones++;},stop(){}};}
+            createGain(){return {gain:{setValueAtTime(){},exponentialRampToValueAtTime(){}},connect(){}};}
+          };
+        }""")
+        page.click('#act-sound')
+    add(kinds, 'BUY', '0xa7988', seconds_ago=1, block=9970)
+    for page in pages:
+        page.evaluate('ActivityMonitor.poll()')
+        until(page, "document.getElementById('act-unread').textContent === '1 new'")
+    assert sum(p.evaluate('window.tones') for p in pages) == 1
+    for page in pages:
+        page.evaluate("document.dispatchEvent(new Event('visibilitychange'))")
+        assert page.title().startswith('(1) ')
