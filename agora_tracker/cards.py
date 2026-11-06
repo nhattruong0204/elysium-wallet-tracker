@@ -142,7 +142,7 @@ class Links:
 
 
 
-# Verified token routes already used by Telegram cards. Adding a venue is centralized here.
+# Token routes verified by existing card helpers or explicit owner-provided examples.
 def launchpad_token_url(chain_id: int, launchpad: str | None, token: str,
                         links: Links | None = None) -> str | None:
     from urllib.parse import urlsplit
@@ -151,7 +151,9 @@ def launchpad_token_url(chain_id: int, launchpad: str | None, token: str,
         return None
     links = links or Links(LinksConfig())
     pad = (launchpad or "").lower()
-    registry = {"kleos": ("www.thekleos.pro", links.kleos_token),
+    registry = {"montra": ("montramarkets.xyz", lambda t: f"https://montramarkets.xyz/token/{t}"),
+                "obol": ("tryobol.world", lambda t: f"https://tryobol.world/coin/{t}"),
+                "kleos": ("www.thekleos.pro", links.kleos_token),
                 "boxa": ("boxa.club", links.boxa_token),
                 "elyspump": ("elysp.com", lambda t: (links.native("elyspump", t) or ("", ""))[1])}
     if pad not in registry:
@@ -167,8 +169,6 @@ def launchpad_token_url(chain_id: int, launchpad: str | None, token: str,
 # Platform homepages supplied by the project owner; no token route is inferred.
 LAUNCHPAD_PLATFORMS = {
     "ascend": ASCEND_APP,
-    "montra": "https://montramarkets.xyz/",
-    "obol": "https://tryobol.world/",
     "volta": "https://www.volta.family/",
     "eleos": "https://eleos.fun/",
     "elyxa": "https://elyxa.trade/",

@@ -5,7 +5,8 @@ Kleos `https://www.thekleos.pro/token/<address>`, BOXA
 `https://boxa.club/token?address=<address>`, and ElysPump
 `https://elysp.com/#/token/<address>`. These routes are defined by the existing Links
 helpers and centrally allowlisted by `launchpad_token_url` in cards.py. Attribution
-comes from the stored token launchpad, not a transaction router. For Ascend, Montra, Obol, Volta, Eleos and Elyxa, the owner-supplied platform
+comes from the stored token launchpad, not a transaction router. Montra `/token/<address>` and Obol `/coin/<address>` use owner-verified token routes.
+For Ascend, Volta, Eleos and Elyxa, the owner-supplied platform
 homepages are available as shortcuts. Their tooltip explicitly says platform (homepage),
 and the API marks them with `launchpad_url_kind: platform`; verified token routes use
 `token`. No token path is guessed. Other unregistered venues remain plain labels. No third-party validation requests are made.
@@ -34,8 +35,6 @@ Platform shortcut registry (`LAUNCHPAD_PLATFORMS` in cards.py):
 | Venue | Platform homepage |
 | --- | --- |
 | Ascend | https://app.ascendlaunch.xyz/ |
-| Montra | https://montramarkets.xyz/ |
-| Obol | https://tryobol.world/ |
 | Volta | https://www.volta.family/ |
 | Eleos | https://eleos.fun/ |
 | Elyxa | https://elyxa.trade/ |
