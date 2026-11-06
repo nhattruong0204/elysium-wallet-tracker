@@ -260,8 +260,11 @@ case "$ACTION" in
     log "disk before"; df -B1 --output=used,avail / | awk 'NR==2{printf "  used %.2f GB, free %.2f GB\n", $1/1e9, $2/1e9}'
     log "build the image (retags :latest; running containers keep their current image until recreated)"
     docker compose build migrate
-    log "migrate: adds schema public_api + role dashboard_ro (idempotent), applies its password"
-    docker compose run --rm migrate
+    log "web-only release: verify schema compatibility without running migrations"
+    current=$(docker exec elysium-postgres psql -U tracker -d tracker -X -A -t -v ON_ERROR_STOP=1 -c 'SELECT version_num FROM alembic_version')
+    expected=$(docker compose run --rm --no-deps --entrypoint python migrate -c 'from agora_tracker.migrate import head_revision; print(head_revision())')
+    [ "$current" = "$expected" ] || { echo "schema mismatch: web-only release requires $expected, found $current"; exit 1; }
+    log "schema $current already current; migration skipped"
     log "start the dashboard only"
     docker compose up -d --no-deps web
     wait_healthy elysium-web "dashboard" || { docker logs --tail 60 elysium-web 2>&1 | sed 's/^/  web| /'; exit 1; }
