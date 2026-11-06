@@ -15,6 +15,24 @@
   {{ kpi('Tracked since', (s.tracked_since|ts if s.tracked_since else '–'), 'basis: ' ~ s.tracking_basis ~ ' · ' ~ s.scan_gaps ~ ' gap(s)') }}
 </section>{% endif %}
 
+<h2>Score <small class="faint">{{ d.score_version }}</small></h2>
+{% if d.score %}
+<p>{% if d.score.score is not none %}<b style="font-size:1.4em">{{ '%.1f'|format(d.score.score) }}</b> / 100{% else %}No score{% endif %}
+  {{ badge('ok' if d.score.quality == 'sufficient' else 'est', d.score.quality) }}
+  <span class="faint">as of {{ d.score.as_of|ts }} · {{ '%.0f%%'|format(d.score.weight_available * 100) }} of the model weight had data{% if d.score.reason %} · {{ d.score.reason }}{% endif %}</span></p>
+<div class="panel flush"><div class="tw"><table>
+  <thead><tr><th>Component</th><th class="r">Value (0-1)</th><th class="r">Weight</th><th class="r">Contribution (points)</th><th>Inputs</th></tr></thead>
+  <tbody>{% for name, c in d.score.components.items() %}
+  <tr><td>{{ name }}</td>
+    <td class="r">{% if c.available %}{{ '%.3f'|format(c.value) }}{% else %}<span class="faint">unavailable</span>{% endif %}</td>
+    <td class="r">{{ '%.2f'|format(c.weight) }}</td>
+    <td class="r">{% if c.contribution is not none %}{{ '%.1f'|format(c.contribution) }}{% else %}–{% endif %}</td>
+    <td class="faint">{% if c.available %}{% for k, v in c.inputs.items() %}{{ k }}={{ v }} {% endfor %}{% else %}{{ c.missing }}{% endif %}</td></tr>
+  {% endfor %}</tbody>
+</table></div></div>
+{% if d.score_history|length > 1 %}<p class="faint">Daily history (point-in-time, newest last): {% for h in d.score_history[-14:] %}{{ h.as_of.strftime('%m-%d') }} <b>{{ '%.0f'|format(h.score) if h.score is not none else '–' }}</b>{% if not loop.last %} · {% endif %}{% endfor %}</p>{% endif %}
+{% else %}{{ empty('No score yet', 'Scores are computed hourly once the scoring job has run for this model version.') }}{% endif %}
+
 <h2>Measured activity</h2>
 <div class="panel flush"><div class="tw"><table>
   <thead><tr><th>Window</th><th class="r">Trades</th><th class="r">Buys</th><th class="r">Sells</th><th class="r">Transfers</th><th class="r">Tokens</th><th class="r">Bought (HYPE)</th><th class="r">Sold (HYPE)</th><th class="r">Estimated legs</th><th class="r">Measured closes</th><th class="r">Win rate</th><th class="r">Measured PnL (HYPE)</th></tr></thead>

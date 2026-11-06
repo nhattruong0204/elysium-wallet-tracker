@@ -646,6 +646,10 @@ def run_ui(cfg: Config) -> None:
         coll = Collector(store, AgoraMarket(cfg.market), cfg.collector,
                          new_launchpad_alerts=cfg.intel.new_launchpad_alerts)
         threading.Thread(target=coll.loop, args=(stop,), name="collector", daemon=True).start()
+    if cfg.scoring.enabled:
+        from . import scoring
+        threading.Thread(target=scoring.loop, args=(store, cfg.scoring, stop), name="scoring",
+                         daemon=True).start()
     try:
         bot.run(stop)
     finally:
@@ -724,6 +728,10 @@ def main(argv: list[str] | None = None) -> None:
                     help="print paper-trading results and launch-watcher state, then exit")
     ap.add_argument("--tracking-report", action="store_true",
                     help="reconcile the tracked-wallet universe (counts only), then exit")
+    ap.add_argument("--score-now", action="store_true",
+                    help="compute the wallet scores for the current hour and exit")
+    ap.add_argument("--score-backfill", type=int, metavar="DAYS",
+                    help="replay point-in-time scores at 00:00 UTC for the last DAYS days")
     ap.add_argument("--tracking-backfill", action="store_true",
                     help="rebuild the wallet registry from stored snapshots (idempotent), "
                          "then print the reconciliation")
@@ -780,6 +788,13 @@ def main(argv: list[str] | None = None) -> None:
         return
     if args.launch_report:
         launch_report(cfg)
+        return
+    if args.score_now or args.score_backfill is not None:
+        from . import scoring
+        st = Store(chain_id=cfg.chain.chain_id)
+        out = scoring.run_once(st, cfg.scoring) if args.score_now else \
+            scoring.backfill(st, cfg.scoring, args.score_backfill)
+        print(json.dumps(out))
         return
     if args.tracking_report or args.tracking_backfill:
         tracking_report(cfg, backfill=args.tracking_backfill)
