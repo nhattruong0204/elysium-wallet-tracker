@@ -1,3 +1,3 @@
 action=maint
-steps=activity-filter-probe
-requested=2026-11-06T04:37:41Z
+steps=tracking-baseline,tracking-verify
+requested=2026-11-06-wallet-intelligence-preflight
