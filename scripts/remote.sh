@@ -223,8 +223,14 @@ case "$ACTION" in
     for service in tracker ui web; do
       case "$service" in tracker) container=elysium-wallet-tracker ;; *) container=elysium-$service ;; esac
       image_id=$(docker inspect -f '{{.Image}}' "$container")
-      docker image tag "$image_id" "elysium-wallet-tracker:before-wallet-intel-$service"
+      if docker image inspect "$image_id" >/dev/null 2>&1; then
+        docker image tag "$image_id" "elysium-wallet-tracker:before-wallet-intel-$service"
+      else
+        log "running $service image is no longer in the image store; require shared web rollback image"
+      fi
     done
+    # All three services use the same application image. Require a preserved copy.
+    docker image inspect elysium-wallet-tracker:before-wallet-intel-web >/dev/null
     write_env
     install_config
     log "build"
