@@ -422,6 +422,73 @@ ascend_launches = sa.Table(
     sa.Index("ix_ascend_launches_block", "chain_id", "block_number"),
 )
 
+# Cumulative Top-100 tracking (migration 0008). Leaderboard membership, tracking eligibility
+# and scan coverage are different facts and live in different places:
+#   wallet_enrollment                 who has ever been in an accepted, complete top list
+#                                     (evidence) and whether the scanner may follow them
+#   leaderboard_membership_events     ENTERED / EXITED against the previous accepted list
+#   wallet_scan_coverage              block intervals in which a wallet was really scanned
+wallet_enrollment = sa.Table(
+    "wallet_enrollment", metadata,
+    sa.Column("chain_id", sa.BigInteger, primary_key=True, autoincrement=False),
+    sa.Column("address", ADDR, primary_key=True),
+    sa.Column("status", sa.Text, nullable=False, server_default="active"),
+    sa.Column("excluded_reason", sa.Text),
+    sa.Column("first_top_at", TS, nullable=False),
+    sa.Column("last_top_at", TS, nullable=False),
+    sa.Column("first_snapshot_id", sa.BigInteger, nullable=False),
+    sa.Column("last_snapshot_id", sa.BigInteger, nullable=False),
+    sa.Column("best_rank", sa.Integer, nullable=False),
+    sa.Column("last_rank", sa.Integer, nullable=False),
+    sa.Column("appearances", sa.Integer, nullable=False),
+    sa.Column("entries", sa.Integer, nullable=False, server_default="1"),
+    sa.Column("exits", sa.Integer, nullable=False, server_default="0"),
+    sa.Column("in_top", sa.Boolean, nullable=False),
+    sa.Column("enrolled_at", TS, nullable=False, server_default=_now()),
+    sa.ForeignKeyConstraint(["chain_id", "address"], ["wallets.chain_id", "wallets.address"]),
+    sa.CheckConstraint("status IN ('active','excluded')", name="status"),
+    _addr_check("address"),
+    sa.Index("ix_wallet_enrollment_in_top", "chain_id", "in_top"),
+    sa.Index("ix_wallet_enrollment_status", "chain_id", "status"),
+)
+
+leaderboard_membership_events = sa.Table(
+    "leaderboard_membership_events", metadata,
+    sa.Column("id", sa.BigInteger, sa.Identity(), primary_key=True),
+    sa.Column("chain_id", sa.BigInteger, nullable=False),
+    sa.Column("address", ADDR, nullable=False),
+    sa.Column("snapshot_id", sa.BigInteger, nullable=False),
+    sa.Column("kind", sa.Text, nullable=False),
+    sa.Column("rank", sa.Integer, nullable=False),
+    sa.Column("at", TS, nullable=False),
+    sa.CheckConstraint("kind IN ('ENTERED','EXITED')", name="kind"),
+    sa.UniqueConstraint("chain_id", "address", "snapshot_id", "kind", name="uq_membership_event"),
+    _addr_check("address"),
+    sa.Index("ix_leaderboard_membership_events_address_at", "chain_id", "address", "at"),
+)
+
+# One OPEN interval (to_block IS NULL) per wallet at most. 'live' intervals are written by the
+# scanner at the exact cursor; 'derived' ones are reconstructed once from watchlist timestamps
+# (nearest indexed block) and are approximate. Gaps between intervals are periods in which the
+# wallet's trades were NOT recorded.
+wallet_scan_coverage = sa.Table(
+    "wallet_scan_coverage", metadata,
+    sa.Column("id", sa.BigInteger, sa.Identity(), primary_key=True),
+    sa.Column("chain_id", sa.BigInteger, nullable=False),
+    sa.Column("address", ADDR, nullable=False),
+    sa.Column("from_block", sa.BigInteger, nullable=False),
+    sa.Column("to_block", sa.BigInteger),
+    sa.Column("basis", sa.Text, nullable=False),
+    sa.Column("created_at", TS, nullable=False, server_default=_now()),
+    sa.Column("closed_at", TS),
+    sa.CheckConstraint("basis IN ('live','derived')", name="basis"),
+    sa.CheckConstraint("to_block IS NULL OR to_block >= from_block - 1", name="order"),
+    sa.Index("ux_wallet_scan_coverage_open", "chain_id", "address", unique=True,
+             postgresql_where=sa.text("to_block IS NULL")),
+    sa.Index("ix_wallet_scan_coverage_address", "chain_id", "address", "from_block"),
+    _addr_check("address"),
+)
+
 # Telegram UI state per user: selected period, pending conversational input. Survives
 # restarts, so a half-finished custom-range or export flow resumes where it was.
 ui_sessions = sa.Table(

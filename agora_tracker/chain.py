@@ -10,6 +10,7 @@ Why logs + balance diffs instead of decoding each launchpad's swap ABI:
 from __future__ import annotations
 
 import logging
+import time
 from collections import defaultdict
 from dataclasses import dataclass, field
 
@@ -119,6 +120,11 @@ class ChainFollower:
         self.ignore_tokens = ignore_tokens
         self.tokens = TokenCache(rpc, store)
         self.stats: dict[str, int] = defaultdict(int)  # flows seen / HYPE leg not measured
+        self._chunk_cap: int | None = None        # learned OR-list limit
+        self._full_blocked_until = 0.0            # monotonic time; full scan paused until then
+        self.last_density = 0.0                   # chain-wide Transfer logs per block (last full scan)
+        self.span_cap: int | None = None          # learned block-range limit (AIMD, see next_span)
+        self._ok_ranges = 0
 
     # --- logs -----------------------------------------------------------------
     def _get_logs(self, frm: int, to: int, topics: list) -> list[dict]:
@@ -131,19 +137,109 @@ class ChainFollower:
             if to <= frm or not e.is_range_error:
                 raise
             mid = (frm + to) // 2
+            self._shrink_span(to - frm + 1)
             log.debug("getLogs %d-%d failed (%s); splitting", frm, to, e)
             return self._get_logs(frm, mid, topics) + self._get_logs(mid + 1, to, topics)
 
+    # --- adaptive block-range size --------------------------------------------
+    def _shrink_span(self, failed: int) -> None:
+        """A node rejected a span of `failed` blocks: next ranges start at half of it (never
+        below min_block_range), so a limit is learned once instead of failing every poll."""
+        new = max(self.cfg.min_block_range, failed // 2)
+        if self.span_cap is None or new < self.span_cap:
+            self.span_cap = new
+            log.info("node rejects %d-block ranges; next ranges use %d blocks", failed, new)
+        self._ok_ranges = 0
+
+    def next_span(self, n_wallets: int = 0) -> int:
+        """Blocks to request next. Starts at max_block_range (at most full_scan_max_span for
+        unfiltered scans), halves when a node rejects a range, and doubles back after 20 clean
+        ranges (limits differ per endpoint and the pinned endpoint rotates)."""
+        top = self.cfg.max_block_range
+        if n_wallets and self.uses_full_scan(n_wallets):
+            top = min(top, self.cfg.full_scan_max_span)
+        if self.span_cap is None:
+            return top
+        self._ok_ranges += 1
+        if self._ok_ranges >= 20:
+            self._ok_ranges = 0
+            self.span_cap = None if self.span_cap * 2 >= top else self.span_cap * 2
+        return min(top, self.span_cap or top)
+
+    # --- strategy -------------------------------------------------------------
+    def wallet_chunk(self) -> int:
+        """Addresses per topic OR-list: the configured size, shrunk when a node says no."""
+        return max(1, min(self.cfg.wallet_chunk, self._chunk_cap or self.cfg.wallet_chunk))
+
+    def filtered_calls(self, n_wallets: int) -> int:
+        """eth_getLogs calls one range needs in filtered mode (from-side + to-side per chunk)."""
+        return 2 * -(-n_wallets // self.wallet_chunk())
+
+    def uses_full_scan(self, n_wallets: int) -> bool:
+        mode = self.cfg.scan_mode
+        if mode == "filtered" or self._full_blocked_until > time.monotonic():
+            return False          # forced, or the node refused unfiltered queries recently
+        if mode == "full":
+            return True
+        return self.filtered_calls(n_wallets) > self.cfg.full_scan_above_calls
+
     def fetch_logs(self, frm: int, to: int, wallets: list[str]) -> list[dict]:
+        if self.uses_full_scan(len(wallets)):
+            try:
+                return self._fetch_full(frm, to, set(wallets))
+            except RpcError as e:
+                if not e.is_range_error:
+                    raise
+                # the node refuses even the smallest unfiltered slice: use wallet filters for
+                # a while instead of failing the range
+                self._full_blocked_until = time.monotonic() + 600
+                log.warning("unfiltered scan rejected (%s); using wallet filters for 10 min", e)
+        return self._fetch_filtered(frm, to, wallets)
+
+    def _fetch_full(self, frm: int, to: int, wallets: set[str]) -> list[dict]:
+        """One unfiltered Transfer query; keep only logs that touch a tracked wallet. The
+        result is exactly what the filtered queries return, because both select Transfer logs
+        whose `from` or `to` topic is a tracked address."""
         seen: dict[tuple[str, str], dict] = {}
-        step = max(1, self.cfg.wallet_chunk)
-        for i in range(0, len(wallets), step):
+        total = 0
+        for lg in self._get_logs(frm, to, [TRANSFER_TOPIC]):
+            total += 1
+            topics = lg.get("topics") or []
+            if lg.get("removed") or len(topics) < 3:
+                continue
+            if topic_addr(topics[1]) in wallets or topic_addr(topics[2]) in wallets:
+                seen[(lg["transactionHash"], lg["logIndex"])] = lg
+        self.stats["full_scan_logs"] += total
+        self.stats["full_scan_blocks"] += to - frm + 1
+        self.last_density = total / max(1, to - frm + 1)
+        cap = self.cfg.full_scan_max_logs_per_block
+        if (self.cfg.scan_mode == "auto" and to - frm + 1 >= 20 and self.last_density > cap):
+            self._full_blocked_until = time.monotonic() + 600
+            log.warning("chain emits %.1f Transfer logs per block (> %.0f): wallet filters for "
+                        "10 min, then the unfiltered scan is tested again", self.last_density, cap)
+        return list(seen.values())
+
+    def _fetch_filtered(self, frm: int, to: int, wallets: list[str]) -> list[dict]:
+        seen: dict[tuple[str, str], dict] = {}
+        i = 0
+        while i < len(wallets):
+            step = self.wallet_chunk()
             padded = [pad_topic(w) for w in wallets[i:i + step]]
-            for topics in ([TRANSFER_TOPIC, padded], [TRANSFER_TOPIC, None, padded]):
-                for lg in self._get_logs(frm, to, topics):
-                    if lg.get("removed"):
-                        continue
-                    seen[(lg["transactionHash"], lg["logIndex"])] = lg
+            try:
+                batch = [lg for topics in ([TRANSFER_TOPIC, padded], [TRANSFER_TOPIC, None, padded])
+                         for lg in self._get_logs(frm, to, topics)]
+            except RpcError as e:
+                if not e.is_topic_limit or step <= 1:
+                    raise
+                self._chunk_cap = max(1, step // 2)     # learned: stays for this process
+                log.warning("node rejects %d topic alternatives; wallet chunk is now %d",
+                            step, self._chunk_cap)
+                continue                                  # redo this chunk with the smaller size
+            for lg in batch:
+                if lg.get("removed"):
+                    continue
+                seen[(lg["transactionHash"], lg["logIndex"])] = lg
+            i += step
         return list(seen.values())
 
     # --- main -----------------------------------------------------------------
