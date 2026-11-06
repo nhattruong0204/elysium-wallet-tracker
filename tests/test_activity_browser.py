@@ -560,18 +560,25 @@ def test_saved_sound_preference_requires_new_gesture(kinds, make_live, ctx):
     assert 'click to enable' in page.inner_text('#act-audio-status')
 
 
-def test_platform_homepage_ssr_and_live_parity(kinds, make_live, ctx):
+@pytest.mark.parametrize(('pad', 'label', 'base', 'kind'), [
+    ('ascend', 'Ascend', 'https://app.ascendlaunch.xyz/', 'platform'),
+    ('montra', 'Montra', 'https://montramarkets.xyz/token/', 'token'),
+    ('obol', 'Obol', 'https://tryobol.world/coin/', 'token'),
+])
+def test_platform_homepage_ssr_and_live_parity(kinds, make_live, ctx, pad, label, base, kind):
     import sqlalchemy as sa
     with kinds.tx() as conn:
-        conn.execute(sa.text("UPDATE token_profiles SET launchpad='montra'"))
+        conn.execute(sa.text("UPDATE token_profiles SET launchpad=:pad"), {"pad": pad})
     page = open_activity(ctx, live(make_live))
     ssr = page.locator('#act-body a.lp').first
-    assert ssr.get_attribute('href') == 'https://montramarkets.xyz/'
-    assert ssr.get_attribute('title') == 'Open Montra platform (homepage)'
+    expected_title = f'Open {label} platform (homepage)' if kind == 'platform' else f'Open token on {label}'
+    assert ssr.get_attribute('href').startswith(base)
+    assert ssr.get_attribute('title') == expected_title
     item = page.request.get(page.url.replace('/activity?', '/api/v1/activity?')).json()['items'][0]
-    assert item['launchpad_url_kind'] == 'platform'
+    assert item['launchpad_url_kind'] == kind
+    assert item['launchpad_url'] == base + (item['token'] if kind == 'token' else '')
     page.evaluate('(it) => {document.querySelector("#act-body").prepend(ActivityMonitor.renderRow(it));}', item)
     new = page.locator('#act-body a.lp').first
     assert new.get_attribute('href') == ssr.get_attribute('href')
-    assert new.get_attribute('title') == 'Open Montra platform (homepage)'
+    assert new.get_attribute('title') == expected_title
     assert new.get_attribute('rel') == 'noopener noreferrer'
