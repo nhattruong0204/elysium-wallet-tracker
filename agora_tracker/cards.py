@@ -142,7 +142,7 @@ class Links:
 
 
 
-# Verified token routes already used by Telegram cards. Adding a venue is centralized here.
+# Token routes verified by existing card helpers or explicit owner-provided examples.
 def launchpad_token_url(chain_id: int, launchpad: str | None, token: str,
                         links: Links | None = None) -> str | None:
     from urllib.parse import urlsplit
@@ -151,7 +151,9 @@ def launchpad_token_url(chain_id: int, launchpad: str | None, token: str,
         return None
     links = links or Links(LinksConfig())
     pad = (launchpad or "").lower()
-    registry = {"kleos": ("www.thekleos.pro", links.kleos_token),
+    registry = {"montra": ("montramarkets.xyz", lambda t: f"https://montramarkets.xyz/token/{t}"),
+                "obol": ("tryobol.world", lambda t: f"https://tryobol.world/coin/{t}"),
+                "kleos": ("www.thekleos.pro", links.kleos_token),
                 "boxa": ("boxa.club", links.boxa_token),
                 "elyspump": ("elysp.com", lambda t: (links.native("elyspump", t) or ("", ""))[1])}
     if pad not in registry:
@@ -162,6 +164,27 @@ def launchpad_token_url(chain_id: int, launchpad: str | None, token: str,
     if parsed.scheme != "https" or parsed.netloc != host:
         return None
     return url
+
+
+# Platform homepages supplied by the project owner; no token route is inferred.
+LAUNCHPAD_PLATFORMS = {
+    "ascend": ASCEND_APP,
+    "volta": "https://www.volta.family/",
+    "eleos": "https://eleos.fun/",
+    "elyxa": "https://elyxa.trade/",
+}
+
+
+def activity_launchpad_link(chain_id: int, launchpad: str | None, token: str,
+                            links: Links | None = None) -> tuple[str | None, str | None]:
+    """Verified token route first; otherwise an explicitly registered platform homepage."""
+    token_url = launchpad_token_url(chain_id, launchpad, token, links)
+    if token_url:
+        return token_url, "token"
+    if chain_id != 99901 or not re.fullmatch(r"0x[0-9a-fA-F]{40}", token):
+        return None, None
+    homepage = LAUNCHPAD_PLATFORMS.get((launchpad or "").lower())
+    return (homepage, "platform") if homepage else (None, None)
 
 
 def usd(v: float | None, signed: bool = False) -> str:
