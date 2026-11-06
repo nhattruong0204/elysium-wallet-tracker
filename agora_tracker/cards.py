@@ -164,6 +164,29 @@ def launchpad_token_url(chain_id: int, launchpad: str | None, token: str,
     return url
 
 
+# Platform homepages supplied by the project owner; no token route is inferred.
+LAUNCHPAD_PLATFORMS = {
+    "ascend": ASCEND_APP,
+    "montra": "https://montramarkets.xyz/",
+    "obol": "https://tryobol.world/",
+    "volta": "https://www.volta.family/",
+    "eleos": "https://eleos.fun/",
+    "elyxa": "https://elyxa.trade/",
+}
+
+
+def activity_launchpad_link(chain_id: int, launchpad: str | None, token: str,
+                            links: Links | None = None) -> tuple[str | None, str | None]:
+    """Verified token route first; otherwise an explicitly registered platform homepage."""
+    token_url = launchpad_token_url(chain_id, launchpad, token, links)
+    if token_url:
+        return token_url, "token"
+    if chain_id != 99901 or not re.fullmatch(r"0x[0-9a-fA-F]{40}", token):
+        return None, None
+    homepage = LAUNCHPAD_PLATFORMS.get((launchpad or "").lower())
+    return (homepage, "platform") if homepage else (None, None)
+
+
 def usd(v: float | None, signed: bool = False) -> str:
     if v is None:
         return "n/a"

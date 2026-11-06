@@ -122,7 +122,10 @@
     td = el('td');
     if (it.launchpad_label) {
       var lp = safeHttps(it.launchpad_url), label = el(lp ? 'a' : 'span', 'lp', it.launchpad_label + (lp ? ' ↗' : ''));
-      if (lp) { label.href = lp; label.target = '_blank'; label.rel = 'noopener noreferrer'; }
+      if (lp) {
+        label.href = lp; label.target = '_blank'; label.rel = 'noopener noreferrer';
+        label.title = it.launchpad_url_kind === 'platform' ? 'Open ' + it.launchpad_label + ' platform (homepage)' : 'Open token on ' + it.launchpad_label;
+      }
       td.appendChild(label);
     }
     else { var nl = el('span', 'faint', '–'); nl.setAttribute('title', 'Agora has no launchpad profile for this token'); td.appendChild(nl); }

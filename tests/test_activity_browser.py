@@ -558,3 +558,20 @@ def test_saved_sound_preference_requires_new_gesture(kinds, make_live, ctx):
     assert page.inner_text('#act-sound') == 'Enable sound'
     assert page.get_attribute('#act-sound', 'aria-pressed') == 'false'
     assert 'click to enable' in page.inner_text('#act-audio-status')
+
+
+def test_platform_homepage_ssr_and_live_parity(kinds, make_live, ctx):
+    import sqlalchemy as sa
+    with kinds.tx() as conn:
+        conn.execute(sa.text("UPDATE token_profiles SET launchpad='montra'"))
+    page = open_activity(ctx, live(make_live))
+    ssr = page.locator('#act-body a.lp').first
+    assert ssr.get_attribute('href') == 'https://montramarkets.xyz/'
+    assert ssr.get_attribute('title') == 'Open Montra platform (homepage)'
+    item = page.request.get(page.url.replace('/activity?', '/api/v1/activity?')).json()['items'][0]
+    assert item['launchpad_url_kind'] == 'platform'
+    page.evaluate('(it) => {document.querySelector("#act-body").prepend(ActivityMonitor.renderRow(it));}', item)
+    new = page.locator('#act-body a.lp').first
+    assert new.get_attribute('href') == ssr.get_attribute('href')
+    assert new.get_attribute('title') == 'Open Montra platform (homepage)'
+    assert new.get_attribute('rel') == 'noopener noreferrer'
