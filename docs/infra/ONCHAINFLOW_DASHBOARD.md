@@ -225,6 +225,60 @@ Rollback options, fastest first:
 
 ## Activity monitor and USD market cap (migration 0005)
 
+### Wallet Intelligence: `/leaderboard`, `/leaderboard/{wallet}`, `/api/v1/leaderboard...`
+
+Population: **every wallet that has ever been in an accepted, complete Top-100 snapshot**
+(`public_api.wallet_enrollment`), not only today's list. Private manual / Telegram wallets cannot
+appear: every source is a `public_api` view (migration 0009 adds `public_api.wallet_scan_coverage`).
+
+* **Row** (`GET /api/v1/leaderboard`): status (`current` = on the latest accepted list, else
+  `former`), current / best / last rank, snapshot appearances, entries (re-entries), first / last
+  time on the list; **Agora** PnL / worth / volume (latest known value, Agora's accounting);
+  window activity (trades, buys, sells, transfers, tokens, bought / sold HYPE from *verified*
+  amounts only, estimated legs counted apart); **measured** closes, win rate and PnL (only sells
+  whose cost basis is known); last trade; `quality` + `tracking_basis` + `tracked_since`.
+  Unknown is `null`, never 0 (no measured close -> `measured_pnl: null`; no Agora PnL -> null).
+  Agora and measured figures are never combined.
+* **Data quality:** `complete` (scanned without gaps since first appearing on the list),
+  `partial` (first scanned later, or only *derived* coverage), `gaps`, `unscanned`, `excluded`.
+* **Filters:** `window` 24h|7d|30d|all (activity metrics), `membership` all|current|former,
+  `quality`, `active=1`, `min_trades`, `min_rank` / `max_rank` (current rank; former members have
+  none), `min_pnl` (latest known Agora PnL; unknown never matches), `q` (address fragment),
+  `sort` rank|pnl|worth|volume|legs|buy|realized|last_trade|appearances|best_rank|last_top|first_top,
+  `dir`, `limit` 1-100, `page`. Rows with no value for the sort key always go last. KPIs count the
+  whole tracked set, not the page. Page-based pagination is deliberate: the set is bounded
+  (<= 20,000 rows, held in the page cache) and sorts are arbitrary.
+* **Wallet profile** (`/api/v1/leaderboard/{wallet}`, plus `/performance`, `/rank-history`,
+  `/relationships`): performance for 24h / 7d / 30d / all, rank history (`step` snapshot|hour|day,
+  last observation per bucket), membership events, scan coverage, tokens traded, and
+  **relationship evidence** = same-transaction token transfers between two tracked wallets. That
+  is evidence of a transfer, not of common control; no accusation is made anywhere.
+* **CSV:** `GET /api/v1/leaderboard.csv` (same filters, fixed columns), `.../{wallet}/rank-history.csv`.
+  Text cells starting with `= + - @ TAB CR` get a leading apostrophe (formula injection); numbers
+  stay numbers. `Cache-Control: private, no-store`.
+
+#### Wallet scores (`scoring:` config, migration 0010)
+
+An explainable 0-100 number per wallet, shown in the table (`score`, `score_quality`, `min_score`,
+`sort=score`) and broken down on the wallet page / `GET /api/v1/leaderboard/{wallet}/score`.
+Five components in [0, 1], each a documented function of stored facts: `win_rate_lb` (Wilson
+lower bound of measured wins), `return_on_cost` (measured PnL / cost basis, clamped), `recency`
+(half-life decay since the last trade), `list_persistence` (share of accepted lists containing
+the wallet), `rank_strength` (mean position when listed). Weighted mean over the components
+that **have data**; the share of weight that had data is reported (`weight_available`), a
+component without evidence is `available: false` (never 0) and below `min_weight_available` there
+is no score. Quality: `sufficient` (both measured components, >= 80% of the weight), `limited`
+(no measured trade evidence; capped at `limited_cap`), `insufficient` (no score).
+
+* **Point in time.** Every input is strictly older than the row's `as_of`; wallets are scored only
+  from the moment they first appeared on the list. A test adds trades, losses, a list and a wallet
+  after `as_of` and asserts the earlier score is bit-identical. `--score-backfill DAYS` replays
+  00:00 UTC points through the same code.
+* **Immutable versions.** `score_versions` stores the full configuration and its hash; running a
+  version with different weights/parameters is refused. Hourly rows are thinned to daily after 48 h.
+* **Not a confidence.** There is no probability or confidence percentage anywhere; `weight_available`
+  is the share of the model's weight that had data, nothing more.
+
 ### Activity monitor: `/activity`, `GET /api/v1/activity`
 
 Nav: Overview | Activity | Projects | Smart Money | Early Plays | Scanner Health. Overview keeps
@@ -315,3 +369,11 @@ Met on 2026-11-03: `https://onchainflow.app` serves the dashboard over HTTPS wit
 data; the site's DB role cannot write or read private tables; the tracker's heartbeat and cursor
 stayed fresh under load; both bots kept working. See the open item about recreating the tracker
 and ui containers in OPERATIONS.md ("Dashboard").
+
+Historical score eligibility uses first Top-100 appearance, independent of today's scanner
+exclusion status. Excluding a contract from scanning must not erase its earlier research
+score. The eligibility rule is included in the immutable model fingerprint. If an earlier
+build already registered the same scoring version without this rule, select a new scoring
+version; do not overwrite the stored configuration or historical scores. Historical replay
+uses event-time observations currently stored and is not proof that late-ingested evidence
+was available to the scanner at the original time.

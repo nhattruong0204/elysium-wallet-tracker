@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% from "_macros.html" import kpi, pager, badge, empty, th, copy with context %}
+{% set pg = d.page %}{% set p = d.params %}{% set k = d.kpis %}
+{% block body %}
+<h1>Wallet intelligence</h1>
+<p class="lead">Every wallet that has <b>ever</b> been on Agora's Top 100, not only today's list. <b>Agora PnL</b> is Agora's own accounting; <b>measured PnL</b> is what we recomputed from on-chain trades and covers only sells whose cost basis we know, inside the chosen window. They are shown side by side and never combined. Nothing here is a prediction or a recommendation.</p>
+
+<section class="kpis" aria-label="Summary">
+  {{ kpi('Tracked wallets', k.tracked, 'ever on an accepted Top-100 list') }}
+  {{ kpi('On the list now', k.current, 'latest accepted snapshot') }}
+  {{ kpi('Former members', k.former, k.re_entered ~ ' re-entered at least once') }}
+  {{ kpi('Active in window', k.active_in_window, 'traded in the last ' ~ d.window) }}
+  {{ kpi('Complete history', k.complete_history, k.partial_history ~ ' partial, with gaps or not yet scanned') }}
+  {{ kpi('Bought in window', k.bought_hype|hype, 'verified amounts only', 'HYPE') }}
+</section>
+
+<form class="controls act-filters" method="get" action="/leaderboard" id="intel-form">
+  <label>Window <select name="window">{% for x in d.windows %}<option value="{{ x }}"{% if p.window == x %} selected{% endif %}>{{ x }}</option>{% endfor %}</select></label>
+  <label>Membership <select name="membership">{% for x in d.memberships %}<option value="{{ x }}"{% if p.membership == x %} selected{% endif %}>{{ x|capitalize }}</option>{% endfor %}</select></label>
+  <label>Data quality <select name="quality">{% for x in d.qualities %}<option value="{{ x }}"{% if p.quality == x %} selected{% endif %}>{{ x|capitalize }}</option>{% endfor %}</select></label>
+  <label>Min trades <input type="text" name="min_trades" value="{{ p.min_trades or '' }}" inputmode="numeric" pattern="[0-9]{1,7}" size="5" placeholder="0"></label>
+  <label>Rank from <input type="text" name="min_rank" value="{{ p.min_rank or '' }}" inputmode="numeric" pattern="[0-9]{1,6}" size="4" placeholder="1"></label>
+  <label>Rank to <input type="text" name="max_rank" value="{{ p.max_rank or '' }}" inputmode="numeric" pattern="[0-9]{1,6}" size="4" placeholder="100"></label>
+  <label title="Latest known Agora PnL, also for former members. Unknown never matches.">Min Agora PnL (HYPE) <input type="text" name="min_pnl" value="{{ p.min_pnl if p.min_pnl is not none else '' }}" inputmode="decimal" pattern="-?[0-9]{1,12}(\.[0-9]{1,18})?" size="8" placeholder="any"></label>
+  <label title="Explainable score 0-100 (see a wallet page for its components). No score never matches.">Min score <input type="text" name="min_score" value="{{ p.min_score if p.min_score is not none else '' }}" inputmode="decimal" pattern="[0-9]{1,3}(\.[0-9]{1,2})?" size="5" placeholder="any"></label>
+  <label>Sort <select name="sort">{% for key, label in d.sorts.items() %}<option value="{{ key }}"{% if p.sort == key %} selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
+  <label>Per page <select name="limit">{% for n in d.page_sizes %}<option value="{{ n }}"{% if p.size == n %} selected{% endif %}>{{ n }}</option>{% endfor %}</select></label>
+  <label class="chk"><input type="checkbox" name="active" value="1"{% if p.active %} checked{% endif %}> Traded in window</label>
+  <input class="grow" type="search" name="q" value="{{ p.q }}" placeholder="Wallet address or start of one" maxlength="44" aria-label="Search wallets" autocomplete="off" spellcheck="false">
+  <button class="btn primary" type="submit">Apply</button>
+  <a class="btn" href="/leaderboard">Reset</a>
+  <a class="btn" href="/api/v1/leaderboard.csv{{ qs(page=None) }}" rel="nofollow">Export CSV</a>
+</form>
+
+{% if d.truncated %}<div class="banner warn">More wallets are tracked than this view can load; the list is cut at the first {{ d.tracked|number }} by address.</div>{% endif %}
+<p class="faint">{{ d.filtered|number }} of {{ d.tracked|number }} wallets match · metrics cover the last {{ d.window }} · latest list {{ d.snapshot.captured_at|ts if d.snapshot else 'unknown' }} · times in UTC</p>
+
+<div class="panel flush">
+{% if not pg['items'] %}
+  {{ empty('No wallet matches these filters', 'Loosen a filter or press Reset. A wallet with no known Agora PnL cannot satisfy a PnL floor.') }}
+{% else %}
+  <div class="tw"><table>
+    <thead><tr>
+      {{ th('Rank', 'rank', p.sort, p.desc, qs, True) }}<th>Wallet</th><th>Status</th>
+      {{ th('Best', 'best_rank', p.sort, p.desc, qs, True) }}{{ th('Seen', 'appearances', p.sort, p.desc, qs, True) }}
+      {{ th('Agora PnL', 'pnl', p.sort, p.desc, qs, True) }}{{ th('Trades', 'legs', p.sort, p.desc, qs, True) }}<th class="r">Buys / sells</th>
+      {{ th('Bought', 'buy', p.sort, p.desc, qs, True) }}{{ th('Measured PnL', 'realized', p.sort, p.desc, qs, True) }}
+      {{ th('Last trade', 'last_trade', p.sort, p.desc, qs) }}{{ th('Score', 'score', p.sort, p.desc, qs, True) }}<th>Data</th></tr></thead>
+    <tbody>{% for w in pg['items'] %}
+    <tr>
+      <td class="r">{{ w.rank if w.rank else '–' }}</td>
+      <td><span class="addr"><a href="/leaderboard/{{ w.wallet }}" title="{{ w.wallet }}">{{ w.wallet|short }}</a>{{ copy(w.wallet) }}</span></td>
+      <td>{{ badge('ok' if w.status == 'current' else 'est', w.status) }}{% if w.re_entered %} <span class="faint" title="left and re-entered the list {{ w.entries - 1 }} time(s)">↺{{ w.entries - 1 }}</span>{% endif %}</td>
+      <td class="r">{{ w.best_rank }}</td><td class="r">{{ w.appearances|number }}</td>
+      <td class="r {{ w.agora_pnl|tone }}">{{ w.agora_pnl|signed if w.agora_pnl is not none else '–' }}</td>
+      <td class="r">{{ w.legs|number }}</td><td class="r">{{ w.buys }} / {{ w.sells }}</td>
+      <td class="r">{{ w.buy_hype|hype }}</td>
+      <td class="r {{ w.measured_pnl|tone }}" title="{{ w.measured_closes }} measured closing trade(s)">{{ w.measured_pnl|signed if w.measured_pnl is not none else '–' }}</td>
+      <td>{{ w.last_trade_at|ts if w.last_trade_at else '–' }}</td>
+      <td class="r" title="{{ w.score_reason or ('score ' ~ d.score_version ~ ' as of ' ~ (w.score_as_of|tstext if w.score_as_of else '')) }}">{% if w.score is not none %}<b>{{ '%.1f'|format(w.score) }}</b>{% if w.score_quality != 'sufficient' %} <span class="faint">({{ w.score_quality }})</span>{% endif %}{% else %}–{% endif %}</td>
+      <td title="{{ w.quality_note }}">{{ badge('ok' if w.quality == 'complete' else 'est', w.quality) }}</td>
+    </tr>
+    {% endfor %}</tbody>
+  </table></div>
+  {{ pager(pg, qs) }}
+{% endif %}
+</div>
+<p class="faint note">Score ({{ d.score_version }}): a weighted mean of up to five documented components, 0-100, computed only from data older than its timestamp. It describes past observed behaviour, not future results, and is empty when there is not enough evidence. <a href="/about#scores">Method</a>.</p>
+<p class="faint note">Data quality: {% for key, note in d.quality_notes.items() %}<b>{{ key }}</b> – {{ note }} {% endfor %}Amounts are HYPE. A dash means unknown, never zero.</p>
+{% endblock %}

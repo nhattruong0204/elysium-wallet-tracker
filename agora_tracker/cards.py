@@ -142,6 +142,28 @@ class Links:
 
 
 
+# Verified token routes already used by Telegram cards. Adding a venue is centralized here.
+def launchpad_token_url(chain_id: int, launchpad: str | None, token: str,
+                        links: Links | None = None) -> str | None:
+    from urllib.parse import urlsplit
+
+    if chain_id != 99901 or not re.fullmatch(r"0x[0-9a-fA-F]{40}", token):
+        return None
+    links = links or Links(LinksConfig())
+    pad = (launchpad or "").lower()
+    registry = {"kleos": ("www.thekleos.pro", links.kleos_token),
+                "boxa": ("boxa.club", links.boxa_token),
+                "elyspump": ("elysp.com", lambda t: (links.native("elyspump", t) or ("", ""))[1])}
+    if pad not in registry:
+        return None
+    host, build = registry[pad]
+    url = build(token.lower())
+    parsed = urlsplit(url)
+    if parsed.scheme != "https" or parsed.netloc != host:
+        return None
+    return url
+
+
 def usd(v: float | None, signed: bool = False) -> str:
     if v is None:
         return "n/a"
