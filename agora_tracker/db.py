@@ -242,6 +242,10 @@ class Store:
                     for tr in traders])
             if status == "ok":
                 self._sync_watchlist(c, {tr.address for tr in traders}, "leaderboard")
+                if complete and traders:   # only a complete list is evidence of membership
+                    from . import tracking
+                    tracking.enroll_snapshot(c, self.chain_id, sid,
+                                             {tr.address: tr.rank for tr in traders})
         return sid
 
     def replace_top(self, traders: list) -> None:
@@ -301,6 +305,38 @@ class Store:
             return {r[0] for r in c.execute(sa.select(w.c.address).where(
                 w.c.chain_id == self.chain_id, w.c.source == source,
                 w.c.removed_at.is_(None)))}
+
+    # --- cumulative tracking (see tracking.py) -----------------------------------------
+    def enrolled_addresses(self) -> set[str]:
+        from . import tracking
+        with self.engine.connect() as c:
+            return tracking.enrolled_addresses(c, self.chain_id)
+
+    def ensure_enrollment(self) -> dict[str, int] | None:
+        """Rebuild the registry from stored snapshots when it is behind (idempotent)."""
+        from . import tracking
+        with self.engine.begin() as c:
+            return tracking.ensure_enrollment(c, self.chain_id)
+
+    def sync_exclusions(self, enabled: bool = True) -> tuple[int, int]:
+        from . import tracking
+        with self.engine.begin() as c:
+            return tracking.sync_exclusions(c, self.chain_id, enabled)
+
+    def sync_coverage(self, tracked: set[str], cursor: int) -> tuple[int, int]:
+        from . import tracking
+        with self.engine.begin() as c:
+            return tracking.sync_coverage(c, self.chain_id, tracked, cursor)
+
+    def derive_legacy_coverage(self) -> int:
+        from . import tracking
+        with self.engine.begin() as c:
+            return tracking.derive_legacy_coverage(c, self.chain_id)
+
+    def tracking_report(self, scanned: set[str] | None = None) -> dict[str, Any]:
+        from . import tracking
+        with self.engine.connect() as c:
+            return tracking.tracking_report(c, self.chain_id, scanned)
 
     # --- token metadata ---------------------------------------------------------------
     def get_token(self, address: str) -> tuple[str, int] | None:

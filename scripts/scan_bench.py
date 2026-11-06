@@ -96,6 +96,30 @@ def scan_cost(ep: Endpoint, frm: int, to: int, wallets: list[str], chunk: int) -
             "bytes": size, "logs": logs, "errors": errs}
 
 
+def density(ep: Endpoint, to: int) -> None:
+    """How much does the whole chain emit? One unfiltered Transfer query per span. If a block
+    range of a few thousand blocks holds a few thousand logs, scanning without a wallet filter
+    costs one request per range whatever the wallet count, and filtering is done locally."""
+    print("  -- chain-wide Transfer logs (no wallet filter), settled blocks")
+    for span in (20, 100, 500, 1000, 2000):
+        dt, nbytes, res, err = get_logs(ep, to - span + 1, to, [TRANSFER])
+        if err:
+            print(f"  span {span:5d}: {err}")
+            break
+        n = len(res) if isinstance(res, list) else 0
+        three = sum(1 for lg in (res or []) if len(lg.get("topics", [])) == 3)
+        txs = len({lg.get("transactionHash") for lg in (res or [])})
+        print(f"  span {span:5d}: {n} logs ({three} ERC-20, {n - three} other), {txs} txs, "
+              f"{nbytes / 1024:.0f} KiB, {int(dt * 1000)} ms, {n / span:.2f} logs/block")
+    print("  -- OR-list limit, fine steps (100-block range)")
+    for n in (60, 75, 90, 99):
+        ws = [synthetic(200000 + i) for i in range(n)]
+        dt, nbytes, res, err = get_logs(ep, to - 99, to, [TRANSFER, [pad(w) for w in ws]])
+        print(f"  OR-list {n:3d}: {'ok ' + str(int(dt * 1000)) + ' ms' if not err else err}")
+        if err:
+            break
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--rpc", action="append", required=True)
@@ -106,6 +130,8 @@ def main() -> int:
     ap.add_argument("--timeout", type=float, default=30.0)
     ap.add_argument("--sizes", default="100,331,1000")
     ap.add_argument("--chunks", default="50,100,200")
+    ap.add_argument("--only", choices=["all", "density"], default="all",
+                    help="density: chain-wide Transfer volume and fine OR-list limits only")
     a = ap.parse_args()
     real = [x.strip().lower() for x in open(a.wallets) if x.strip().startswith("0x")]
     print(f"real tracked wallets in the list: {len(real)}; range {a.range} blocks; "
@@ -124,6 +150,10 @@ def main() -> int:
             to = head - 60                       # settled, in the node's hot data
             frm = to - a.range + 1
             print(f"  head {head}; range {frm}-{to}; eth_blockNumber {int(dt * 1000)} ms")
+            if a.only == "density":
+                density(ep, to)
+                print(f"  requests used: {ep.n}")
+                continue
             base = scan_cost(ep, frm, to, real[:50], 50)
             print(f"  baseline 50 wallets, chunk 50 : {base}")
             for n in sizes:

@@ -24,6 +24,7 @@ import logging
 import random
 import re
 import time
+from collections import defaultdict
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
@@ -111,6 +112,9 @@ class RpcClient:
         self._lagging: set[str] = set()            # behind / unreachable: skipped for now
         self._pinned: str | None = None
         self.heads: dict[str, int | None] = {}
+        # Cumulative cost counters (monotonic). Callers diff two snapshots to price one piece
+        # of work: HTTP requests, JSON-RPC calls, seconds spent waiting, per-method calls.
+        self.metrics: dict[str, float] = defaultdict(float)
         self.session = requests.Session()
         self.session.headers["Content-Type"] = "application/json"
 
@@ -191,6 +195,19 @@ class RpcClient:
         return heads
 
     def _raw_post(self, url: str, payload: Any) -> Any:
+        m = self.metrics
+        m["http"] += 1
+        for item in (payload if isinstance(payload, list) else [payload]):
+            m["calls"] += 1
+            if isinstance(item, dict):
+                m["m:" + str(item.get("method"))] += 1
+        t0 = time.monotonic()
+        try:
+            return self._raw_post_inner(url, payload)
+        finally:
+            m["seconds"] += time.monotonic() - t0
+
+    def _raw_post_inner(self, url: str, payload: Any) -> Any:
         r = self.session.post(url, json=payload, timeout=self.timeout)
         if r.status_code == 429 or r.status_code >= 500:
             raise RpcError(f"HTTP {r.status_code}", 429 if r.status_code == 429 else None)

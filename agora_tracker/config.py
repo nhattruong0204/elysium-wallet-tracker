@@ -174,6 +174,19 @@ class WebConfig:
 
 
 @dataclass
+class TrackingConfig:
+    """Which wallets the scanner follows. `cumulative` keeps every wallet that has ever been in
+    an accepted, complete top list (wallet_enrollment); turn it off to go back to
+    "latest snapshot + watchlists" without touching the database."""
+    cumulative: bool = True
+    # Wallet count above which a warning is raised (log + health). It is a *signal*, never a
+    # cap: nothing is dropped. Set it from measured capacity (scripts/scan_bench.py).
+    capacity_warn: int = 1000
+    # Scanner lag (blocks behind head) that counts as "falling behind" in the health output.
+    lag_warn_blocks: int = 3000
+
+
+@dataclass
 class IntelConfig:
     """Launch intelligence (alerts only; nothing here signs or sends a transaction)."""
     # independent-wallet scoring: bundle wallets (same-block multi-wallet buyers) count once
@@ -221,6 +234,7 @@ class Config:
     collector: CollectorConfig = field(default_factory=CollectorConfig)
     web: WebConfig = field(default_factory=WebConfig)
     intel: IntelConfig = field(default_factory=IntelConfig)
+    tracking: TrackingConfig = field(default_factory=TrackingConfig)
     db_path: str = "tracker.db"
     watchlist_file: str | None = None
     exclude_contracts: bool = True
@@ -279,11 +293,13 @@ def load_config(path: str | Path) -> Config:
     collector = CollectorConfig(**(raw.get("collector") or {}))
     web = WebConfig(**(raw.get("web") or {}))
     intel = IntelConfig(**(raw.get("intel") or {}))
+    tracking = TrackingConfig(**(raw.get("tracking") or {}))
     intel.wrapped_native = _norm_addr(intel.wrapped_native)
     intel.dd_factories = [_norm_addr(a) for a in intel.dd_factories]
     intel.launch_factories = [_norm_addr(a) for a in intel.launch_factories]
     return Config(chain=chain, leaderboard=lb, alerts=alerts, telegram=tg, links=links,
-                  market=market, ui=ui, collector=collector, web=web, intel=intel, db_path=db_path,
+                  market=market, ui=ui, collector=collector, web=web, intel=intel,
+                  tracking=tracking, db_path=db_path,
                   watchlist_file=wl,
                   exclude_contracts=raw.get("exclude_contracts", True))
 
