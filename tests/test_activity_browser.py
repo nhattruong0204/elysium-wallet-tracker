@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 
 import pytest
 from test_activity import add, kinds, many  # noqa: F401
@@ -23,6 +24,15 @@ def browser():
             pytest.skip(f"chromium unavailable: {e}")
         yield b
         b.close()
+
+
+@pytest.fixture(autouse=True)
+def fresh_heartbeat(request):
+    """`seeded` stamps the heartbeat at import time; in a long suite that is minutes old by the
+    time a test runs and the scanner would read as stale. Stamp it again right before the test."""
+    if "kinds" in request.fixturenames or "many" in request.fixturenames:
+        store = request.getfixturevalue("kinds" if "kinds" in request.fixturenames else "many")
+        store.set_kv("heartbeat", str(int(time.time())))
 
 
 @pytest.fixture
