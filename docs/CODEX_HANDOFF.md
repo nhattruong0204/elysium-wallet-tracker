@@ -121,3 +121,35 @@ read-only status check instead of a Telegram test message, and fail on unhealthy
 These operational changes are on ops; reconcile into main through review before future
 main-ref deployment. Do not revert production schema to roll back the website; prefer a
 forward fix or a schema-compatible image. Keep score history and checkpoints intact.
+
+## Issue #79 completed — 2026-11-06
+
+PR #80 merged normally as a95fed75083a7bcdebad5321e42ad754f55d6877.
+Implementation head b8a2228a12357406585bb65eb4ca2fcd3c6ed46c.
+Verified centralized card routes: Kleos /token/<address>, BOXA /token?address=<address>,
+ElysPump /#/token/<address>; Montra and unknown venues stay plain labels/null URLs.
+Activity uses existing polling only. Unique unread leg IDs update title and toolbar;
+background/unfocused/scrolled arrivals remain pending until viewed or acknowledged.
+Sound defaults OFF; saved preference requires a new gesture to unlock audio in each page.
+Tones coalesce with cooldown and best-effort localStorage coordination across tabs.
+Overflow requires reload without prematurely acknowledging missing rows.
+
+CI 42188070639 passed lint/type/audit, all 643 tests (no skips), and Docker end-to-end.
+Local full regression before final small refinements: 637 passed, 3 skipped; final Activity
+suite: 101 passed using real system Chromium. Deployment guards: 9 passed.
+CI disposable PostgreSQL database now disables JIT query compilation, reducing suite runtime
+without changing assertions or production configuration. CI tests completed in 159.64s.
+
+Web-only deployment 42188828700 succeeded at ops 7d28e21. Schema 0010 matched;
+migrations were skipped and only elysium-web was recreated. No scanner logic changed.
+Production /activity and API verified with actual Web Audio unlock, browser-intercepted
+synthetic duplicate events (no production writes), title/acknowledgment and mobile rendering.
+No page JS errors or mobile horizontal overflow. Desktop/mobile screenshots inspected locally.
+Post-release check 42188992120 passed tracker/UI health and observed Revival scan-complete
+logs with errors=0. Process start times unchanged before/after: tracker and UI 08:02:25 UTC,
+Revival 2026-10-16 03:02:20 UTC; all restart counts zero.
+
+Limitations: unverified venue routes intentionally unavailable; background notifications
+follow browser throttling/existing polling cadence; cross-tab sound coordination is best-effort
+and storage failures may allow duplicate tones. No desktop/push notification permissions.
+Broader clustering/Consensus v2 work remains separate from this completed issue.
