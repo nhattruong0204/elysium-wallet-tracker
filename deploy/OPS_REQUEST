@@ -1,3 +1,3 @@
-action=maint
-steps=tracking-baseline,tracking-verify
-requested=2026-11-06-wallet-intelligence-preflight
+action=deploy
+backup_run=42159757689
+requested=2026-11-06-wallet-intelligence-scoring-release

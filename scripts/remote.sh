@@ -219,6 +219,12 @@ status() {
 case "$ACTION" in
   deploy)
     need_docker
+    # Keep exact running images for recovery; never remove volumes or checkpoints.
+    for service in tracker ui web; do
+      case "$service" in tracker) container=elysium-wallet-tracker ;; *) container=elysium-$service ;; esac
+      image_id=$(docker inspect -f '{{.Image}}' "$container")
+      docker image tag "$image_id" "elysium-wallet-tracker:before-wallet-intel-$service"
+    done
     write_env
     install_config
     log "build"
@@ -226,14 +232,17 @@ case "$ACTION" in
     log "start database, migrate"
     docker compose up -d postgres
     docker compose run --rm migrate
-    log "telegram check"
-    docker compose run --rm --no-deps tracker --test-telegram
+    log "read-only database status"
+    docker compose run --rm --no-deps tracker --status
     log "start everything"
     docker compose up -d
     # config/ is a bind mount: recreate so a config-only change is picked up too
     docker compose up -d --no-deps --force-recreate tracker ui
-    wait_healthy || true
-    wait_healthy elysium-ui "telegram ui" || true
+    wait_healthy
+    wait_healthy elysium-ui "telegram ui"
+    wait_healthy elysium-web "dashboard"
+    web_smoke
+    web_db_checks
     status
     ;;
   web)

@@ -161,7 +161,7 @@ jobs:
               echo "TG_CHAT_ID not detectable here; keeping the value already on the VPS"
             fi
           fi
-          if [ "$ACTION" = web ]; then
+          if [ "$ACTION" = web ] || [ "$ACTION" = deploy ]; then
             # Schema change on the production database: only after a verified off-site backup.
             [ -n "$BACKUP_RUN" ] || { echo "web needs backup_run=<run id of a successful backup>"; exit 1; }
             api() { curl -fsS -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" "https://api.github.com/repos/$GITHUB_REPOSITORY/$1"; }
