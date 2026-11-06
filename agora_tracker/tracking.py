@@ -271,13 +271,15 @@ def derive_legacy_coverage(c: Connection, chain_id: int) -> int:
     rows = []
     for addr, ivs in per.items():
         ivs.sort(key=lambda x: x[0])
-        merged: list[list[int | None]] = []
+        merged: list[tuple[int, int | None]] = []
         for lo, hi in ivs:
-            if merged and (merged[-1][1] is None or lo <= merged[-1][1] + 1):
-                if merged[-1][1] is not None:
-                    merged[-1][1] = None if hi is None else max(merged[-1][1], hi)
-            else:
-                merged.append([lo, hi])
+            if merged:
+                plo, phi = merged[-1]
+                if phi is None or lo <= phi + 1:      # overlaps or touches the previous one
+                    if phi is not None:
+                        merged[-1] = (plo, None if hi is None else max(phi, hi))
+                    continue
+            merged.append((lo, hi))
         for lo, hi in merged:
             if hi is None and head is not None and lo > head:
                 lo = head
