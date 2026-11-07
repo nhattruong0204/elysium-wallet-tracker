@@ -51,3 +51,13 @@ def test_same_workloads_budget_and_statistics(monkeypatch):
     assert result['endpoints'][0]['freshness_qualified'] is False
     assert percentile([], .95) is None
     assert percentile([1, 2, 3], .95) == 3
+
+
+def test_premium_hostname_cannot_leak_api_key(monkeypatch):
+    def fake(self, method, params):
+        self.count += 1
+        return '0x1', 1., None
+    monkeypatch.setattr(ReadOnlyRpc, 'call', fake)
+    result = benchmark(['https://provider_secret.premium.example/rpc'], 1, [], 'test')
+    assert result['endpoints'][0]['host'] == 'redacted_custom_endpoint'
+    assert 'provider_secret' not in json.dumps(result)
