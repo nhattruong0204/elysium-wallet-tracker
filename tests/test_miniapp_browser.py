@@ -209,3 +209,22 @@ def test_default_auth_is_denied_in_browser(browser, preview):
     expect(browser.locator("#connect")).to_be_disabled()
     expect(browser.locator("#refresh")).to_be_disabled()
     assert browser.evaluate("window.calls") == []
+
+
+def test_telegram_sdk_reads_launch_data_before_fragment_is_cleared(browser, preview):
+    import time
+
+    p = preview()
+
+    def sdk(route):
+        time.sleep(.2)  # SDK network delay must not let the module erase launch data first.
+        route.fulfill(content_type="text/javascript", body="""
+          window.sdkLaunchData = new URLSearchParams(location.hash.slice(1)).get('tgWebAppData');
+          window.Telegram.WebApp.initData = window.sdkLaunchData || '';
+        """)
+
+    browser.route("https://telegram.org/**", sdk)
+    browser.goto(p.base+"/#intent="+p.intent.id+"&tgWebAppData=fixture-user-1")
+    expect(browser.locator("#app")).to_have_attribute("data-state", "wallet_disconnected")
+    assert browser.evaluate("window.sdkLaunchData") == "fixture-user-1"
+    assert browser.evaluate("location.hash") == ""
