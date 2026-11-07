@@ -39,8 +39,11 @@ cp watchlist.example.txt watchlist.txt
 chmod 600 config.yaml watchlist.txt
 ```
 
-Set `leaderboard.enabled`, `ui.enabled`, `consensus.enabled` and `intel.enabled` false
-in local config, and `trading: {paper_enabled: false}`. Do not start the scanner, UI,
+Set `leaderboard.enabled`, `market.enabled`, `ui.enabled` and `collector.enabled` false
+in local config, plus `intel.paper_enabled`, `intel.dd_enabled`, `intel.launch_watch`,
+`intel.new_launchpad_alerts`, `intel.ascend_index` false, and
+`trading: {paper_enabled: false}`. Scanner startup is controlled by the CLI; no
+background application process is started by these setup commands. Do not start the scanner, UI,
 collector, notifier, production compose stack or any bot. The CLI migration command
 below connects only to `tracker_dev`; tests destroy only `tracker_test`.
 The database container has no persistent volume; deleting it deletes this local data.
