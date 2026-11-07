@@ -2,7 +2,8 @@
 
 Production has no verified quote adapter yet, so review fails closed. Tests inject a
 fixture quote provider and allowlist; fixture results must never be shown as live quotes.
-Sessions/orders are bounded, in memory, and invalidated by restart; not a live order store.
+Sessions are bounded, in memory and invalidated by restart. Optional private journals
+persist hypothetical records only; they are not live order stores.
 """
 from __future__ import annotations
 
@@ -110,11 +111,16 @@ class QuoteProvider(Protocol):
     def quote(self, intent: TradeIntent, slippage_bps: int) -> Quote: ...
 
 
+class OrderJournal(Protocol):
+    def save(self, order: Order, intent: TradeIntent, quote: Quote) -> None: ...
+    def recent(self, uid: int) -> list[dict]: ...
+
+
 class PaperFlow:
     def __init__(self, allowed: set[int], *, provider: QuoteProvider | None = None,
                  routes: frozenset[ExecutionRoute] = frozenset(),
                  now: Callable[[], float] = time.time, ttl: int = 180,
-                 max_buy_wei: int = 10**18):
+                 max_buy_wei: int = 10**18, journal: OrderJournal | None = None):
         if type(ttl) is not int or type(max_buy_wei) is not int or not 0 < ttl <= 180 or not 0 < max_buy_wei <= 10**18:
             raise TradeRefused('Invalid paper limits')
         self.allowed = frozenset(allowed)
@@ -122,11 +128,13 @@ class PaperFlow:
         self.ttl, self.max_buy_wei = ttl, max_buy_wei
         self._intents: dict[str, TradeIntent] = {}
         self._quotes: dict[str, tuple[Quote, int]] = {}
+        self._review_tokens: dict[str, str] = {}
         self._lock = threading.RLock()
         self.paused = False
+        self.journal = journal
 
-    def _auth(self, uid: int, chat: int) -> None:
-        if self.paused:
+    def _auth(self, uid: int, chat: int, *, allow_paused: bool = False) -> None:
+        if self.paused and not allow_paused:
             raise TradeRefused("Paper trading paused")
         if type(uid) is not int or type(chat) is not int or uid <= 0 or uid not in self.allowed or uid != chat:
             raise TradeRefused('Authorized private chat required')
@@ -141,6 +149,7 @@ class PaperFlow:
         with self._lock:
             self._intents = {k: v for k, v in self._intents.items() if v.expires_at > self.now()}
             self._quotes = {k: v for k, v in self._quotes.items() if k in self._intents}
+            self._review_tokens = {k: v for k, v in self._review_tokens.items() if k in self._quotes}
             for i in self._intents.values():
                 if (i.user_id, i.token, i.side, i.source_chat, i.source_message) == (
                         uid, token.lower(), side, source_chat, source_message):
@@ -152,8 +161,8 @@ class PaperFlow:
             self._intents[i.id] = i
             return i
 
-    def get(self, uid: int, chat: int, sid: str) -> TradeIntent:
-        self._auth(uid, chat)
+    def get(self, uid: int, chat: int, sid: str, *, allow_paused: bool = False) -> TradeIntent:
+        self._auth(uid, chat, allow_paused=allow_paused)
         with self._lock:
             i = self._intents.get(sid)
             if not i or i.user_id != uid or i.expires_at <= self.now() or i.state in ('cancelled', 'done'):
@@ -169,10 +178,15 @@ class PaperFlow:
                     raise TradeRefused('Paper amount exceeds the per-trade cap')
                 i = replace(i, amount_wei=amount, state='select')
             else:
-                if value not in ('25', '50', '100'):
-                    raise TradeRefused('Sell percent must be 25, 50 or 100 of verified wallet balance')
-                i = replace(i, sell_bps=int(value) * 100, state='select')
+                if not re.fullmatch(r'[0-9]{1,3}(?:\.[0-9]{1,2})?', value):
+                    raise TradeRefused('Sell percent must be positive, at most 100 with two decimals')
+                whole, _, fraction = value.partition('.')
+                bps = int(whole) * 100 + int(fraction.ljust(2, '0') or '0')
+                if not 0 < bps <= 10000:
+                    raise TradeRefused('Sell percent must be positive and at most 100')
+                i = replace(i, sell_bps=bps, state='select')
             self._quotes.pop(sid, None)
+            self._review_tokens.pop(sid, None)
             self._intents[sid] = i
             return i
 
@@ -205,6 +219,7 @@ class PaperFlow:
             i = self.get(uid, chat, sid)
             # A failed refresh must never leave an older quote confirmable.
             self._quotes.pop(sid, None)
+            self._review_tokens.pop(sid, None)
             self._intents[sid] = replace(i, state='select')
             if type(slippage) is not int or not 0 <= slippage <= 100:
                 raise TradeRefused('Slippage exceeds paper limit')
@@ -213,25 +228,51 @@ class PaperFlow:
             q = self.provider.quote(i, slippage)
             self._validate(i, q, slippage)
             self._quotes[sid] = (q, slippage)
+            self._review_tokens[sid] = secrets.token_urlsafe(8)
             self._intents[sid] = replace(i, state='review')
             return q
 
-    def confirm(self, uid: int, chat: int, sid: str) -> Order:
+    def reviewed(self, uid: int, chat: int, sid: str) -> Quote | None:
+        with self._lock:
+            i = self.get(uid, chat, sid)
+            if i.state != 'review' or sid not in self._quotes:
+                return None
+            q, slippage = self._quotes[sid]
+            self._validate(i, q, slippage)
+            return q
+
+    def orders(self, uid: int, chat: int) -> list[dict]:
+        self._auth(uid, chat, allow_paused=True)
+        return self.journal.recent(uid) if self.journal else []
+
+    def confirmation_token(self, uid: int, chat: int, sid: str) -> str | None:
+        with self._lock:
+            self.get(uid, chat, sid)
+            return self._review_tokens.get(sid)
+
+    def confirm(self, uid: int, chat: int, sid: str, review_token: str | None = None) -> Order:
         with self._lock:
             i = self.get(uid, chat, sid)
             if i.state != 'review' or sid not in self._quotes:
                 raise TradeRefused('Fresh review required')
+            if not review_token or not secrets.compare_digest(review_token, self._review_tokens.get(sid, '')):
+                raise TradeRefused('Review changed; open the latest review before confirming')
             q, slippage = self._quotes[sid]
             self._validate(i, q, slippage)
+            order = Order(sid, uid)
+            if self.journal:
+                self.journal.save(order, i, q)
             self._intents[sid] = replace(i, state='done')
             self._quotes.pop(sid, None)
-            return Order(sid, uid)
+            self._review_tokens.pop(sid, None)
+            return order
 
     def cancel(self, uid: int, chat: int, sid: str) -> None:
         with self._lock:
-            i = self.get(uid, chat, sid)
+            i = self.get(uid, chat, sid, allow_paused=True)
             self._intents[sid] = replace(i, state='cancelled')
             self._quotes.pop(sid, None)
+            self._review_tokens.pop(sid, None)
 
     def broadcast(self, *args: object, **kwargs: object) -> None:
         raise TradeRefused('Live execution is not implemented; security review and explicit approval required')

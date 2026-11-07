@@ -73,7 +73,7 @@ def test_production_no_quote_fails_closed_and_broadcast_is_absent():
     with pytest.raises(RouteUnavailable):
         f.review(1, 1, i.id)
     with pytest.raises(TradeRefused):
-        f.confirm(1, 1, i.id)
+        f.confirm(1, 1, i.id, f.confirmation_token(1, 1, i.id))
     with pytest.raises(TradeRefused, match='not implemented'):
         f.broadcast('0xsigned')
 
@@ -84,10 +84,10 @@ def test_paper_review_confirm_once_does_not_submit(side):
     i = intent(f, side)
     q = f.review(1, 1, i.id, 100)
     assert q.min_out_wei == 990
-    order = f.confirm(1, 1, i.id)
+    order = f.confirm(1, 1, i.id, f.confirmation_token(1, 1, i.id))
     assert order.mode == 'PAPER' and order.status == 'hypothetical_only'
     with pytest.raises(TradeRefused):
-        f.confirm(1, 1, i.id)
+        f.confirm(1, 1, i.id, f.confirmation_token(1, 1, i.id))
 
 
 @pytest.mark.parametrize('changes', [
@@ -106,7 +106,7 @@ def test_bad_quotes_cannot_be_reviewed(changes):
     with pytest.raises(TradeRefused):
         f.review(1, 1, i.id)
     with pytest.raises(TradeRefused):
-        f.confirm(1, 1, i.id)
+        f.confirm(1, 1, i.id, f.confirmation_token(1, 1, i.id))
 
 
 def test_expiry_cancellation_pause_and_caps():
@@ -122,7 +122,7 @@ def test_expiry_cancellation_pause_and_caps():
     f.review(1, 1, i.id)
     f.now = lambda: 126.
     with pytest.raises(TradeRefused):
-        f.confirm(1, 1, i.id)
+        f.confirm(1, 1, i.id, f.confirmation_token(1, 1, i.id))
     f.paused = True
     with pytest.raises(TradeRefused):
         intent(f)
@@ -190,7 +190,7 @@ def test_concurrent_confirmation_creates_only_one_hypothetical_order():
     f.review(1, 1, i.id)
     def confirm(_):
         try:
-            return f.confirm(1, 1, i.id).status
+            return f.confirm(1, 1, i.id, f.confirmation_token(1, 1, i.id)).status
         except TradeRefused:
             return 'refused'
     with ThreadPoolExecutor(2) as pool:
@@ -234,7 +234,7 @@ def test_failed_quote_refresh_revokes_previous_review():
     with pytest.raises(RouteUnavailable):
         f.review(1, 1, i.id)
     with pytest.raises(TradeRefused, match='Fresh review'):
-        f.confirm(1, 1, i.id)
+        f.confirm(1, 1, i.id, f.confirmation_token(1, 1, i.id))
 
 
 def test_bounded_sessions_prune_after_expiry():

@@ -166,6 +166,17 @@ class IntelBot:
         self.allowed = set(cfg.ui.admin_ids)
         from .trading.paper import PaperFlow
         self.paper_trades = PaperFlow(self.allowed)
+        self.paper_market = None
+        if cfg.trading.paper_enabled:
+            from .trading.indicative import AgoraIndicative
+            self.paper_market = AgoraIndicative()
+            if cfg.trading.paper_order_path:
+                from .trading.journal import PaperJournal
+                try:
+                    self.paper_trades.journal = PaperJournal(cfg.trading.paper_order_path)
+                except (OSError, ValueError):
+                    self.paper_trades.paused = True
+                    log.error("Private PAPER journal unavailable; paper actions paused")
         self.sessions = Sessions(store)
         self.exporter = Exporter(reports, self.tz, max_rows=cfg.ui.report_max_rows,
                                  max_bytes=cfg.ui.report_max_bytes)
@@ -288,6 +299,10 @@ class IntelBot:
             return
         trade_cmd, _, trade_arg = text.partition(" ")
         trade_cmd = trade_cmd.split("@", 1)[0].lower()
+        if trade_cmd == "/paper_amount":
+            from .trading.telegram import custom_amount
+            custom_amount(self, msg, trade_arg)
+            return
         if trade_cmd in ("/trade", "/pause_trading", "/orders", "/positions"):
             if chat != uid or msg.get("chat", {}).get("type") != "private":
                 self._send(chat, "Open a private chat for paper trade actions.", None)
@@ -295,6 +310,16 @@ class IntelBot:
             if trade_cmd == "/pause_trading":
                 self.paper_trades.paused = True
                 self._send(chat, "Paper trading paused until process restart. Live execution is unavailable.", None)
+            elif trade_cmd == "/orders":
+                from .trading.paper import TradeRefused
+                try:
+                    rows = self.paper_trades.orders(uid, chat)
+                    text = "PAPER hypothetical records — no fills or transactions\n" + (
+                        "\n".join(r['intent_id'] + " — " + r['status'] for r in rows)
+                        if rows else "No durable PAPER records; no connected wallet.")
+                except TradeRefused as e:
+                    text = str(e)
+                self._send(chat, text, None)
             elif trade_cmd != "/trade":
                 self._send(chat, "PAPER only: no connected wallet, verified holdings or durable live orders.", None)
             else:
@@ -363,7 +388,7 @@ class IntelBot:
             return
         if not self.authorized(uid, chat, cq["id"]):
             return
-        if data.split("|", 1)[0] in ("tp", "ps", "pr", "pc"):
+        if data.split("|", 1)[0] in ("tp", "ps", "pr", "pc", "pf", "pa", "pq"):
             from .trading.telegram import callback
             callback(self, cq)
             return

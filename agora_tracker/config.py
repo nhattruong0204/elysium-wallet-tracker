@@ -275,8 +275,11 @@ class IntelConfig:
 class TradingConfig:
     """Stage B only. There is no live execution configuration switch."""
     paper_enabled: bool = False
+    paper_order_path: str | None = None
 
     def __post_init__(self) -> None:
+        if self.paper_order_path is not None and (not isinstance(self.paper_order_path, str) or not self.paper_order_path.strip()):
+            raise ValueError('paper_order_path must be a local private file path')
         if type(self.paper_enabled) is not bool:
             raise ValueError("trading.paper_enabled must be a boolean")
 

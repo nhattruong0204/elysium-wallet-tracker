@@ -147,3 +147,5 @@ scoring:
 # Keep OFF pending review; turning this on never enables real-money execution.
 trading:
   paper_enabled: false
+  # Optional private local PAPER journal; parent directory must be owned by UI user, mode 0700.
+  # paper_order_path: /data/private-trading/paper.sqlite
