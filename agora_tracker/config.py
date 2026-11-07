@@ -273,10 +273,11 @@ class IntelConfig:
 
 @dataclass
 class TradingConfig:
-    """Stage B only. There is no live execution configuration switch."""
+    """PAPER and optional C1 preview launcher. No live execution configuration switch."""
     paper_enabled: bool = False
     paper_order_path: str | None = None
     paper_rpc_url: str = 'https://rpc.agoradex.app'
+    miniapp_url: str | None = None
 
     def __post_init__(self) -> None:
         from urllib.parse import urlsplit
@@ -284,6 +285,12 @@ class TradingConfig:
             raise ValueError('paper_rpc_url must use HTTPS')
         if self.paper_order_path is not None and (not isinstance(self.paper_order_path, str) or not self.paper_order_path.strip()):
             raise ValueError('paper_order_path must be a local private file path')
+        if self.miniapp_url is not None:
+            if not isinstance(self.miniapp_url, str):
+                raise ValueError('miniapp_url must be a clean HTTPS URL')
+            url = urlsplit(self.miniapp_url)
+            if url.scheme != 'https' or not url.hostname or url.username or url.password or url.query or url.fragment:
+                raise ValueError('miniapp_url must be a clean HTTPS URL')
         if type(self.paper_enabled) is not bool:
             raise ValueError("trading.paper_enabled must be a boolean")
 

@@ -12,6 +12,7 @@ select = ["E", "F", "W", "B", "UP", "I"]
 ignore = ["B904", "E501"]  # long SQL/f-strings; formatting is not a correctness issue
 
 [tool.ruff.lint.per-file-ignores]
+"tests/test_miniapp_browser.py" = ["F811"]  # fixture imported from test_miniapp
 "tests/test_web.py" = ["F811"]  # pytest fixtures imported from test_dashboard_db
 "tests/test_usd.py" = ["F811"]
 "tests/test_activity.py" = ["F811"]

@@ -20,7 +20,7 @@ def alert_controls(markup: dict | None, token: str, chain_id: int) -> dict | Non
     return {"inline_keyboard": rows}
 
 
-def panel(flow: PaperFlow, uid: int, chat: int, sid: str, links: Links) -> tuple[str, dict]:
+def panel(flow: PaperFlow, uid: int, chat: int, sid: str, links: Links, miniapp_url: str | None = None) -> tuple[str, dict]:
     i = flow.get(uid, chat, sid)
     text = (f"<b>PAPER {i.side.upper()} — no live trading</b>\nChain: {i.chain_id}\n"
             f"Token: <code>{html.escape(i.token)}</code>\n"
@@ -89,7 +89,7 @@ def panel(flow: PaperFlow, uid: int, chat: int, sid: str, links: Links) -> tuple
     values = ("0.1", "0.5", "1") if i.side == "buy" else ("25", "50", "100")
     presets = [{"text": v + (" HYPE" if i.side == "buy" else "%"),
                 "callback_data": f"ps|{sid}|{v}"} for v in values]
-    rows = [presets, [{"text": "Custom amount", "callback_data": f"pa|{sid}"}],
+    rows: list[list[dict]] = [presets, [{"text": "Custom amount", "callback_data": f"pa|{sid}"}],
         [{"text": "Review / refresh pool quote", "callback_data": f"pr|{sid}"}]]
     if i.side == 'buy':
         rows.append([{"text": "Indicative Agora price (read-only)", "callback_data": f"pq|{sid}"}])
@@ -102,6 +102,8 @@ def panel(flow: PaperFlow, uid: int, chat: int, sid: str, links: Links) -> tuple
     if str(i.source_chat).startswith('-100'):
         rows.insert(-1, [{"text": "Original alert", "url":
                           f"https://t.me/c/{str(i.source_chat)[4:]}/{i.source_message}"}])
+    if miniapp_url and uid == chat:
+        rows.append([{"text": "Open unsigned Mini App preview", "web_app": {"url": miniapp_url + "#intent=" + i.id}}])
     return text, {"inline_keyboard": rows}
 
 
@@ -115,7 +117,7 @@ def custom_amount(bot, msg: dict, arg: str) -> None:
         if len(parts) != 2:
             raise TradeRefused('Use /paper_amount SESSION AMOUNT (HYPE for buys, percent for sells)')
         bot.paper_trades.select(uid, chat, parts[0], parts[1])
-        bot._send(chat, *panel(bot.paper_trades, uid, chat, parts[0], bot.L))
+        bot._send(chat, *panel(bot.paper_trades, uid, chat, parts[0], bot.L, bot.cfg.trading.miniapp_url))
     except TradeRefused as e:
         bot._send(chat, str(e), None)
 
@@ -143,7 +145,7 @@ def callback(bot, cq: dict) -> None:
             side = {'b': 'buy', 's': 'sell'}.get(data[1], '')
             i = bot.paper_trades.create(uid, uid, data[2], side, chat, msg.get('message_id'),
                                         bot.cfg.chain.chain_id)
-            text, kb = panel(bot.paper_trades, uid, uid, i.id, bot.L)
+            text, kb = panel(bot.paper_trades, uid, uid, i.id, bot.L, bot.cfg.trading.miniapp_url)
             bot._send(uid, text, kb)
             answer('Open your private chat; send /start if needed (PAPER only)')
             return
@@ -156,7 +158,7 @@ def callback(bot, cq: dict) -> None:
             bot.paper_trades.review(uid, chat, sid)
         elif data[0] == 'pa' and len(data) == 2:
             bot.paper_trades.get(uid, chat, sid)
-            text, kb = panel(bot.paper_trades, uid, chat, sid, bot.L)
+            text, kb = panel(bot.paper_trades, uid, chat, sid, bot.L, bot.cfg.trading.miniapp_url)
             text += f'\nSend <code>/paper_amount {sid} AMOUNT</code> (HYPE for buys, percent for sells).'
             bot._show(chat, msg.get('message_id'), text, kb)
             answer('PAPER custom amount')
@@ -169,7 +171,7 @@ def callback(bot, cq: dict) -> None:
             # Recheck after network I/O so expiry/pause/selection changes cannot show stale data.
             if bot.paper_trades.get(uid, chat, sid) != i:
                 raise TradeRefused('Selection changed; request a new indicative quote')
-            text, kb = panel(bot.paper_trades, uid, chat, sid, bot.L)
+            text, kb = panel(bot.paper_trades, uid, chat, sid, bot.L, bot.cfg.trading.miniapp_url)
             text += (f'\n\n<b>INDICATIVE — not reviewed, simulated or executable</b>\n'
                      f'Agora-reported venue: {html.escape(q.venue)}\n'
                      f'Output: {q.amount_out_raw} raw token units (decimals unverified)\n'
@@ -197,7 +199,7 @@ def callback(bot, cq: dict) -> None:
             return
         else:
             raise TradeRefused('Invalid paper action')
-        bot._show(chat, msg.get('message_id'), *panel(bot.paper_trades, uid, chat, sid, bot.L))
+        bot._show(chat, msg.get('message_id'), *panel(bot.paper_trades, uid, chat, sid, bot.L, bot.cfg.trading.miniapp_url))
         answer('PAPER only')
     except TradeRefused as e:
         answer(str(e))

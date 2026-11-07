@@ -149,4 +149,5 @@ trading:
   paper_enabled: false
   # Required for the read-only quote workflow; parent directory must be owned by UI user, mode 0700.
   # paper_order_path: /data/private-trading/paper.sqlite
+  # miniapp_url: https://preview.example.com/  # optional private-chat launcher; C1 API denies until #89
   # paper_rpc_url: https://rpc.agoradex.app  # dedicated read transport, independent of scanner
