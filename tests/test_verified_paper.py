@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
@@ -48,6 +49,9 @@ class RpcFixture(ReadRpc):
     def snapshot(self):
         self.requests.append(("snapshot", []))
         return "0xa", {"number": "0xa", "timestamp": "0x64", "hash": "0x" + "12" * 32}
+
+    def check_block(self, block, expected):
+        self.requests.append(("check_block", [block]))
 
     def code_hash(self, target, block):
         self.requests.append(("code_hash", [target, block]))
@@ -116,7 +120,7 @@ class RpcFixture(ReadRpc):
 
 def prepared(side="buy", *, rpc=None, journal=None, value=None):
     rpc = rpc or RpcFixture()
-    provider = DirectV2Provider(rpc, now=lambda: 100.0)
+    provider = DirectV2Provider(rpc, now=lambda: 100.0, optimize=False)
     f = PaperFlow(
         {1, 2},
         provider=provider,
@@ -225,8 +229,8 @@ def test_missing_wallet_unsupported_decimals_thin_liquidity_and_funds():
 
 def test_mutating_review_payload_refuses_confirmation():
     f, i, _ = prepared()
-    q = f.review(1, 1, i.id)
-    q.transaction["to"] = WALLET
+    f.review(1, 1, i.id)
+    f._quotes[i.id][0].transaction["to"] = WALLET
     with pytest.raises(TradeRefused, match="changed"):
         f.confirm(1, 1, i.id, f.confirmation_token(1, 1, i.id))
 
@@ -286,6 +290,8 @@ def test_rpc_allowlist_envelopes_wrong_chain_head_and_budget(monkeypatch):
             rpc.call(method, [])
     assert rpc._id == 0
     r = Mock(status_code=200)
+    r.headers = {}
+    r.iter_content.side_effect = lambda **kw: iter([json.dumps(r.json()).encode()])
     r.json.return_value = {"jsonrpc": "2.0", "id": True, "result": "0x1"}
     monkeypatch.setattr(rpc.session, "post", Mock(return_value=r))
     with pytest.raises(TradeRefused, match="Invalid"):
@@ -385,6 +391,8 @@ def test_agora_untrusted_builder_fields_rejected(monkeypatch, change):
     i = f.get(1, 1, i.id)
     p = AgoraV1()
     r = Mock(status_code=200)
+    r.headers = {}
+    r.iter_content.side_effect = lambda **kw: iter([json.dumps(r.json()).encode()])
     r.json.return_value = {**api_payload(i), **change}
     monkeypatch.setattr(p.session, "get", Mock(return_value=r))
     with pytest.raises(TradeRefused):
@@ -396,6 +404,8 @@ def test_agora_builder_is_only_a_labelled_comparison(monkeypatch):
     i = f.get(1, 1, i.id)
     p = AgoraV1()
     r = Mock(status_code=200)
+    r.headers = {}
+    r.iter_content.side_effect = lambda **kw: iter([json.dumps(r.json()).encode()])
     r.json.return_value = api_payload(i)
     monkeypatch.setattr(p.session, "get", Mock(return_value=r))
     q = p.compare(i, i.amount_wei, 18, 50)

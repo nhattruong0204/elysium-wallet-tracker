@@ -7,8 +7,10 @@ Uniswap V2 interfaces and exact runtime hashes including checked router immutabl
 from __future__ import annotations
 
 import json
+import re
 import threading
 import time
+from collections import OrderedDict
 from pathlib import Path
 
 from .chain import ReadRpc, SimulationReverted, address, call_data, uint
@@ -34,30 +36,37 @@ def amount_out(n: int, reserve_in: int, reserve_out: int) -> int:
 
 
 class DirectV2Provider:
-    def __init__(self, rpc: ReadRpc, *, agora=None, now=time.time):
+    def __init__(self, rpc: ReadRpc, *, agora=None, now=time.time, optimize: bool = True):
         self.rpc, self.agora, self.now = rpc, agora, now
         self._lock = threading.Lock()
         self.metrics: dict[str, float] = {}
+        self.optimize = optimize
+        self._router_metadata_verified = False
+        self._pairs: OrderedDict[str, tuple[str, str, str]] = OrderedDict()
 
     def _function(
         self, kind: str, target: str, name: str, values: list, block: str, outputs: list[str]
     ) -> tuple:
         started = time.monotonic()
         try:
-            return self.rpc.view(
-                target, call_data(CONTRACTS[kind]["abi"], name, values), block, outputs
-            )
+            with self.rpc.operation(kind + "." + name):
+                return self.rpc.view(
+                    target, call_data(CONTRACTS[kind]["abi"], name, values), block, outputs
+                )
         finally:
             self.metrics[name] = (time.monotonic() - started) * 1000
 
     def _balances(self, wallet: str, token: str) -> tuple[int, int, int, str]:
         wallet, token = address(wallet), address(token)
-        block, _ = self.rpc.snapshot()
-        decimals = self.rpc.view(token, DECIMALS, block, ["uint8"])[0]
+        block, head = self.rpc.snapshot()
+        with self.rpc.operation("token.decimals"):
+            decimals = self.rpc.view(token, DECIMALS, block, ["uint8"])[0]
         if not 0 <= decimals <= 36:
             raise TradeRefused("Unsupported token decimals")
         balance = self.rpc.view(token, BALANCE + wallet[2:].zfill(64), block, ["uint256"])[0]
-        native = uint(self.rpc.call("eth_getBalance", [wallet, block]))
+        with self.rpc.operation("native.balance"):
+            native = uint(self.rpc.call("eth_getBalance", [wallet, block]))
+        self.rpc.check_block(block, head)
         return balance, native, decimals, block
 
     def balances(self, wallet: str, token: str) -> tuple[int, int, int, str]:
@@ -90,33 +99,64 @@ class DirectV2Provider:
             raise TradeRefused("Wrapped/native conversion is not a supported swap")
         block, head = self.rpc.snapshot()
         for kind, target in [("router", ROUTER), ("factory", FACTORY)]:
-            if self.rpc.code_hash(target, block) != CONTRACTS[kind]["runtime_keccak256"]:
+            with self.rpc.operation("code." + kind):
+                valid = self.rpc.code_hash(target, block) == CONTRACTS[kind]["runtime_keccak256"]
+            if not valid:
+                self._pairs.clear()
+                self._router_metadata_verified = False
                 raise TradeRefused("Verified contract runtime changed")
-        if self._function("router", ROUTER, "factory", [], block, ["address"])[0] != FACTORY:
-            raise TradeRefused("Router factory mismatch")
-        if self._function("router", ROUTER, "WETH", [], block, ["address"])[0] != WRAPPED:
-            raise TradeRefused("Wrapped HYPE mismatch")
-        pair = self._function("factory", FACTORY, "getPair", [WRAPPED, token], block, ["address"])[
-            0
-        ]
+        # Only metadata proven immutable by these exact non-proxy runtimes is cached.
+        # Code, chain, head and all token/state reads are still checked every quote.
+        if not self.optimize or not self._router_metadata_verified:
+            if self._function("router", ROUTER, "factory", [], block, ["address"])[0] != FACTORY:
+                raise TradeRefused("Router factory mismatch")
+            if self._function("router", ROUTER, "WETH", [], block, ["address"])[0] != WRAPPED:
+                raise TradeRefused("Wrapped HYPE mismatch")
+            if self.optimize:
+                self._router_metadata_verified = True
+        cached = self._pairs.get(token) if self.optimize else None
+        self.metrics["metadata_cache_hit"] = float(cached is not None)
+        pair = (
+            cached[0]
+            if cached
+            else self._function(
+                "factory", FACTORY, "getPair", [WRAPPED, token], block, ["address"]
+            )[0]
+        )
         address(pair)
-        if self.rpc.code_hash(pair, block) != CONTRACTS["pair"]["runtime_keccak256"]:
+        with self.rpc.operation("code.pair"):
+            pair_hash = self.rpc.code_hash(pair, block)
+        if pair_hash != CONTRACTS["pair"]["runtime_keccak256"]:
+            self._pairs.pop(token, None)
             raise TradeRefused("Unsupported pair runtime")
-        if self._function("pair", pair, "factory", [], block, ["address"])[0] != FACTORY:
-            raise TradeRefused("Pair factory mismatch")
-        t0 = self._function("pair", pair, "token0", [], block, ["address"])[0]
-        t1 = self._function("pair", pair, "token1", [], block, ["address"])[0]
-        if {t0, t1} != {token, WRAPPED}:
-            raise TradeRefused("Pair token mismatch")
+        if cached:
+            _, t0, t1 = cached
+            self._pairs.move_to_end(token)
+        else:
+            if self._function("pair", pair, "factory", [], block, ["address"])[0] != FACTORY:
+                raise TradeRefused("Pair factory mismatch")
+            t0 = self._function("pair", pair, "token0", [], block, ["address"])[0]
+            t1 = self._function("pair", pair, "token1", [], block, ["address"])[0]
+            if {t0, t1} != {token, WRAPPED}:
+                raise TradeRefused("Pair token mismatch")
+            if self.optimize:
+                self._pairs[token] = (pair, t0, t1)
+                if len(self._pairs) > 64:
+                    self._pairs.popitem(last=False)
         r0, r1, _ = self._function(
             "pair", pair, "getReserves", [], block, ["uint112", "uint112", "uint32"]
         )
         # All balances/allowances/reserves use the same pinned block.
-        decimals = self.rpc.view(token, DECIMALS, block, ["uint8"])[0]
+        with self.rpc.operation("token.decimals"):
+            decimals = self.rpc.view(token, DECIMALS, block, ["uint8"])[0]
         if not 0 <= decimals <= 36:
             raise TradeRefused("Unsupported token decimals")
-        token_balance = self.rpc.view(token, BALANCE + wallet[2:].zfill(64), block, ["uint256"])[0]
-        native = uint(self.rpc.call("eth_getBalance", [wallet, block]))
+        with self.rpc.operation("token.balance"):
+            token_balance = self.rpc.view(
+                token, BALANCE + wallet[2:].zfill(64), block, ["uint256"]
+            )[0]
+        with self.rpc.operation("native.balance"):
+            native = uint(self.rpc.call("eth_getBalance", [wallet, block]))
         n = i.amount_wei if i.side == "buy" else token_balance * (i.sell_bps or 0) // 10000
         if type(n) is not int or n <= 0 or (i.side == "buy" and n > 10**18):
             raise TradeRefused("Select a positive paper amount within the cap")
@@ -129,12 +169,17 @@ class DirectV2Provider:
         rin, rout = (r0, r1) if t0 == path[0] else (r1, r0)
         if (r0 if t0 == WRAPPED else r1) < 5 * 10**18:
             raise TradeRefused("Pool has less than 5 HYPE reserve; insufficient paper liquidity")
+        calculation_started = time.monotonic()
         out = amount_out(n, rin, rout)
-        quoted = self._function("router", ROUTER, "getAmountsOut", [n, path], block, ["uint256[]"])[
-            0
-        ]
-        if tuple(quoted) != (n, out) or out <= 0:
-            raise TradeRefused("Router/reserve quote mismatch")
+        self.metrics["calculation_ms"] = (time.monotonic() - calculation_started) * 1000
+        if not self.optimize:
+            quoted = self._function(
+                "router", ROUTER, "getAmountsOut", [n, path], block, ["uint256[]"]
+            )[0]
+            if tuple(quoted) != (n, out):
+                raise TradeRefused("Router/reserve quote mismatch")
+        if out <= 0:
+            raise TradeRefused('Pool output rounds to zero')
         impact = (n * rout * 10000 - out * rin * 10000 + n * rout - 1) // (n * rout)
         if not 0 <= impact <= 100:
             raise TradeRefused("Price impact including pool fee exceeds 1%")
@@ -157,15 +202,20 @@ class DirectV2Provider:
                 [n, minimum, path, wallet, deadline],
             )
             value = 0
-            allowance = self.rpc.view(
-                token, ALLOWANCE + wallet[2:].zfill(64) + ROUTER[2:].zfill(64), block, ["uint256"]
-            )[0]
+            with self.rpc.operation("token.allowance"):
+                allowance = self.rpc.view(
+                    token,
+                    ALLOWANCE + wallet[2:].zfill(64) + ROUTER[2:].zfill(64),
+                    block,
+                    ["uint256"],
+                )[0]
         tx = {"from": wallet, "to": ROUTER, "data": data, "value": hex(value)}
         simulation, gas, gas_price, reserve = "success", None, None, None
         needs_approval = i.side == "sell" and allowance < n
         # Missing approvals are a conditional PAPER scenario, never a successful simulation.
         try:
-            raw = self.rpc.call("eth_call", [tx, block])
+            with self.rpc.operation("simulation"):
+                raw = self.rpc.call("eth_call", [tx, block])
             # These canonical methods enforce minOut on recipient balance changes
             # (BUY) or received wrapped HYPE (SELL) and deliberately return no amount.
             # eth_call proves the floor at this block, not an exact realized fill.
@@ -180,8 +230,10 @@ class DirectV2Provider:
         else:
             if needs_approval:
                 raise TradeRefused("Unexpected simulation with insufficient allowance")
-            gas = uint(self.rpc.call("eth_estimateGas", [tx, block]))
-            gas_price = uint(self.rpc.call("eth_gasPrice", []))
+            with self.rpc.operation("gas.estimate"):
+                gas = uint(self.rpc.call("eth_estimateGas", [tx, block]))
+            with self.rpc.operation("gas.price"):
+                gas_price = uint(self.rpc.call("eth_gasPrice", []))
             if gas <= 0 or gas_price <= 0 or gas > 1_000_000:
                 raise TradeRefused("Unsafe or unavailable gas estimate")
             reserve = (gas * 120 + 99) // 100 * gas_price
@@ -193,6 +245,7 @@ class DirectV2Provider:
                 comparison = self.agora.compare(i, n, decimals, slippage)
             except TradeRefused:
                 comparison = {"agora_status": "unavailable"}
+        self.rpc.check_block(block, head)
         expires = min(started + 30, uint(head["timestamp"]) + 30, i.expires_at)
         if self.now() >= expires:
             raise TradeRefused("Quote expired while fetching data; refresh")
@@ -240,7 +293,7 @@ def validate_plan(i: TradeIntent, q: Quote, now: float) -> None:
         or type(q.block_number) is not int
         or q.block_number < 0
         or not isinstance(q.block_hash, str)
-        or len(q.block_hash) != 66
+        or not re.fullmatch(r"0x[0-9a-fA-F]{64}", q.block_hash)
         or type(q.deadline) is not int
         or not now < q.deadline <= q.created_at + 150
         or not q.pool

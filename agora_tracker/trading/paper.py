@@ -14,6 +14,7 @@ import secrets
 import threading
 import time
 from collections.abc import Callable
+from copy import deepcopy
 from dataclasses import asdict, dataclass, replace
 from typing import Protocol
 
@@ -166,12 +167,8 @@ class PaperFlow:
     def set_wallet(self, uid: int, chat: int, wallet: str) -> None:
         from .chain import address
         self._auth(uid, chat)
-        wallet = address(wallet)
         with self._lock:
-            if self.journal and hasattr(self.journal, 'set_wallet'):
-                self.journal.set_wallet(uid, wallet)
-            self._wallets[uid] = wallet
-            # A wallet change revokes every prior review and intent for this caller.
+            # Revoke before validating/persisting an attempted wallet change as well.
             for sid, i in list(self._intents.items()):
                 if i.user_id == uid:
                     self._intents[sid] = replace(i, state='cancelled')
@@ -179,6 +176,10 @@ class PaperFlow:
                     self._review_tokens.pop(sid, None)
                     self._quote_digests.pop(sid, None)
                     self._pending_reviews.pop(sid, None)
+            wallet = address(wallet)
+            if self.journal and hasattr(self.journal, 'set_wallet'):
+                self.journal.set_wallet(uid, wallet)
+            self._wallets[uid] = wallet
 
     def wallet(self, uid: int, chat: int) -> str | None:
         self._auth(uid, chat, allow_paused=True)
@@ -189,7 +190,7 @@ class PaperFlow:
     def create(self, uid: int, chat: int, token: str, side: str,
                source_chat: int, source_message: int, chain_id: int = CHAIN) -> TradeIntent:
         self._auth(uid, chat)
-        if chain_id != CHAIN or not ADDR.fullmatch(token) or side not in ('buy', 'sell'):
+        if chain_id != CHAIN or not isinstance(token, str) or not ADDR.fullmatch(token) or side not in ('buy', 'sell'):
             raise TradeRefused('Invalid chain, token or side')
         if type(source_chat) is not int or type(source_message) is not int or source_message <= 0:
             raise TradeRefused('Alert context required')
@@ -221,6 +222,16 @@ class PaperFlow:
     def select(self, uid: int, chat: int, sid: str, value: str) -> TradeIntent:
         with self._lock:
             i = self.get(uid, chat, sid)
+            # Any attempted selection change revokes the previous reviewed transaction,
+            # including malformed or over-cap input.
+            self._quotes.pop(sid, None)
+            self._review_tokens.pop(sid, None)
+            self._quote_digests.pop(sid, None)
+            self._pending_reviews.pop(sid, None)
+            i = replace(i, state='select')
+            self._intents[sid] = i
+            if not isinstance(value, str):
+                raise TradeRefused('Invalid paper amount')
             if i.side == 'buy':
                 amount = hype_wei(value)
                 if amount > self.max_buy_wei:
@@ -301,7 +312,7 @@ class PaperFlow:
             if not provider:
                 raise RouteUnavailable('No verified quote adapter; no order was quoted, signed or submitted')
         # No scanner transaction or global session lock is held during network I/O.
-        q = provider.quote(i, slippage)
+        q = deepcopy(provider.quote(i, slippage))
         with self._lock:
             current = self.get(uid, chat, sid)
             if current != i or self._pending_reviews.get(sid) != generation:
@@ -312,7 +323,7 @@ class PaperFlow:
             self._review_tokens[sid] = secrets.token_urlsafe(8)
             self._pending_reviews.pop(sid, None)
             self._intents[sid] = replace(i, state='review')
-            return q
+            return deepcopy(q)
 
     def reviewed(self, uid: int, chat: int, sid: str) -> Quote | None:
         with self._lock:
@@ -321,7 +332,9 @@ class PaperFlow:
                 return None
             q, slippage = self._quotes[sid]
             self._validate(i, q, slippage)
-            return q
+            if self._digest(q) != self._quote_digests.get(sid):
+                raise TradeRefused('Reviewed quote changed; refresh required')
+            return deepcopy(q)
 
     def orders(self, uid: int, chat: int) -> list[dict]:
         self._auth(uid, chat, allow_paused=True)
@@ -337,7 +350,7 @@ class PaperFlow:
             i = self.get(uid, chat, sid)
             if i.state != 'review' or sid not in self._quotes:
                 raise TradeRefused('Fresh review required')
-            if not review_token or not secrets.compare_digest(review_token, self._review_tokens.get(sid, '')):
+            if not isinstance(review_token, str) or not review_token.isascii() or not review_token or not secrets.compare_digest(review_token, self._review_tokens.get(sid, '')):
                 raise TradeRefused('Review changed; open the latest review before confirming')
             q, slippage = self._quotes[sid]
             if self._digest(q) != self._quote_digests.get(sid):

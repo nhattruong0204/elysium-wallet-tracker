@@ -1,3 +1,4 @@
+import json
 from dataclasses import replace
 from decimal import Decimal
 from types import SimpleNamespace
@@ -22,6 +23,8 @@ def payload(i):
 def provider(i, monkeypatch, data=None):
     p = AgoraIndicative(now=lambda: 100., monotonic=lambda: 100.)
     response = Mock(status_code=200)
+    response.headers = {}
+    response.iter_content.side_effect = lambda **kw: iter([json.dumps(response.json()).encode()])
     response.json.return_value = payload(i) if data is None else data
     monkeypatch.setattr(p.session, 'get', Mock(return_value=response))
     return p

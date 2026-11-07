@@ -284,6 +284,8 @@ class IntelBot:
             log.exception("handling update %s failed", upd.get("update_id"))
 
     def authorized(self, uid: int, chat_id: int, cq_id: str | None = None) -> bool:
+        if type(uid) is not int or uid <= 0 or type(chat_id) is not int:
+            return False
         if uid in self.allowed:
             return True
         log.warning("unauthorized Telegram user %s", uid)

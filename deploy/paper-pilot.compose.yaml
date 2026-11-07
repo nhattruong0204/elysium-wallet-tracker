@@ -1,0 +1,18 @@
+# REVIEW ARTIFACT ONLY. No deployment/restart is authorized by adding this file.
+# Apply only in an explicitly approved UI-only maintenance window (see PAPER_PILOT.md).
+services:
+  ui:
+    image: ${PAPER_UI_IMAGE:?pin the independently reviewed UI image digest}
+    volumes:
+      # A separate UI config permits PAPER opt-in without changing scanner configuration.
+      - type: bind
+        source: ${PAPER_UI_CONFIG_DIR:?set a private reviewed UI config directory}
+        target: /config
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${PAPER_JOURNAL_DIR:?set an owned 0700 persistent private directory}
+        target: /data/private-trading
+        bind:
+          create_host_path: false

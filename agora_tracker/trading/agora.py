@@ -10,6 +10,7 @@ from decimal import Decimal, InvalidOperation
 import requests
 
 from .chain import address, units
+from .http import bounded_json
 from .paper import CHAIN, TradeIntent, TradeRefused
 
 AGORA_ROUTER = "0xaf8dec958df2bd664aa661716a8de5fe0417a295"
@@ -26,6 +27,7 @@ class AgoraV1:
     def observation(self, i: TradeIntent, amount: int, decimals: int, slippage: int) -> dict:
         if i.chain_id != CHAIN or not i.wallet or i.side not in ("buy", "sell"):
             raise TradeRefused("Bound watch-only wallet required")
+        self.last_latency_ms = None
         if not self._lock.acquire(blocking=False):
             raise TradeRefused("Agora quote busy")
         try:
@@ -45,12 +47,14 @@ class AgoraV1:
                     },
                     timeout=5,
                     allow_redirects=False,
+                    stream=True,
                 )
                 if r.status_code == 429:
                     self._next = self.monotonic() + 60
                 if r.status_code != 200:
+                    r.close()
                     raise TradeRefused("Agora quote unavailable or rate limited")
-                q = r.json()
+                q = bounded_json(r, deadline=time.monotonic()+5)
             except (requests.RequestException, ValueError) as e:
                 if isinstance(e, TradeRefused):
                     raise

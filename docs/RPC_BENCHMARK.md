@@ -137,3 +137,45 @@ Three observations per side cannot establish tail latency or provider superiorit
 The handler timing excludes user dwell, Telegram network delivery and production-VPS
 latency. Only Agora RPC was used for this exact workload; the earlier six-provider run
 used a different read mix. These timings cannot be treated as a cross-provider swap test.
+
+## PAPER hardening / performance follow-up
+
+`benchmarks/paper-profile-2026-11-07.json` compares the same hardened handler, RPC,
+token, watch wallet and sizes with optimization disabled/enabled, in sequential phases.
+Both modes include the new final pinned-block hash recheck. Thus this is a fresh
+unoptimized baseline, not a claim to reproduce the earlier 4.38 s on another network/time.
+Each phase attempts three BUY and three conditional SELL reviews, after a separate
+recorded cold-start request. Wallet addresses, balances and request payloads are excluded.
+
+| Review click → render | Before p50 / p95 ms | After p50 / p95 ms |
+| --- | --- | --- |
+| Matched successes (3 BUY + 2 conditional SELL) | 5526.60 / 5921.24 | 3605.79 / 3844.76 |
+| All successful observations (5 before / 6 after) | 5526.60 / 5921.24 | 3605.79 / 4632.33 |
+| Separate cold start (one each, not quantiles) | 5560.95 | 8543.91 |
+
+The matched sample shows 34.8% lower median and 35.1% lower descriptive p95. The full
+successful after sample has a 21.8% lower descriptive p95. One before SELL refused a
+stale/future head; it is retained in raw observations, excluded from latency success
+quantiles, and its matching after observation is excluded only from the paired row.
+This is not evidence of a reliability improvement. Cold-start variance remains high.
+The samples are too small for reliable population tail estimates; sequential state,
+provider and network conditions differ. User dwell/Telegram delivery remain excluded.
+
+Before, each operation typically cost ~223–251 ms; one getAmountsOut cost ~225 ms.
+The BUY path made 20 RPCs and conditional SELL 19 including the new reorg check.
+Warm optimization reduces those to 13 and 12: six immutable-metadata reads are cached
+and one redundant router quote is calculated locally with the canonical integer formula.
+Chain, all three runtime hashes, mutable state, simulation/gas and final block-hash
+checks remain. Per-quote calculation was <0.01 ms and panel rendering p50 ~0.15–0.16 ms.
+The bottleneck was serial network round trips, not arithmetic or response formatting.
+
+Raw profiles label every operation (chain/head/code/metadata/reserves/decimals/balances/
+allowance/simulation/estimateGas/gasPrice/reorg check), Agora latency, rendering time,
+cache state, RPC count and exact simulation status. The cache holds at most 64 immutable
+pair relationships and verifies current code even on hits. Token decimals and every
+mutable financial value are deliberately uncached. See `PAPER_REVIEW.md` for assumptions.
+
+Reproduce using the approved public watch address (never a key):
+`python scripts/trade_paper_bench.py --wallet ADDRESS --token TOKEN --buy 0.0001
+--sell-percent 1 --samples 3 --compare`. Inspect refusals and cold-start data as well as
+quantiles. No production bot/VPS or transaction submission is involved.

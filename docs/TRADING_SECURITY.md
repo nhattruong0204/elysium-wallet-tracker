@@ -85,3 +85,16 @@ checklist are preparation only; neither constitutes independent approval.
 Stage D hot-wallet mode would need a separate opt-in design, isolated KMS/secret-manager
 signer, strict per-trade/daily budgets, revocation, key rotation and independent review.
 No such mode is implemented or authorized. PAPER tests establish no real-money readiness.
+
+## Follow-up author hardening review
+
+See `PAPER_REVIEW.md` for reproduced findings, remediation, adversarial evidence and
+unresolved trust/resource assumptions. Returned quote payloads are isolated copies;
+invalid amount attempts revoke previous reviews; outer Telegram identity/context checks
+are strict; journal identity/permissions and record bindings are checked at each access;
+JSON responses are size-bounded; a final pinned-block hash check detects mid-quote reorgs.
+Immutable metadata caching is bounded and gated by live code identity on every quote;
+mutable financial state and token decimals are never cached. The pilot is a prepared
+UI-only overlay/runbook (`PAPER_PILOT.md`), not a deployed service or extra consumer.
+Independent review/approval is still absent. Stage C is tracked separately in #85 and
+`STAGE_C_PLAN.md`; the Agora outer router and all real-money paths remain disabled.

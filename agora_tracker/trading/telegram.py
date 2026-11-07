@@ -57,7 +57,7 @@ def panel(flow: PaperFlow, uid: int, chat: int, sid: str, links: Links) -> tuple
             text += (f"<b>CONDITIONAL PAPER scenario — not simulated</b>\n"
                      f"Required finite allowance: {units(q.approval_required_wei, idec)} tokens\n"
                      f"Spender: <code>{html.escape(q.approval_spender or '')}</code>\n"
-                     "No approval is requested or sent. Output assumes normal token transfers; token taxes/sell restrictions remain uncertain.\n")
+                     "Allowance is insufficient and simulation reverted; approval may not resolve the revert. No approval is requested or sent. Output assumes normal token transfers; token taxes/sell restrictions remain uncertain.\n")
         else:
             text += "Read-only simulation enforced the minimum at the quoted block. Exact delivered output is unavailable; future execution is not guaranteed.\n"
         if q.agora_amount_out_wei is not None:
@@ -135,6 +135,8 @@ def callback(bot, cq: dict) -> None:
     try:
         if not bot.cfg.trading.paper_enabled or bot.cfg.chain.chain_id != 99901:
             raise TradeRefused('Trading is disabled')
+        if kind not in ('private', 'group', 'supergroup') or type(chat) is not int or (kind in ('group', 'supergroup') and chat >= 0):
+            raise TradeRefused('Invalid Telegram context; use your private chat')
         if kind == 'private' and chat != uid:
             raise TradeRefused('Private chat identity mismatch')
         if data[0] == 'tp' and len(data) == 3:
