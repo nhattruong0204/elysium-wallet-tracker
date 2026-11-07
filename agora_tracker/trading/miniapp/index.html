@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="color-scheme" content="dark light">
+  <title>Elysium · Unsigned trade preview</title>
+  <link rel="stylesheet" href="/static/miniapp.css">
+  <script id="telegram-sdk" async src="https://telegram.org/js/telegram-web-app.js"></script>
+  <script type="module" src="/static/miniapp.js"></script>
+</head>
+<body>
+<main id="app" data-state="not_authenticated">
+  <header><a class="brand" href="/">ELYSIUM <span>TRADE PREVIEW</span></a><span class="pill">C1 · NO SIGNING</span></header>
+  <section class="intro"><p class="eyebrow">FROM YOUR TELEGRAM ALERT</p><h1>Review before you act.</h1>
+    <p class="muted">Read-only quotes and unsigned transaction details. Your wallet stays in your control.</p></section>
+  <div id="status" role="status" aria-live="polite" tabindex="-1"><strong id="status-title">Authentication required</strong><p id="status-message">Open a fresh link from your private alert panel.</p></div>
+  <p id="fixture" class="notice" hidden>Mock authentication fixture. No wallet ownership is established by this test.</p>
+  <section class="card" aria-labelledby="asset-title">
+    <div class="section-heading"><h2 id="asset-title">Alert context</h2><span class="pill">CHAIN 99901</span></div>
+    <p id="side" class="side">BUY / SELL</p><code id="token">Waiting for authenticated alert context</code>
+    <p id="source" class="muted"></p><p id="intent-expiry" class="muted"></p>
+    <a id="dex" hidden rel="noopener noreferrer" target="_blank">Open verified external DEX ↗</a>
+  </section>
+  <section class="card" aria-labelledby="wallet-title">
+    <div class="section-heading"><h2 id="wallet-title">Your wallet</h2><span id="wallet-state" class="muted">Disconnected</span></div>
+    <code id="wallet-address">No wallet connected</code>
+    <div class="button-row"><button id="authenticate" type="button">Continue with Telegram</button><button id="connect" type="button" disabled>Connect wallet</button></div>
+    <div id="fallback" hidden><p class="muted">No compatible wallet provider is available in this browser. Open this secure link in a wallet’s browser or an external browser with an EIP-1193 provider, then authenticate again. Native iPhone wallet compatibility depends on the app and version.</p>
+      <div class="button-row"><button id="copy-link" type="button">Copy secure link</button><a id="external-browser" class="button secondary" rel="noopener noreferrer" target="_blank">Open external browser ↗</a></div>
+      <output id="copy-status" aria-live="polite"></output></div>
+  </section>
+  <section class="card" aria-labelledby="amount-title">
+    <h2 id="amount-title">Choose an amount</h2><div id="presets" class="presets" role="group" aria-label="Amount presets"></div>
+    <label id="amount-label" for="amount">Custom amount</label><input id="amount" type="text" inputmode="decimal" autocomplete="off" spellcheck="false" disabled>
+    <label for="slippage">Slippage limit</label><select id="slippage" disabled><option value="50">0.50%</option><option value="100">1.00%</option></select>
+    <p class="muted">Maximum price impact 1%. Buy cap 1 HYPE. Sell percentages use the verified wallet token balance.</p>
+    <button id="refresh" class="primary wide" type="button" disabled>Get read-only quote</button>
+  </section>
+  <section id="quote-card" class="card" aria-labelledby="quote-title" hidden>
+    <div class="section-heading"><h2 id="quote-title">Quote snapshot</h2><span id="quote-age" class="muted"></span></div>
+    <p class="muted">Expected pool output assumes normal transfers. Taxes/restrictions and future execution remain uncertain.</p>
+    <dl id="quote-details"></dl><button id="review" class="primary wide" type="button" disabled>Review unsigned transaction</button>
+  </section>
+  <section id="review-card" class="card review" aria-labelledby="review-title" hidden>
+    <p class="eyebrow">EXACT UNSIGNED PAYLOAD</p><h2 id="review-title">Check every detail.</h2>
+    <p>No transaction request will be sent to your wallet. Signing and broadcasting are disabled in C1.</p>
+    <dl id="review-details"></dl><label for="calldata">Read-only calldata</label><textarea id="calldata" readonly rows="5" spellcheck="false"></textarea>
+    <button id="signing-disabled" class="wide" type="button" disabled>Signing disabled in C1</button>
+  </section>
+  <footer><button id="cancel" class="wide secondary" type="button">Cancel preview</button><p class="muted">No private keys, seed phrases, approvals or live transactions.</p></footer>
+</main>
+</body>
+</html>
