@@ -1,0 +1,18 @@
+[
+  {
+    "source": "https://rpc.agoradex.app",
+    "observed_at": "2026-11-07T07:21:19.138257+00:00",
+    "http_status": 405,
+    "reported": {}
+  },
+  {
+    "source": "https://rpc.eleos.fun",
+    "observed_at": "2026-11-07T07:21:19.809428+00:00",
+    "http_status": 200,
+    "reported": {
+      "net": "mainnet",
+      "mode": "inbox",
+      "dry": false
+    }
+  }
+]
