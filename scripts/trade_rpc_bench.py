@@ -33,7 +33,11 @@ def percentile(values: list[float], q: float) -> float | None:
 def validate_workloads(workloads: list[dict]) -> None:
     if len(workloads) > 4:
         raise ValueError('at most four explicitly reviewed workloads')
+    names = {'latest_block', 'router_code'}
     for w in workloads:
+        if w.get('name') in names:
+            raise ValueError('workload names must be unique and not reserved')
+        names.add(w.get('name'))
         if w.get('method') not in ('eth_call', 'eth_estimateGas'):
             raise ValueError('workloads must be read-only calls or gas estimates')
         if not re.fullmatch(r'[a-zA-Z0-9_-]{1,40}', w.get('name', '')):
@@ -66,6 +70,8 @@ class ReadOnlyRpc:
                 return None, (time.monotonic() - started) * 1000, 'rate_limited'
             response.raise_for_status()
             data = response.json()
+            if not isinstance(data, dict):
+                return None, (time.monotonic() - started) * 1000, 'invalid_rpc_response'
             if data.get('id') != self.count or data.get('jsonrpc') != '2.0':
                 return None, (time.monotonic() - started) * 1000, 'invalid_rpc_response'
             if 'error' in data:
@@ -126,7 +132,10 @@ def benchmark(endpoints: list[str], samples: int, workloads: list[dict], locatio
                             errors['invalid_block'] = errors.get('invalid_block', 0) + 1
                             times.pop()
                     elif w['name'] == 'router_code':
-                        row['router_code_present'] = isinstance(result, str) and len(result) > 2
+                        row['router_code_present'] = isinstance(result, str) and bool(re.fullmatch(r'0x(?:[0-9a-fA-F]{2})+', result))
+                        if not row['router_code_present']:
+                            errors['empty_or_invalid_code'] = errors.get('empty_or_invalid_code', 0) + 1
+                            times.pop()
                         if row['router_code_present']:
                             row['router_code_sha256'] = hashlib.sha256(str(result).encode()).hexdigest()
 
@@ -143,11 +152,13 @@ def benchmark(endpoints: list[str], samples: int, workloads: list[dict], locatio
         row['sampled_head_lag'] = best - row['head'] if best is not None and row['head'] is not None else None
         row['head_age_s_at_observation'] = (row['observed_at'] - row['head_timestamp']
             if 'observed_at' in row else None)
-        row['freshness_qualified'] = bool(row['eligible'] and row['head'] is not None
-            and 0 <= row['head_age_s_at_observation'] <= 60 and row['sampled_head_lag'] <= 50)
+        row['own_head_timestamp_recent'] = bool(row['eligible'] and row['head'] is not None
+            and 0 <= row['head_age_s_at_observation'] <= 60)
+        # Sequential provider heads cannot qualify cross-provider freshness.
+        row['freshness_qualified'] = False
     return {'generated_at': datetime.now(timezone.utc).isoformat(), 'location': location,
             'chain_id': CHAIN, 'samples_per_method': samples, 'router': ROUTER,
-            'phase': 'pre-public-mainnet' if datetime.now(timezone.utc).date().isoformat() < '2026-11-09' else 'revalidate-post-launch',
+            'phase': 'submission-mode-unverified',
             'endpoints': rows, 'workloads': [w['name'] for w in workloads],
             'limitations': ['Sequential head observations; sampled lag includes timing skew.',
                 'Small samples: p95/p99 are descriptive, not reliable tail estimates.',
