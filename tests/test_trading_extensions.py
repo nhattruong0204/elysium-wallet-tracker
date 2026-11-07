@@ -49,7 +49,7 @@ def test_public_quote_is_exact_read_only_rate_bounded_and_not_review(monkeypatch
 @pytest.mark.parametrize('change', [
     {'token': 'forged'}, {'side': 'sell'}, {'amountIn': '1'}, {'amountOut': 'NaN'},
     {'amountOut': 10000}, {'minAmountOut': '0'}, {'minAmountOut': '9949'},
-    {'feeBps': True}, {'feeBps': 101}, {'priceImpact': 'NaN'}, {'priceImpact': -1},
+    {'feeBps': True}, {'feeBps': 101}, {'priceImpact': 'NaN'}, {'priceImpact': -2},
     {'transaction': {'to': TOKEN}}, {'approvals': [{'to': TOKEN}]}, {'venue': 1},
 ])
 def test_untrusted_market_response_never_becomes_quote(monkeypatch, change):
@@ -280,3 +280,10 @@ def test_forged_chat_type_cannot_request_market_or_confirm():
     b.on_callback(cq('pq|' + i.id, chat=1, kind='supergroup'))
     assert not b.paper_market.quote.called
     assert 'private' in b._answer.call_args.args[1]
+
+
+
+def test_indicative_signed_price_impact_is_preserved(monkeypatch):
+    i = intent(flow())
+    p = provider(i, monkeypatch, {**payload(i), 'priceImpact': -0.001})
+    assert p.quote(i).impact_bps == Decimal('-10')

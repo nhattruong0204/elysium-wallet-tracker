@@ -83,7 +83,7 @@ class AgoraIndicative:
             fee, venue = q['feeBps'], q['venue']
             impact = Decimal(str(q['priceImpact'])) * 10000
             if (type(fee) is not int or not 0 <= fee <= 100 or not impact.is_finite()
-                    or not 0 <= impact <= 10000 or not isinstance(venue, str) or not 0 < len(venue) <= 120):
+                    or not -10000 <= impact <= 10000 or not isinstance(venue, str) or not 0 < len(venue) <= 120):
                 raise ValueError
             if q.get('transaction') is not None or q.get('approvals'):
                 raise ValueError  # indicative endpoint must not supply actionable payloads
