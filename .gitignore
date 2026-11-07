@@ -21,3 +21,9 @@ venv/
 /config/
 data/
 backups/
+
+# Private PAPER journals and SQLite sidecars
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm

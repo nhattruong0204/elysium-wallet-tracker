@@ -1,0 +1,213 @@
+{
+  "location": "WSL2 local network; egress region unverified",
+  "token": "0x5e5df82d563fcf36b6f853c4d09f89e2d18825b4",
+  "samples_per_side": 3,
+  "buy_hype": "0.0001",
+  "sell_wallet_percent": "1",
+  "observations": [
+    {
+      "side": "buy",
+      "simulation_status": "success",
+      "review_click_to_render_ms": 4643.31,
+      "quote_ready_ms": 4643.76,
+      "agora_api_ms": 456.03,
+      "agora_status": "reported_builder_unverified",
+      "direct_quote_eth_call_ms": 210.06,
+      "rpc_calls": 19,
+      "eth_call_ms": [
+        209.49,
+        210.63,
+        206.27,
+        202.95,
+        202.45,
+        207.58,
+        209.43,
+        221.25,
+        207.84,
+        209.63,
+        210.58
+      ],
+      "estimate_gas_ms": [
+        217.02
+      ],
+      "agora_vs_direct_output_delta_bps": -50,
+      "paper_record_status": "hypothetical_only"
+    },
+    {
+      "side": "buy",
+      "simulation_status": "success",
+      "review_click_to_render_ms": 4523.57,
+      "quote_ready_ms": 4526.16,
+      "agora_api_ms": 498.3,
+      "agora_status": "reported_builder_unverified",
+      "direct_quote_eth_call_ms": 217.46,
+      "rpc_calls": 19,
+      "eth_call_ms": [
+        214.34,
+        210.68,
+        211.07,
+        203.03,
+        216.67,
+        211.69,
+        221.4,
+        202.17,
+        202.79,
+        217.27,
+        210.74
+      ],
+      "estimate_gas_ms": [
+        216.56
+      ],
+      "agora_vs_direct_output_delta_bps": -50,
+      "paper_record_status": "hypothetical_only"
+    },
+    {
+      "side": "buy",
+      "simulation_status": "success",
+      "review_click_to_render_ms": 4379.52,
+      "quote_ready_ms": 4379.23,
+      "agora_api_ms": 338.08,
+      "agora_status": "reported_builder_unverified",
+      "direct_quote_eth_call_ms": 215.31,
+      "rpc_calls": 19,
+      "eth_call_ms": [
+        223.24,
+        201.92,
+        205.57,
+        211.77,
+        212.25,
+        219.83,
+        204.82,
+        213.52,
+        209.45,
+        215.05,
+        202.68
+      ],
+      "estimate_gas_ms": [
+        208.29
+      ],
+      "agora_vs_direct_output_delta_bps": -50,
+      "paper_record_status": "hypothetical_only"
+    },
+    {
+      "side": "sell",
+      "simulation_status": "approval_required",
+      "review_click_to_render_ms": 4440.39,
+      "quote_ready_ms": 4438.09,
+      "agora_api_ms": 311.42,
+      "agora_status": "reported_builder_unverified",
+      "direct_quote_eth_call_ms": 225.76,
+      "rpc_calls": 18,
+      "eth_call_ms": [
+        221.22,
+        208.12,
+        216.2,
+        208.08,
+        219.11,
+        209.67,
+        216.15,
+        213.61,
+        217.48,
+        225.56,
+        207.32,
+        456.42
+      ],
+      "estimate_gas_ms": [],
+      "agora_vs_direct_output_delta_bps": -31,
+      "paper_record_status": "hypothetical_requires_approval"
+    },
+    {
+      "side": "sell",
+      "simulation_status": "approval_required",
+      "review_click_to_render_ms": 4099.1,
+      "quote_ready_ms": 4100.46,
+      "agora_api_ms": 287.48,
+      "agora_status": "reported_builder_unverified",
+      "direct_quote_eth_call_ms": 208.43,
+      "rpc_calls": 18,
+      "eth_call_ms": [
+        204.18,
+        208.97,
+        207.71,
+        215.18,
+        208.35,
+        203.9,
+        207.69,
+        208.23,
+        231.01,
+        208.23,
+        205.1,
+        213.36
+      ],
+      "estimate_gas_ms": [],
+      "agora_vs_direct_output_delta_bps": -31,
+      "paper_record_status": "hypothetical_requires_approval"
+    },
+    {
+      "side": "sell",
+      "simulation_status": "approval_required",
+      "review_click_to_render_ms": 4097.16,
+      "quote_ready_ms": 4096.6,
+      "agora_api_ms": 295.41,
+      "agora_status": "reported_builder_unverified",
+      "direct_quote_eth_call_ms": 229.08,
+      "rpc_calls": 18,
+      "eth_call_ms": [
+        210.54,
+        206.44,
+        210.36,
+        207.26,
+        216.97,
+        205.44,
+        204.8,
+        208.72,
+        221.52,
+        228.87,
+        209.22,
+        208.65
+      ],
+      "estimate_gas_ms": [],
+      "agora_vs_direct_output_delta_bps": -31,
+      "paper_record_status": "hypothetical_requires_approval"
+    }
+  ],
+  "refusals": 0,
+  "review_click_to_render": {
+    "samples": 6,
+    "p50_ms": 4379.52,
+    "p95_ms": 4643.31,
+    "p99_ms": 4643.31
+  },
+  "agora_quote": {
+    "samples": 6,
+    "p50_ms": 311.42,
+    "p95_ms": 498.3,
+    "p99_ms": 498.3
+  },
+  "direct_quote": {
+    "samples": 6,
+    "p50_ms": 215.31,
+    "p95_ms": 229.08,
+    "p99_ms": 229.08
+  },
+  "eth_call": {
+    "samples": 69,
+    "p50_ms": 209.63,
+    "p95_ms": 225.56,
+    "p99_ms": 456.42
+  },
+  "estimate_gas": {
+    "samples": 3,
+    "p50_ms": 216.56,
+    "p95_ms": 217.02,
+    "p99_ms": 217.02
+  },
+  "limitations": [
+    "Three samples per side are descriptive; no reliable tail estimates.",
+    "Click timing covers the actual local Telegram handler, not Telegram delivery or user dwell.",
+    "Direct pool expected output assumes normal token transfers; no actual fill or balance mutation.",
+    "Agora comparison is API-reported, may use a different block and has unverified outer ABI.",
+    "Missing SELL allowance is a conditional PAPER scenario with no successful simulation or gas estimate.",
+    "No signer, approvals, transaction submissions, production bot messages or production DB writes."
+  ]
+}

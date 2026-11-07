@@ -142,3 +142,11 @@ scoring:
   min_closes: 5                # measured closing trades needed for the PnL components
   min_snapshots: 12            # accepted lists needed for list persistence
   limited_cap: 50              # a score without measured trade evidence cannot exceed this
+
+# Issue #82 PAPER UI with read-only canonical V2 quotes. No signer or broadcaster.
+# Keep OFF pending review; turning this on never enables real-money execution.
+trading:
+  paper_enabled: false
+  # Required for the read-only quote workflow; parent directory must be owned by UI user, mode 0700.
+  # paper_order_path: /data/private-trading/paper.sqlite
+  # paper_rpc_url: https://rpc.agoradex.app  # dedicated read transport, independent of scanner

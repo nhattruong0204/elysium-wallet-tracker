@@ -1,0 +1,29 @@
+{
+  "chain_id": 99901,
+  "block": 1867203,
+  "block_hash": "0x71f3dc7c2acc6ef10e079191fd4eb7162ab38b5043c46097512dc8bfddb743ff",
+  "contracts": [
+    {
+      "kind": "router",
+      "address": "0x3c5caa33d02c78935fc682a8eb295f0e67b93ced",
+      "runtime_keccak256": "0xc0f2c8fb93bc0e1215ad188b6d28001b609524a8daa6b97e302ffb1b29bafca7",
+      "artifact_sha256": "b5d849090faf5255b82bddb2a8a51ad796599fa31bb7a3aa0e0db75226031aaa",
+      "verified": true
+    },
+    {
+      "kind": "factory",
+      "address": "0x7272d37e203f29a55580e9838863c9b5fd2e1422",
+      "runtime_keccak256": "0xbab145d02e7005f0d84c6c1639d39b799b0ea16df99ebbdaf5a14d9da820b4e0",
+      "artifact_sha256": "7e666780d3ddf601a17c97dcc6a414dd77f5eae13fb37fce7e0bd282f4f61406",
+      "verified": true
+    },
+    {
+      "kind": "pair",
+      "address": "0x1e27f8026be96b260dcd358a7b2a7fbd64eb4a6c",
+      "runtime_keccak256": "0x5b83bdbcc56b2e630f2807bbadd2b0c21619108066b92a58de081261089e9ce5",
+      "artifact_sha256": "bb00cb1d64deea4159731b5957eeb8354531a110fb9120b9ef14edbc950e0736",
+      "verified": true
+    }
+  ],
+  "scope": "Canonical direct V2 only. No aggregator ABI verification or writes."
+}
