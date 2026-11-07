@@ -142,3 +142,8 @@ scoring:
   min_closes: 5                # measured closing trades needed for the PnL components
   min_snapshots: 12            # accepted lists needed for list persistence
   limited_cap: 50              # a score without measured trade evidence cannot exceed this
+
+# Experimental Issue #82 PAPER UI only. No live signer, quote adapter or broadcaster.
+# Keep OFF pending review; turning this on never enables real-money execution.
+trading:
+  paper_enabled: false

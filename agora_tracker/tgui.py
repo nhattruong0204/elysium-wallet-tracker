@@ -164,6 +164,8 @@ class IntelBot:
         self.tz = ZoneInfo(cfg.ui.timezone)
         self.L = Links(cfg.links)
         self.allowed = set(cfg.ui.admin_ids)
+        from .trading.paper import PaperFlow
+        self.paper_trades = PaperFlow(self.allowed)
         self.sessions = Sessions(store)
         self.exporter = Exporter(reports, self.tz, max_rows=cfg.ui.report_max_rows,
                                  max_bytes=cfg.ui.report_max_bytes)
@@ -284,6 +286,22 @@ class IntelBot:
             return
         if not self.authorized(uid, chat):
             return
+        trade_cmd, _, trade_arg = text.partition(" ")
+        trade_cmd = trade_cmd.split("@", 1)[0].lower()
+        if trade_cmd in ("/trade", "/pause_trading", "/orders", "/positions"):
+            if chat != uid or msg.get("chat", {}).get("type") != "private":
+                self._send(chat, "Open a private chat for paper trade actions.", None)
+                return
+            if trade_cmd == "/pause_trading":
+                self.paper_trades.paused = True
+                self._send(chat, "Paper trading paused until process restart. Live execution is unavailable.", None)
+            elif trade_cmd != "/trade":
+                self._send(chat, "PAPER only: no connected wallet, verified holdings or durable live orders.", None)
+            else:
+                from .trading.telegram import callback
+                callback(self, {"id": "", "from": {"id": uid}, "message": msg,
+                                "data": "tp|b|" + trade_arg.strip()})
+            return
         sess = self.sessions.get(uid)
         cmd, _, arg = text.partition(" ")
         cmd = cmd.split("@", 1)[0].lower()
@@ -344,6 +362,10 @@ class IntelBot:
             self._answer(cq["id"], None)
             return
         if not self.authorized(uid, chat, cq["id"]):
+            return
+        if data.split("|", 1)[0] in ("tp", "ps", "pr", "pc"):
+            from .trading.telegram import callback
+            callback(self, cq)
             return
         if data == "n":
             self._answer(cq["id"], None)

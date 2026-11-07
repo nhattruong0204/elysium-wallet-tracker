@@ -272,6 +272,16 @@ class IntelConfig:
 
 
 @dataclass
+class TradingConfig:
+    """Stage B only. There is no live execution configuration switch."""
+    paper_enabled: bool = False
+
+    def __post_init__(self) -> None:
+        if type(self.paper_enabled) is not bool:
+            raise ValueError("trading.paper_enabled must be a boolean")
+
+
+@dataclass
 class Config:
     chain: ChainConfig
     leaderboard: LeaderboardConfig
@@ -285,6 +295,7 @@ class Config:
     intel: IntelConfig = field(default_factory=IntelConfig)
     tracking: TrackingConfig = field(default_factory=TrackingConfig)
     scoring: ScoringConfig = field(default_factory=ScoringConfig)
+    trading: TradingConfig = field(default_factory=TradingConfig)
     db_path: str = "tracker.db"
     watchlist_file: str | None = None
     exclude_contracts: bool = True
@@ -350,7 +361,8 @@ def load_config(path: str | Path) -> Config:
     intel.launch_factories = [_norm_addr(a) for a in intel.launch_factories]
     return Config(chain=chain, leaderboard=lb, alerts=alerts, telegram=tg, links=links,
                   market=market, ui=ui, collector=collector, web=web, intel=intel,
-                  tracking=tracking, scoring=scoring, db_path=db_path,
+                  tracking=tracking, scoring=scoring,
+                  trading=TradingConfig(**(raw.get("trading") or {})), db_path=db_path,
                   watchlist_file=wl,
                   exclude_contracts=raw.get("exclude_contracts", True))
 
