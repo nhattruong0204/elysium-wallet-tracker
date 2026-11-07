@@ -1,0 +1,214 @@
+{
+  "generated_at": "2026-11-07T07:21:45.759828+00:00",
+  "location": "wsl2-local-network",
+  "chain_id": 99901,
+  "samples_per_method": 10,
+  "router": "0xaf8dec958df2bd664aa661716a8de5fe0417a295",
+  "phase": "submission-mode-unverified",
+  "endpoints": [
+    {
+      "endpoint": "candidate_1",
+      "host": "rpc.thekleos.pro",
+      "chain_id": 99901,
+      "eligible": true,
+      "head": 1839346,
+      "methods": {
+        "latest_block": {
+          "method": "eth_getBlockByNumber",
+          "successes": 10,
+          "errors": {},
+          "p50_ms": 171.39,
+          "p95_ms": 177.26,
+          "p99_ms": 177.26
+        },
+        "router_code": {
+          "method": "eth_getCode",
+          "successes": 10,
+          "errors": {},
+          "p50_ms": 174.11,
+          "p95_ms": 269.13,
+          "p99_ms": 269.13
+        }
+      },
+      "head_timestamp": 1794036022,
+      "observed_at": 1794036025,
+      "router_code_present": true,
+      "router_code_sha256": "b4ce1343d50d652eaddd392b37f934ed66b50798d5264bb3e739233c14b3e9fc",
+      "requests": 21,
+      "sampled_head_lag": 282,
+      "head_age_s_at_observation": 3,
+      "own_head_timestamp_recent": true,
+      "freshness_qualified": false
+    },
+    {
+      "endpoint": "candidate_2",
+      "host": "rpc.thekleos.xyz",
+      "chain_id": 99901,
+      "eligible": true,
+      "head": 1839405,
+      "methods": {
+        "latest_block": {
+          "method": "eth_getBlockByNumber",
+          "successes": 10,
+          "errors": {},
+          "p50_ms": 172.22,
+          "p95_ms": 541.67,
+          "p99_ms": 541.67
+        },
+        "router_code": {
+          "method": "eth_getCode",
+          "successes": 10,
+          "errors": {},
+          "p50_ms": 175.52,
+          "p95_ms": 188.0,
+          "p99_ms": 188.0
+        }
+      },
+      "head_timestamp": 1794036036,
+      "observed_at": 1794036040,
+      "router_code_present": true,
+      "router_code_sha256": "b4ce1343d50d652eaddd392b37f934ed66b50798d5264bb3e739233c14b3e9fc",
+      "requests": 21,
+      "sampled_head_lag": 223,
+      "head_age_s_at_observation": 4,
+      "own_head_timestamp_recent": true,
+      "freshness_qualified": false
+    },
+    {
+      "endpoint": "candidate_3",
+      "host": "rpc-live.boxa.club",
+      "chain_id": 99901,
+      "eligible": true,
+      "head": 1839467,
+      "methods": {
+        "latest_block": {
+          "method": "eth_getBlockByNumber",
+          "successes": 10,
+          "errors": {},
+          "p50_ms": 218.08,
+          "p95_ms": 221.51,
+          "p99_ms": 221.51
+        },
+        "router_code": {
+          "method": "eth_getCode",
+          "successes": 10,
+          "errors": {},
+          "p50_ms": 220.33,
+          "p95_ms": 232.84,
+          "p99_ms": 232.84
+        }
+      },
+      "head_timestamp": 1794036054,
+      "observed_at": 1794036054,
+      "router_code_present": true,
+      "router_code_sha256": "b4ce1343d50d652eaddd392b37f934ed66b50798d5264bb3e739233c14b3e9fc",
+      "requests": 21,
+      "sampled_head_lag": 161,
+      "head_age_s_at_observation": 0,
+      "own_head_timestamp_recent": true,
+      "freshness_qualified": false
+    },
+    {
+      "endpoint": "candidate_4",
+      "host": "rpc-live.elyspump.com",
+      "chain_id": 99901,
+      "eligible": true,
+      "head": 1839518,
+      "methods": {
+        "latest_block": {
+          "method": "eth_getBlockByNumber",
+          "successes": 8,
+          "errors": {
+            "rate_limited": 1
+          },
+          "p50_ms": 62.76,
+          "p95_ms": 3287.42,
+          "p99_ms": 3287.42
+        }
+      },
+      "head_timestamp": 1794036068,
+      "observed_at": 1794036070,
+      "requests": 10,
+      "sampled_head_lag": 110,
+      "head_age_s_at_observation": 2,
+      "own_head_timestamp_recent": true,
+      "freshness_qualified": false
+    },
+    {
+      "endpoint": "candidate_5",
+      "host": "rpc.agoradex.app",
+      "chain_id": 99901,
+      "eligible": true,
+      "head": 1839570,
+      "methods": {
+        "latest_block": {
+          "method": "eth_getBlockByNumber",
+          "successes": 10,
+          "errors": {},
+          "p50_ms": 231.37,
+          "p95_ms": 337.51,
+          "p99_ms": 337.51
+        },
+        "router_code": {
+          "method": "eth_getCode",
+          "successes": 10,
+          "errors": {},
+          "p50_ms": 252.81,
+          "p95_ms": 259.66,
+          "p99_ms": 259.66
+        }
+      },
+      "head_timestamp": 1794036079,
+      "observed_at": 1794036082,
+      "router_code_present": true,
+      "router_code_sha256": "b4ce1343d50d652eaddd392b37f934ed66b50798d5264bb3e739233c14b3e9fc",
+      "requests": 21,
+      "sampled_head_lag": 58,
+      "head_age_s_at_observation": 3,
+      "own_head_timestamp_recent": true,
+      "freshness_qualified": false
+    },
+    {
+      "endpoint": "candidate_6",
+      "host": "rpc.eleos.fun",
+      "chain_id": 99901,
+      "eligible": true,
+      "head": 1839628,
+      "methods": {
+        "latest_block": {
+          "method": "eth_getBlockByNumber",
+          "successes": 10,
+          "errors": {},
+          "p50_ms": 239.56,
+          "p95_ms": 245.16,
+          "p99_ms": 245.16
+        },
+        "router_code": {
+          "method": "eth_getCode",
+          "successes": 10,
+          "errors": {},
+          "p50_ms": 241.32,
+          "p95_ms": 245.05,
+          "p99_ms": 245.05
+        }
+      },
+      "head_timestamp": 1794036096,
+      "observed_at": 1794036098,
+      "router_code_present": true,
+      "router_code_sha256": "b4ce1343d50d652eaddd392b37f934ed66b50798d5264bb3e739233c14b3e9fc",
+      "requests": 21,
+      "sampled_head_lag": 0,
+      "head_age_s_at_observation": 2,
+      "own_head_timestamp_recent": true,
+      "freshness_qualified": false
+    }
+  ],
+  "workloads": [],
+  "limitations": [
+    "Sequential head observations; sampled lag includes timing skew.",
+    "Small samples: p95/p99 are descriptive, not reliable tail estimates.",
+    "Router bytecode presence does not verify ABI, ownership or execution safety.",
+    "No signing, send acknowledgment, inclusion or settlement measurements.",
+    "Quote/net-output comparison unrun unless explicit verified workloads supplied."
+  ]
+}

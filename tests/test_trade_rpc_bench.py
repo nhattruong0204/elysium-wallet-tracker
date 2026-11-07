@@ -61,3 +61,35 @@ def test_premium_hostname_cannot_leak_api_key(monkeypatch):
     result = benchmark(['https://provider_secret.premium.example/rpc'], 1, [], 'test')
     assert result['endpoints'][0]['host'] == 'redacted_custom_endpoint'
     assert 'provider_secret' not in json.dumps(result)
+
+
+@pytest.mark.parametrize('name', ['latest_block', 'router_code'])
+def test_workload_cannot_replace_core_measurements(name):
+    with pytest.raises(ValueError, match='reserved'):
+        validate_workloads([{'name': name, 'method': 'eth_call',
+                             'params': [{'to': '0x' + 'ab'*20}]}])
+
+
+def test_malformed_rpc_envelope_is_sanitized(monkeypatch):
+    from unittest.mock import Mock
+    rpc = ReadOnlyRpc('https://example.test', pause=0)
+    response = Mock(status_code=200)
+    response.json.return_value = ['private error']
+    monkeypatch.setattr(rpc.session, 'post', lambda *a, **kw: response)
+    assert rpc.call('eth_chainId', [])[2] == 'invalid_rpc_response'
+
+
+def test_recent_sequential_heads_do_not_authorize_freshness(monkeypatch):
+    import time
+    def fake(self, method, params):
+        self.count += 1
+        return {'eth_chainId': hex(99901), 'eth_getBlockByNumber': {
+            'number': '0x64', 'timestamp': hex(int(time.time()))},
+            'eth_getCode': '0xNOTCODE'}[method], 1., None
+    monkeypatch.setattr(ReadOnlyRpc, 'call', fake)
+    r = benchmark(['https://example.test'], 1, [], 'test')
+    row = r['endpoints'][0]
+    assert row['own_head_timestamp_recent'] is True
+    assert row['freshness_qualified'] is False
+    assert row['methods']['router_code']['successes'] == 0
+    assert r['phase'] == 'submission-mode-unverified'
