@@ -40,6 +40,8 @@ this is not ABI/security verification.
 | rpc.eleos.fun | 260.71 / 293.31 / 293.31 | 258.57 / 262.16 / 262.16 | 2 | 7 |
 
 Raw sanitized results: `docs/benchmarks/rpc-2026-11-07.json`.
+The phase label follows the announced launch date; it does not verify actual transaction
+submission permissions, inbox behavior or sequencer readiness.
 The initial script's `freshness_qualified` flag combines own head age with absolute head
 differences sampled sequentially. Most flags were false even with fresh local timestamps;
 time skew can explain that difference. It must not be used to select an execution endpoint.
