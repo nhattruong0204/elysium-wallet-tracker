@@ -13,6 +13,7 @@ from decimal import Decimal, InvalidOperation
 
 import requests
 
+from .http import bounded_json
 from .paper import CHAIN, TradeIntent, TradeRefused
 
 
@@ -54,14 +55,15 @@ class AgoraIndicative:
             try:
                 r = self.session.get('https://api.agoradex.app/api/v1/quote',
                     params={'token': intent.token, 'side': 'buy', 'amount': amount,
-                            'slippageBps': '50'}, timeout=5, allow_redirects=False)
+                            'slippageBps': '50'}, timeout=5, allow_redirects=False, stream=True)
                 if r.status_code == 429:
+                    r.close()
                     self._next_request = self.monotonic() + 60
                     raise TradeRefused('Quote provider rate limited; try in a minute')
-                r.raise_for_status()
                 if r.status_code != 200:
+                    r.close()
                     raise TradeRefused('Quote provider unavailable')
-                q = r.json()
+                q = bounded_json(r, deadline=time.monotonic()+5)
             except TradeRefused:
                 raise
             except (requests.RequestException, ValueError):

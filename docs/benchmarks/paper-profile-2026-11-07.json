@@ -1,0 +1,1495 @@
+{
+  "before": {
+    "location": "WSL2 local network; egress region unverified",
+    "token": "0x5e5df82d563fcf36b6f853c4d09f89e2d18825b4",
+    "samples_per_side": 3,
+    "optimization": false,
+    "cold_start": {
+      "ms": 5560.950786000831,
+      "rpc_calls": 20,
+      "simulation_status": "success"
+    },
+    "buy_hype": "0.0001",
+    "sell_wallet_percent": "1",
+    "observations": [
+      {
+        "side": "buy",
+        "simulation_status": "success",
+        "review_click_to_render_ms": 5165.24,
+        "quote_ready_ms": 5168.71,
+        "agora_api_ms": 498.44,
+        "agora_status": "reported_builder_unverified",
+        "direct_quote_eth_call_ms": 231.16,
+        "calculation_ms": 0.0028340000426396728,
+        "render_ms": 0.2705250008148141,
+        "metadata_cache_hit": false,
+        "rpc_operations": [
+          {
+            "operation": "chain.verify",
+            "method": "eth_chainId",
+            "ms": 230.59,
+            "outcome": "success"
+          },
+          {
+            "operation": "head.latest",
+            "method": "eth_getBlockByNumber",
+            "ms": 225.75,
+            "outcome": "success"
+          },
+          {
+            "operation": "code.router",
+            "method": "eth_getCode",
+            "ms": 257.19,
+            "outcome": "success"
+          },
+          {
+            "operation": "code.factory",
+            "method": "eth_getCode",
+            "ms": 231.23,
+            "outcome": "success"
+          },
+          {
+            "operation": "router.factory",
+            "method": "eth_call",
+            "ms": 245.52,
+            "outcome": "success"
+          },
+          {
+            "operation": "router.WETH",
+            "method": "eth_call",
+            "ms": 250.59,
+            "outcome": "success"
+          },
+          {
+            "operation": "factory.getPair",
+            "method": "eth_call",
+            "ms": 228.88,
+            "outcome": "success"
+          },
+          {
+            "operation": "code.pair",
+            "method": "eth_getCode",
+            "ms": 251.12,
+            "outcome": "success"
+          },
+          {
+            "operation": "pair.factory",
+            "method": "eth_call",
+            "ms": 237.0,
+            "outcome": "success"
+          },
+          {
+            "operation": "pair.token0",
+            "method": "eth_call",
+            "ms": 243.38,
+            "outcome": "success"
+          },
+          {
+            "operation": "pair.token1",
+            "method": "eth_call",
+            "ms": 214.48,
+            "outcome": "success"
+          },
+          {
+            "operation": "pair.getReserves",
+            "method": "eth_call",
+            "ms": 223.96,
+            "outcome": "success"
+          },
+          {
+            "operation": "token.decimals",
+            "method": "eth_call",
+            "ms": 231.77,
+            "outcome": "success"
+          },
+          {
+            "operation": "token.balance",
+            "method": "eth_call",
+            "ms": 219.42,
+            "outcome": "success"
+          },
+          {
+            "operation": "native.balance",
+            "method": "eth_getBalance",
+            "ms": 224.97,
+            "outcome": "success"
+          },
+          {
+            "operation": "router.getAmountsOut",
+            "method": "eth_call",
+            "ms": 230.93,
+            "outcome": "success"
+          },
+          {
+            "operation": "simulation",
+            "method": "eth_call",
+            "ms": 231.35,
+            "outcome": "success"
+          },
+          {
+            "operation": "gas.estimate",
+            "method": "eth_estimateGas",
+            "ms": 232.11,
+            "outcome": "success"
+          },
+          {
+            "operation": "gas.price",
+            "method": "eth_gasPrice",
+            "ms": 229.56,
+            "outcome": "success"
+          },
+          {
+            "operation": "head.recheck",
+            "method": "eth_getBlockByNumber",
+            "ms": 222.57,
+            "outcome": "success"
+          }
+        ],
+        "rpc_calls": 20,
+        "eth_call_ms": [
+          245.51,
+          250.59,
+          228.87,
+          237.0,
+          243.37,
+          214.48,
+          223.95,
+          231.77,
+          219.41,
+          230.92,
+          231.34
+        ],
+        "estimate_gas_ms": [
+          232.1
+        ],
+        "agora_vs_direct_output_delta_bps": 18,
+        "paper_record_status": "hypothetical_only"
+      },
+      {
+        "side": "buy",
+        "simulation_status": "success",
+        "review_click_to_render_ms": 5470.28,
+        "quote_ready_ms": 5467.73,
+        "agora_api_ms": 827.89,
+        "agora_status": "reported_builder_unverified",
+        "direct_quote_eth_call_ms": 231.45,
+        "calculation_ms": 0.0022230015019886196,
+        "render_ms": 0.15743100084364414,
+        "metadata_cache_hit": false,
+        "rpc_operations": [
+          {
+            "operation": "chain.verify",
+            "method": "eth_chainId",
+            "ms": 229.14,
+            "outcome": "success"
+          },
+          {
+            "operation": "head.latest",
+            "method": "eth_getBlockByNumber",
+            "ms": 232.05,
+            "outcome": "success"
+          },
+          {
+            "operation": "code.router",
+            "method": "eth_getCode",
+            "ms": 242.86,
+            "outcome": "success"
+          },
+          {
+            "operation": "code.factory",
+            "method": "eth_getCode",
+            "ms": 293.01,
+            "outcome": "success"
+          },
+          {
+            "operation": "router.factory",
+            "method": "eth_call",
+            "ms": 237.58,
+            "outcome": "success"
+          },
+          {
+            "operation": "router.WETH",
+            "method": "eth_call",
+            "ms": 226.41,
+            "outcome": "success"
+          },
+          {
+            "operation": "factory.getPair",
+            "method": "eth_call",
+            "ms": 222.87,
+            "outcome": "success"
+          },
+          {
+            "operation": "code.pair",
+            "method": "eth_getCode",
+            "ms": 238.1,
+            "outcome": "success"
+          },
+          {
+            "operation": "pair.factory",
+            "method": "eth_call",
+            "ms": 231.18,
+            "outcome": "success"
+          },
+          {
+            "operation": "pair.token0",
+            "method": "eth_call",
+            "ms": 216.18,
+            "outcome": "success"
+          },
+          {
+            "operation": "pair.token1",
+            "method": "eth_call",
+            "ms": 230.39,
+            "outcome": "success"
+          },
+          {
+            "operation": "pair.getReserves",
+            "method": "eth_call",
+            "ms": 226.04,
+            "outcome": "success"
+          },
+          {
+            "operation": "token.decimals",
+            "method": "eth_call",
+            "ms": 225.14,
+            "outcome": "success"
+          },
+          {
+            "operation": "token.balance",
+            "method": "eth_call",
+            "ms": 223.91,
+            "outcome": "success"
+          },
+          {
+            "operation": "native.balance",
+            "method": "eth_getBalance",
+            "ms": 225.62,
+            "outcome": "success"
+          },
+          {
+            "operation": "router.getAmountsOut",
+            "method": "eth_call",
+            "ms": 231.03,
+            "outcome": "success"
+          },
+          {
+            "operation": "simulation",
+            "method": "eth_call",
+            "ms": 223.99,
+            "outcome": "success"
+          },
+          {
+            "operation": "gas.estimate",
+            "method": "eth_estimateGas",
+            "ms": 229.04,
+            "outcome": "success"
+          },
+          {
+            "operation": "gas.price",
+            "method": "eth_gasPrice",
+            "ms": 230.97,
+            "outcome": "success"
+          },
+          {
+            "operation": "head.recheck",
+            "method": "eth_getBlockByNumber",
+            "ms": 222.85,
+            "outcome": "success"
+          }
+        ],
+        "rpc_calls": 20,
+        "eth_call_ms": [
+          237.58,
+          226.41,
+          222.87,
+          231.18,
+          216.17,
+          230.39,
+          226.04,
+          225.14,
+          223.91,
+          231.02,
+          223.99
+        ],
+        "estimate_gas_ms": [
+          229.04
+        ],
+        "agora_vs_direct_output_delta_bps": 18,
+        "paper_record_status": "hypothetical_only"
+      },
+      {
+        "side": "buy",
+        "simulation_status": "success",
+        "review_click_to_render_ms": 5921.24,
+        "quote_ready_ms": 5922.39,
+        "agora_api_ms": 1371.45,
+        "agora_status": "reported_builder_unverified",
+        "direct_quote_eth_call_ms": 219.64,
+        "calculation_ms": 0.0018470000213710591,
+        "render_ms": 0.1581880005687708,
+        "metadata_cache_hit": false,
+        "rpc_operations": [
+          {
+            "operation": "chain.verify",
+            "method": "eth_chainId",
+            "ms": 218.78,
+            "outcome": "success"
+          },
+          {
+            "operation": "head.latest",
+            "method": "eth_getBlockByNumber",
+            "ms": 215.72,
+            "outcome": "success"
+          },
+          {
+            "operation": "code.router",
+            "method": "eth_getCode",
+            "ms": 243.74,
+            "outcome": "success"
+          },
+          {
+            "operation": "code.factory",
+            "method": "eth_getCode",
+            "ms": 244.66,
+            "outcome": "success"
+          },
+          {
+            "operation": "router.factory",
+            "method": "eth_call",
+            "ms": 230.2,
+            "outcome": "success"
+          },
+          {
+            "operation": "router.WETH",
+            "method": "eth_call",
+            "ms": 230.08,
+            "outcome": "success"
+          },
+          {
+            "operation": "factory.getPair",
+            "method": "eth_call",
+            "ms": 226.66,
+            "outcome": "success"
+          },
+          {
+            "operation": "code.pair",
+            "method": "eth_getCode",
+            "ms": 247.88,
+            "outcome": "success"
+          },
+          {
+            "operation": "pair.factory",
+            "method": "eth_call",
+            "ms": 220.86,
+            "outcome": "success"
+          },
+          {
+            "operation": "pair.token0",
+            "method": "eth_call",
+            "ms": 223.12,
+            "outcome": "success"
+          },
+          {
+            "operation": "pair.token1",
+            "method": "eth_call",
+            "ms": 229.77,
+            "outcome": "success"
+          },
+          {
+            "operation": "pair.getReserves",
+            "method": "eth_call",
+            "ms": 219.85,
+            "outcome": "success"
+          },
+          {
+            "operation": "token.decimals",
+            "method": "eth_call",
+            "ms": 223.56,
+            "outcome": "success"
+          },
+          {
+            "operation": "token.balance",
+            "method": "eth_call",
+            "ms": 222.92,
+            "outcome": "success"
+          },
+          {
+            "operation": "native.balance",
+            "method": "eth_getBalance",
+            "ms": 229.25,
+            "outcome": "success"
+          },
+          {
+            "operation": "router.getAmountsOut",
+            "method": "eth_call",
+            "ms": 219.43,
+            "outcome": "success"
+          },
+          {
+            "operation": "simulation",
+            "method": "eth_call",
+            "ms": 231.1,
+            "outcome": "success"
+          },
+          {
+            "operation": "gas.estimate",
+            "method": "eth_estimateGas",
+            "ms": 228.21,
+            "outcome": "success"
+          },
+          {
+            "operation": "gas.price",
+            "method": "eth_gasPrice",
+            "ms": 217.08,
+            "outcome": "success"
+          },
+          {
+            "operation": "head.recheck",
+            "method": "eth_getBlockByNumber",
+            "ms": 223.38,
+            "outcome": "success"
+          }
+        ],
+        "rpc_calls": 20,
+        "eth_call_ms": [
+          230.2,
+          230.08,
+          226.66,
+          220.86,
+          223.11,
+          229.77,
+          219.84,
+          223.55,
+          222.91,
+          219.43,
+          231.1
+        ],
+        "estimate_gas_ms": [
+          228.21
+        ],
+        "agora_vs_direct_output_delta_bps": 18,
+        "paper_record_status": "hypothetical_only"
+      },
+      {
+        "side": "sell",
+        "simulation_status": "approval_required",
+        "review_click_to_render_ms": 5526.6,
+        "quote_ready_ms": 5530.22,
+        "agora_api_ms": 1170.95,
+        "agora_status": "reported_builder_unverified",
+        "direct_quote_eth_call_ms": 224.16,
+        "calculation_ms": 0.002032998963841237,
+        "render_ms": 0.15463699855899904,
+        "metadata_cache_hit": false,
+        "rpc_operations": [
+          {
+            "operation": "chain.verify",
+            "method": "eth_chainId",
+            "ms": 219.87,
+            "outcome": "success"
+          },
+          {
+            "operation": "head.latest",
+            "method": "eth_getBlockByNumber",
+            "ms": 229.09,
+            "outcome": "success"
+          },
+          {
+            "operation": "code.router",
+            "method": "eth_getCode",
+            "ms": 251.27,
+            "outcome": "success"
+          },
+          {
+            "operation": "code.factory",
+            "method": "eth_getCode",
+            "ms": 239.73,
+            "outcome": "success"
+          },
+          {
+            "operation": "router.factory",
+            "method": "eth_call",
+            "ms": 229.64,
+            "outcome": "success"
+          },
+          {
+            "operation": "router.WETH",
+            "method": "eth_call",
+            "ms": 225.01,
+            "outcome": "success"
+          },
+          {
+            "operation": "factory.getPair",
+            "method": "eth_call",
+            "ms": 222.88,
+            "outcome": "success"
+          },
+          {
+            "operation": "code.pair",
+            "method": "eth_getCode",
+            "ms": 240.47,
+            "outcome": "success"
+          },
+          {
+            "operation": "pair.factory",
+            "method": "eth_call",
+            "ms": 230.79,
+            "outcome": "success"
+          },
+          {
+            "operation": "pair.token0",
+            "method": "eth_call",
+            "ms": 225.93,
+            "outcome": "success"
+          },
+          {
+            "operation": "pair.token1",
+            "method": "eth_call",
+            "ms": 229.11,
+            "outcome": "success"
+          },
+          {
+            "operation": "pair.getReserves",
+            "method": "eth_call",
+            "ms": 231.0,
+            "outcome": "success"
+          },
+          {
+            "operation": "token.decimals",
+            "method": "eth_call",
+            "ms": 231.55,
+            "outcome": "success"
+          },
+          {
+            "operation": "token.balance",
+            "method": "eth_call",
+            "ms": 216.01,
+            "outcome": "success"
+          },
+          {
+            "operation": "native.balance",
+            "method": "eth_getBalance",
+            "ms": 223.22,
+            "outcome": "success"
+          },
+          {
+            "operation": "router.getAmountsOut",
+            "method": "eth_call",
+            "ms": 223.96,
+            "outcome": "success"
+          },
+          {
+            "operation": "token.allowance",
+            "method": "eth_call",
+            "ms": 225.43,
+            "outcome": "success"
+          },
+          {
+            "operation": "simulation",
+            "method": "eth_call",
+            "ms": 226.72,
+            "outcome": "refused"
+          },
+          {
+            "operation": "head.recheck",
+            "method": "eth_getBlockByNumber",
+            "ms": 230.46,
+            "outcome": "success"
+          }
+        ],
+        "rpc_calls": 19,
+        "eth_call_ms": [
+          229.63,
+          225.0,
+          222.87,
+          230.79,
+          225.93,
+          229.11,
+          231.0,
+          231.55,
+          216.01,
+          223.95,
+          225.43,
+          226.72
+        ],
+        "estimate_gas_ms": [],
+        "agora_vs_direct_output_delta_bps": -50,
+        "paper_record_status": "hypothetical_requires_approval"
+      },
+      {
+        "side": "sell",
+        "simulation_status": "refused",
+        "refusal_reason": "Paper RPC head is stale or future dated",
+        "review_click_to_render_ms": 460.49,
+        "quote_ready_ms": null,
+        "agora_api_ms": null,
+        "agora_status": "not_requested",
+        "direct_quote_eth_call_ms": null,
+        "rpc_calls": 2,
+        "eth_call_ms": [],
+        "estimate_gas_ms": [],
+        "paper_record_status": "no_record",
+        "agora_vs_direct_output_delta_bps": null
+      },
+      {
+        "side": "sell",
+        "simulation_status": "approval_required",
+        "review_click_to_render_ms": 5854.96,
+        "quote_ready_ms": 5854.36,
+        "agora_api_ms": 1398.87,
+        "agora_status": "reported_builder_unverified",
+        "direct_quote_eth_call_ms": 224.96,
+        "calculation_ms": 0.004065001121489331,
+        "render_ms": 0.15941099991323426,
+        "metadata_cache_hit": false,
+        "rpc_operations": [
+          {
+            "operation": "chain.verify",
+            "method": "eth_chainId",
+            "ms": 222.53,
+            "outcome": "success"
+          },
+          {
+            "operation": "head.latest",
+            "method": "eth_getBlockByNumber",
+            "ms": 220.48,
+            "outcome": "success"
+          },
+          {
+            "operation": "code.router",
+            "method": "eth_getCode",
+            "ms": 252.73,
+            "outcome": "success"
+          },
+          {
+            "operation": "code.factory",
+            "method": "eth_getCode",
+            "ms": 403.34,
+            "outcome": "success"
+          },
+          {
+            "operation": "router.factory",
+            "method": "eth_call",
+            "ms": 227.41,
+            "outcome": "success"
+          },
+          {
+            "operation": "router.WETH",
+            "method": "eth_call",
+            "ms": 223.11,
+            "outcome": "success"
+          },
+          {
+            "operation": "factory.getPair",
+            "method": "eth_call",
+            "ms": 215.57,
+            "outcome": "success"
+          },
+          {
+            "operation": "code.pair",
+            "method": "eth_getCode",
+            "ms": 233.51,
+            "outcome": "success"
+          },
+          {
+            "operation": "pair.factory",
+            "method": "eth_call",
+            "ms": 215.17,
+            "outcome": "success"
+          },
+          {
+            "operation": "pair.token0",
+            "method": "eth_call",
+            "ms": 226.22,
+            "outcome": "success"
+          },
+          {
+            "operation": "pair.token1",
+            "method": "eth_call",
+            "ms": 214.91,
+            "outcome": "success"
+          },
+          {
+            "operation": "pair.getReserves",
+            "method": "eth_call",
+            "ms": 229.74,
+            "outcome": "success"
+          },
+          {
+            "operation": "token.decimals",
+            "method": "eth_call",
+            "ms": 224.06,
+            "outcome": "success"
+          },
+          {
+            "operation": "token.balance",
+            "method": "eth_call",
+            "ms": 230.4,
+            "outcome": "success"
+          },
+          {
+            "operation": "native.balance",
+            "method": "eth_getBalance",
+            "ms": 219.21,
+            "outcome": "success"
+          },
+          {
+            "operation": "router.getAmountsOut",
+            "method": "eth_call",
+            "ms": 224.66,
+            "outcome": "success"
+          },
+          {
+            "operation": "token.allowance",
+            "method": "eth_call",
+            "ms": 223.81,
+            "outcome": "success"
+          },
+          {
+            "operation": "simulation",
+            "method": "eth_call",
+            "ms": 215.85,
+            "outcome": "refused"
+          },
+          {
+            "operation": "head.recheck",
+            "method": "eth_getBlockByNumber",
+            "ms": 229.85,
+            "outcome": "success"
+          }
+        ],
+        "rpc_calls": 19,
+        "eth_call_ms": [
+          227.41,
+          223.11,
+          215.56,
+          215.17,
+          226.22,
+          214.91,
+          229.74,
+          224.06,
+          230.4,
+          224.65,
+          223.81,
+          215.84
+        ],
+        "estimate_gas_ms": [],
+        "agora_vs_direct_output_delta_bps": -50,
+        "paper_record_status": "hypothetical_requires_approval"
+      }
+    ],
+    "refusals": 1,
+    "review_click_to_render": {
+      "samples": 5,
+      "p50_ms": 5526.6,
+      "p95_ms": 5921.24,
+      "p99_ms": 5921.24
+    },
+    "agora_quote": {
+      "samples": 5,
+      "p50_ms": 1170.95,
+      "p95_ms": 1398.87,
+      "p99_ms": 1398.87
+    },
+    "direct_quote": {
+      "samples": 5,
+      "p50_ms": 224.96,
+      "p95_ms": 231.45,
+      "p99_ms": 231.45
+    },
+    "eth_call": {
+      "samples": 57,
+      "p50_ms": 226.04,
+      "p95_ms": 243.37,
+      "p99_ms": 250.59
+    },
+    "estimate_gas": {
+      "samples": 3,
+      "p50_ms": 229.04,
+      "p95_ms": 232.1,
+      "p99_ms": 232.1
+    },
+    "limitations": [
+      "Three samples per side are descriptive; no reliable tail estimates.",
+      "Click timing covers the actual local Telegram handler, not Telegram delivery or user dwell.",
+      "Direct pool expected output assumes normal token transfers; no actual fill or balance mutation.",
+      "Agora comparison is API-reported, may use a different block and has unverified outer ABI.",
+      "Missing SELL allowance is a conditional PAPER scenario with no successful simulation or gas estimate.",
+      "No signer, approvals, transaction submissions, production bot messages or production DB writes."
+    ]
+  },
+  "after": {
+    "location": "WSL2 local network; egress region unverified",
+    "token": "0x5e5df82d563fcf36b6f853c4d09f89e2d18825b4",
+    "samples_per_side": 3,
+    "optimization": true,
+    "cold_start": {
+      "ms": 8543.914632000451,
+      "rpc_calls": 19,
+      "simulation_status": "success"
+    },
+    "buy_hype": "0.0001",
+    "sell_wallet_percent": "1",
+    "observations": [
+      {
+        "side": "buy",
+        "simulation_status": "success",
+        "review_click_to_render_ms": 3844.76,
+        "quote_ready_ms": 3844.05,
+        "agora_api_ms": 957.63,
+        "agora_status": "reported_builder_unverified",
+        "direct_quote_eth_call_ms": null,
+        "calculation_ms": 0.0017629990907153115,
+        "render_ms": 0.2634329994180007,
+        "metadata_cache_hit": true,
+        "rpc_operations": [
+          {
+            "operation": "chain.verify",
+            "method": "eth_chainId",
+            "ms": 207.98,
+            "outcome": "success"
+          },
+          {
+            "operation": "head.latest",
+            "method": "eth_getBlockByNumber",
+            "ms": 207.97,
+            "outcome": "success"
+          },
+          {
+            "operation": "code.router",
+            "method": "eth_getCode",
+            "ms": 229.28,
+            "outcome": "success"
+          },
+          {
+            "operation": "code.factory",
+            "method": "eth_getCode",
+            "ms": 225.87,
+            "outcome": "success"
+          },
+          {
+            "operation": "code.pair",
+            "method": "eth_getCode",
+            "ms": 210.28,
+            "outcome": "success"
+          },
+          {
+            "operation": "pair.getReserves",
+            "method": "eth_call",
+            "ms": 304.72,
+            "outcome": "success"
+          },
+          {
+            "operation": "token.decimals",
+            "method": "eth_call",
+            "ms": 215.48,
+            "outcome": "success"
+          },
+          {
+            "operation": "token.balance",
+            "method": "eth_call",
+            "ms": 209.11,
+            "outcome": "success"
+          },
+          {
+            "operation": "native.balance",
+            "method": "eth_getBalance",
+            "ms": 208.65,
+            "outcome": "success"
+          },
+          {
+            "operation": "simulation",
+            "method": "eth_call",
+            "ms": 208.1,
+            "outcome": "success"
+          },
+          {
+            "operation": "gas.estimate",
+            "method": "eth_estimateGas",
+            "ms": 232.91,
+            "outcome": "success"
+          },
+          {
+            "operation": "gas.price",
+            "method": "eth_gasPrice",
+            "ms": 209.77,
+            "outcome": "success"
+          },
+          {
+            "operation": "head.recheck",
+            "method": "eth_getBlockByNumber",
+            "ms": 214.51,
+            "outcome": "success"
+          }
+        ],
+        "rpc_calls": 13,
+        "eth_call_ms": [
+          304.72,
+          215.47,
+          209.11,
+          208.1
+        ],
+        "estimate_gas_ms": [
+          232.9
+        ],
+        "agora_vs_direct_output_delta_bps": 18,
+        "paper_record_status": "hypothetical_only"
+      },
+      {
+        "side": "buy",
+        "simulation_status": "success",
+        "review_click_to_render_ms": 3773.77,
+        "quote_ready_ms": 3768.49,
+        "agora_api_ms": 938.69,
+        "agora_status": "reported_builder_unverified",
+        "direct_quote_eth_call_ms": null,
+        "calculation_ms": 0.0017419988580513746,
+        "render_ms": 0.1489530004619155,
+        "metadata_cache_hit": true,
+        "rpc_operations": [
+          {
+            "operation": "chain.verify",
+            "method": "eth_chainId",
+            "ms": 229.77,
+            "outcome": "success"
+          },
+          {
+            "operation": "head.latest",
+            "method": "eth_getBlockByNumber",
+            "ms": 212.34,
+            "outcome": "success"
+          },
+          {
+            "operation": "code.router",
+            "method": "eth_getCode",
+            "ms": 227.69,
+            "outcome": "success"
+          },
+          {
+            "operation": "code.factory",
+            "method": "eth_getCode",
+            "ms": 228.29,
+            "outcome": "success"
+          },
+          {
+            "operation": "code.pair",
+            "method": "eth_getCode",
+            "ms": 217.15,
+            "outcome": "success"
+          },
+          {
+            "operation": "pair.getReserves",
+            "method": "eth_call",
+            "ms": 211.29,
+            "outcome": "success"
+          },
+          {
+            "operation": "token.decimals",
+            "method": "eth_call",
+            "ms": 218.24,
+            "outcome": "success"
+          },
+          {
+            "operation": "token.balance",
+            "method": "eth_call",
+            "ms": 219.26,
+            "outcome": "success"
+          },
+          {
+            "operation": "native.balance",
+            "method": "eth_getBalance",
+            "ms": 214.26,
+            "outcome": "success"
+          },
+          {
+            "operation": "simulation",
+            "method": "eth_call",
+            "ms": 214.59,
+            "outcome": "success"
+          },
+          {
+            "operation": "gas.estimate",
+            "method": "eth_estimateGas",
+            "ms": 211.53,
+            "outcome": "success"
+          },
+          {
+            "operation": "gas.price",
+            "method": "eth_gasPrice",
+            "ms": 203.79,
+            "outcome": "success"
+          },
+          {
+            "operation": "head.recheck",
+            "method": "eth_getBlockByNumber",
+            "ms": 224.61,
+            "outcome": "success"
+          }
+        ],
+        "rpc_calls": 13,
+        "eth_call_ms": [
+          211.29,
+          218.24,
+          219.25,
+          214.59
+        ],
+        "estimate_gas_ms": [
+          211.52
+        ],
+        "agora_vs_direct_output_delta_bps": 18,
+        "paper_record_status": "hypothetical_only"
+      },
+      {
+        "side": "buy",
+        "simulation_status": "success",
+        "review_click_to_render_ms": 3306.83,
+        "quote_ready_ms": 3307.37,
+        "agora_api_ms": 544.23,
+        "agora_status": "reported_builder_unverified",
+        "direct_quote_eth_call_ms": null,
+        "calculation_ms": 0.0016489993868162856,
+        "render_ms": 0.15169499965850264,
+        "metadata_cache_hit": true,
+        "rpc_operations": [
+          {
+            "operation": "chain.verify",
+            "method": "eth_chainId",
+            "ms": 208.0,
+            "outcome": "success"
+          },
+          {
+            "operation": "head.latest",
+            "method": "eth_getBlockByNumber",
+            "ms": 210.04,
+            "outcome": "success"
+          },
+          {
+            "operation": "code.router",
+            "method": "eth_getCode",
+            "ms": 217.93,
+            "outcome": "success"
+          },
+          {
+            "operation": "code.factory",
+            "method": "eth_getCode",
+            "ms": 209.59,
+            "outcome": "success"
+          },
+          {
+            "operation": "code.pair",
+            "method": "eth_getCode",
+            "ms": 223.76,
+            "outcome": "success"
+          },
+          {
+            "operation": "pair.getReserves",
+            "method": "eth_call",
+            "ms": 215.67,
+            "outcome": "success"
+          },
+          {
+            "operation": "token.decimals",
+            "method": "eth_call",
+            "ms": 215.62,
+            "outcome": "success"
+          },
+          {
+            "operation": "token.balance",
+            "method": "eth_call",
+            "ms": 205.76,
+            "outcome": "success"
+          },
+          {
+            "operation": "native.balance",
+            "method": "eth_getBalance",
+            "ms": 207.23,
+            "outcome": "success"
+          },
+          {
+            "operation": "simulation",
+            "method": "eth_call",
+            "ms": 211.09,
+            "outcome": "success"
+          },
+          {
+            "operation": "gas.estimate",
+            "method": "eth_estimateGas",
+            "ms": 219.42,
+            "outcome": "success"
+          },
+          {
+            "operation": "gas.price",
+            "method": "eth_gasPrice",
+            "ms": 211.07,
+            "outcome": "success"
+          },
+          {
+            "operation": "head.recheck",
+            "method": "eth_getBlockByNumber",
+            "ms": 204.88,
+            "outcome": "success"
+          }
+        ],
+        "rpc_calls": 13,
+        "eth_call_ms": [
+          215.67,
+          215.61,
+          205.76,
+          211.08
+        ],
+        "estimate_gas_ms": [
+          219.42
+        ],
+        "agora_vs_direct_output_delta_bps": 18,
+        "paper_record_status": "hypothetical_only"
+      },
+      {
+        "side": "sell",
+        "simulation_status": "approval_required",
+        "review_click_to_render_ms": 3605.79,
+        "quote_ready_ms": 3607.48,
+        "agora_api_ms": 1039.34,
+        "agora_status": "reported_builder_unverified",
+        "direct_quote_eth_call_ms": null,
+        "calculation_ms": 0.0018430000636726618,
+        "render_ms": 0.15293100113922264,
+        "metadata_cache_hit": true,
+        "rpc_operations": [
+          {
+            "operation": "chain.verify",
+            "method": "eth_chainId",
+            "ms": 206.78,
+            "outcome": "success"
+          },
+          {
+            "operation": "head.latest",
+            "method": "eth_getBlockByNumber",
+            "ms": 214.38,
+            "outcome": "success"
+          },
+          {
+            "operation": "code.router",
+            "method": "eth_getCode",
+            "ms": 231.39,
+            "outcome": "success"
+          },
+          {
+            "operation": "code.factory",
+            "method": "eth_getCode",
+            "ms": 209.84,
+            "outcome": "success"
+          },
+          {
+            "operation": "code.pair",
+            "method": "eth_getCode",
+            "ms": 223.09,
+            "outcome": "success"
+          },
+          {
+            "operation": "pair.getReserves",
+            "method": "eth_call",
+            "ms": 216.0,
+            "outcome": "success"
+          },
+          {
+            "operation": "token.decimals",
+            "method": "eth_call",
+            "ms": 216.77,
+            "outcome": "success"
+          },
+          {
+            "operation": "token.balance",
+            "method": "eth_call",
+            "ms": 206.06,
+            "outcome": "success"
+          },
+          {
+            "operation": "native.balance",
+            "method": "eth_getBalance",
+            "ms": 208.28,
+            "outcome": "success"
+          },
+          {
+            "operation": "token.allowance",
+            "method": "eth_call",
+            "ms": 200.74,
+            "outcome": "success"
+          },
+          {
+            "operation": "simulation",
+            "method": "eth_call",
+            "ms": 217.94,
+            "outcome": "refused"
+          },
+          {
+            "operation": "head.recheck",
+            "method": "eth_getBlockByNumber",
+            "ms": 212.38,
+            "outcome": "success"
+          }
+        ],
+        "rpc_calls": 12,
+        "eth_call_ms": [
+          216.0,
+          216.77,
+          206.06,
+          200.74,
+          217.94
+        ],
+        "estimate_gas_ms": [],
+        "agora_vs_direct_output_delta_bps": -50,
+        "paper_record_status": "hypothetical_requires_approval"
+      },
+      {
+        "side": "sell",
+        "simulation_status": "approval_required",
+        "review_click_to_render_ms": 4632.33,
+        "quote_ready_ms": 4632.46,
+        "agora_api_ms": 1904.28,
+        "agora_status": "reported_builder_unverified",
+        "direct_quote_eth_call_ms": null,
+        "calculation_ms": 0.002192999090766534,
+        "render_ms": 0.15943499965942465,
+        "metadata_cache_hit": true,
+        "rpc_operations": [
+          {
+            "operation": "chain.verify",
+            "method": "eth_chainId",
+            "ms": 215.75,
+            "outcome": "success"
+          },
+          {
+            "operation": "head.latest",
+            "method": "eth_getBlockByNumber",
+            "ms": 214.21,
+            "outcome": "success"
+          },
+          {
+            "operation": "code.router",
+            "method": "eth_getCode",
+            "ms": 221.82,
+            "outcome": "success"
+          },
+          {
+            "operation": "code.factory",
+            "method": "eth_getCode",
+            "ms": 226.79,
+            "outcome": "success"
+          },
+          {
+            "operation": "code.pair",
+            "method": "eth_getCode",
+            "ms": 230.97,
+            "outcome": "success"
+          },
+          {
+            "operation": "pair.getReserves",
+            "method": "eth_call",
+            "ms": 347.69,
+            "outcome": "success"
+          },
+          {
+            "operation": "token.decimals",
+            "method": "eth_call",
+            "ms": 201.66,
+            "outcome": "success"
+          },
+          {
+            "operation": "token.balance",
+            "method": "eth_call",
+            "ms": 208.41,
+            "outcome": "success"
+          },
+          {
+            "operation": "native.balance",
+            "method": "eth_getBalance",
+            "ms": 215.59,
+            "outcome": "success"
+          },
+          {
+            "operation": "token.allowance",
+            "method": "eth_call",
+            "ms": 210.15,
+            "outcome": "success"
+          },
+          {
+            "operation": "simulation",
+            "method": "eth_call",
+            "ms": 208.42,
+            "outcome": "refused"
+          },
+          {
+            "operation": "head.recheck",
+            "method": "eth_getBlockByNumber",
+            "ms": 223.69,
+            "outcome": "success"
+          }
+        ],
+        "rpc_calls": 12,
+        "eth_call_ms": [
+          347.68,
+          201.65,
+          208.41,
+          210.15,
+          208.42
+        ],
+        "estimate_gas_ms": [],
+        "agora_vs_direct_output_delta_bps": -50,
+        "paper_record_status": "hypothetical_requires_approval"
+      },
+      {
+        "side": "sell",
+        "simulation_status": "approval_required",
+        "review_click_to_render_ms": 3052.1,
+        "quote_ready_ms": 3051.57,
+        "agora_api_ms": 456.16,
+        "agora_status": "reported_builder_unverified",
+        "direct_quote_eth_call_ms": null,
+        "calculation_ms": 0.002139000571332872,
+        "render_ms": 0.16580899864493404,
+        "metadata_cache_hit": true,
+        "rpc_operations": [
+          {
+            "operation": "chain.verify",
+            "method": "eth_chainId",
+            "ms": 208.25,
+            "outcome": "success"
+          },
+          {
+            "operation": "head.latest",
+            "method": "eth_getBlockByNumber",
+            "ms": 212.01,
+            "outcome": "success"
+          },
+          {
+            "operation": "code.router",
+            "method": "eth_getCode",
+            "ms": 230.19,
+            "outcome": "success"
+          },
+          {
+            "operation": "code.factory",
+            "method": "eth_getCode",
+            "ms": 223.85,
+            "outcome": "success"
+          },
+          {
+            "operation": "code.pair",
+            "method": "eth_getCode",
+            "ms": 223.32,
+            "outcome": "success"
+          },
+          {
+            "operation": "pair.getReserves",
+            "method": "eth_call",
+            "ms": 209.15,
+            "outcome": "success"
+          },
+          {
+            "operation": "token.decimals",
+            "method": "eth_call",
+            "ms": 212.06,
+            "outcome": "success"
+          },
+          {
+            "operation": "token.balance",
+            "method": "eth_call",
+            "ms": 222.21,
+            "outcome": "success"
+          },
+          {
+            "operation": "native.balance",
+            "method": "eth_getBalance",
+            "ms": 213.71,
+            "outcome": "success"
+          },
+          {
+            "operation": "token.allowance",
+            "method": "eth_call",
+            "ms": 209.35,
+            "outcome": "success"
+          },
+          {
+            "operation": "simulation",
+            "method": "eth_call",
+            "ms": 218.99,
+            "outcome": "refused"
+          },
+          {
+            "operation": "head.recheck",
+            "method": "eth_getBlockByNumber",
+            "ms": 210.24,
+            "outcome": "success"
+          }
+        ],
+        "rpc_calls": 12,
+        "eth_call_ms": [
+          209.15,
+          212.06,
+          222.21,
+          209.35,
+          218.99
+        ],
+        "estimate_gas_ms": [],
+        "agora_vs_direct_output_delta_bps": -50,
+        "paper_record_status": "hypothetical_requires_approval"
+      }
+    ],
+    "refusals": 0,
+    "review_click_to_render": {
+      "samples": 6,
+      "p50_ms": 3605.79,
+      "p95_ms": 4632.33,
+      "p99_ms": 4632.33
+    },
+    "agora_quote": {
+      "samples": 6,
+      "p50_ms": 938.69,
+      "p95_ms": 1904.28,
+      "p99_ms": 1904.28
+    },
+    "direct_quote": {
+      "samples": 0,
+      "p50_ms": null,
+      "p95_ms": null,
+      "p99_ms": null
+    },
+    "eth_call": {
+      "samples": 27,
+      "p50_ms": 212.06,
+      "p95_ms": 304.72,
+      "p99_ms": 347.68
+    },
+    "estimate_gas": {
+      "samples": 3,
+      "p50_ms": 219.42,
+      "p95_ms": 232.9,
+      "p99_ms": 232.9
+    },
+    "limitations": [
+      "Three samples per side are descriptive; no reliable tail estimates.",
+      "Click timing covers the actual local Telegram handler, not Telegram delivery or user dwell.",
+      "Direct pool expected output assumes normal token transfers; no actual fill or balance mutation.",
+      "Agora comparison is API-reported, may use a different block and has unverified outer ABI.",
+      "Missing SELL allowance is a conditional PAPER scenario with no successful simulation or gas estimate.",
+      "No signer, approvals, transaction submissions, production bot messages or production DB writes."
+    ]
+  },
+  "method": "Same handler, RPC, token, wallet and sizes; both phases include the same security checks. Separate cold starts excluded from steady-state quantiles. Sequential chain state can differ.",
+  "paired_successful": {
+    "before": {
+      "samples": 5,
+      "p50_ms": 5526.6,
+      "p95_ms": 5921.24
+    },
+    "after": {
+      "samples": 5,
+      "p50_ms": 3605.79,
+      "p95_ms": 3844.76
+    },
+    "note": "Same side/index/size, paired only when both succeeded; 3 BUY and 2 conditional SELL. Refusals remain in raw observations."
+  },
+  "generated_at": "2026-11-07T09:38:10.974855+00:00",
+  "starting_point": "PR #84 fa882f2; both profile modes include follow-up hardening and reorg checks"
+}

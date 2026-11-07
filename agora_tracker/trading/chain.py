@@ -13,6 +13,7 @@ from eth_abi import decode, encode
 from eth_abi.exceptions import DecodingError, EncodingError
 from eth_hash.auto import keccak
 
+from .http import bounded_json
 from .paper import ADDR, CHAIN, TradeRefused
 
 
@@ -70,6 +71,7 @@ class ReadRpc:
         self._id = 0
         self._budget = threading.local()
         self.timings: list[tuple[str, float]] = []
+        self.trace: list[dict] = []
 
     @contextmanager
     def budget(self, seconds: float):
@@ -80,6 +82,15 @@ class ReadRpc:
         finally:
             self._budget.deadline = previous
 
+    @contextmanager
+    def operation(self, name: str):
+        previous = getattr(self._budget, "operation", None)
+        self._budget.operation = name
+        try:
+            yield
+        finally:
+            self._budget.operation = previous
+
     def call(self, method: str, params: list):
         if method not in READS:
             raise TradeRefused("Only allowlisted read-only RPC methods are permitted")
@@ -89,16 +100,19 @@ class ReadRpc:
             remaining = (getattr(self._budget, "deadline", None) or float("inf")) - started
             if remaining <= 0:
                 raise TradeRefused("Paper RPC request budget exhausted; refresh later")
+            outcome = "refused"
             try:
                 r = self.session.post(
                     self.url,
                     json={"jsonrpc": "2.0", "id": self._id, "method": method, "params": params},
                     timeout=min(5, remaining),
                     allow_redirects=False,
+                    stream=True,
                 )
                 if r.status_code != 200:
+                    r.close()
                     raise TradeRefused("Paper RPC unavailable or rate limited")
-                d = r.json()
+                d = bounded_json(r, deadline=started+min(5, remaining))
                 if (
                     not isinstance(d, dict)
                     or d.get("jsonrpc") != "2.0"
@@ -112,6 +126,7 @@ class ReadRpc:
                     )
                 if "error" in d or "result" not in d:
                     raise TradeRefused("Read-only simulation/call refused by RPC")
+                outcome = "success"
                 return d["result"]
             except (requests.RequestException, ValueError) as e:
                 if isinstance(e, TradeRefused):
@@ -120,17 +135,44 @@ class ReadRpc:
             finally:
                 self.timings.append((method, (time.monotonic() - started) * 1000))
                 self.timings = self.timings[-128:]
+                self.trace.append(
+                    {
+                        "operation": getattr(self._budget, "operation", None) or method,
+                        "method": method,
+                        "ms": (time.monotonic() - started) * 1000,
+                        "outcome": outcome,
+                    }
+                )
+                self.trace = self.trace[-128:]
 
     def snapshot(self) -> tuple[str, dict]:
-        if uint(self.call("eth_chainId", [])) != CHAIN:
+        with self.operation("chain.verify"):
+            chain = uint(self.call("eth_chainId", []))
+        if chain != CHAIN:
             raise TradeRefused("Paper RPC chain mismatch")
-        block = self.call("eth_getBlockByNumber", ["latest", False])
+        with self.operation("head.latest"):
+            block = self.call("eth_getBlockByNumber", ["latest", False])
         if not isinstance(block, dict):
             raise TradeRefused("Invalid block")
         timestamp = uint(block.get("timestamp"))
         if not 0 <= self.now() - timestamp <= 30:
             raise TradeRefused("Paper RPC head is stale or future dated")
+        if not isinstance(block.get("hash"), str) or not re.fullmatch(
+            r"0x[0-9a-fA-F]{64}", block["hash"]
+        ):
+            raise TradeRefused("Invalid block hash")
         return hex(uint(block.get("number"))), block
+
+    def check_block(self, block: str, expected: dict) -> None:
+        with self.operation("head.recheck"):
+            current = self.call("eth_getBlockByNumber", [block, False])
+        if (
+            not isinstance(current, dict)
+            or current.get("hash") != expected.get("hash")
+            or current.get("number") != block
+            or current.get("timestamp") != expected.get("timestamp")
+        ):
+            raise TradeRefused("Pinned block changed during quote; refresh required")
 
     def view(self, target: str, data: str, block: str, types: list[str]) -> tuple:
         result = self.call("eth_call", [{"to": address(target), "data": data}, block])
