@@ -11,7 +11,7 @@
 </head>
 <body>
 <main id="app" data-state="not_authenticated">
-  <header><a class="brand" href="/">ELYSIUM <span>TRADE PREVIEW</span></a><span class="pill">C1 · NO SIGNING</span></header>
+  <header><a class="brand" href="/">ELYSIUM <span>TRADE PREVIEW</span></a><span class="pill">C1 · NO TRANSACTIONS</span></header>
   <section class="intro"><p class="eyebrow">FROM YOUR TELEGRAM ALERT</p><h1>Review before you act.</h1>
     <p class="muted">Read-only quotes and unsigned transaction details. Your wallet stays in your control.</p></section>
   <div id="status" role="status" aria-live="polite" tabindex="-1"><strong id="status-title">Authentication required</strong><p id="status-message">Open a fresh link from your private alert panel.</p></div>
@@ -26,6 +26,12 @@
     <div class="section-heading"><h2 id="wallet-title">Your wallet</h2><span id="wallet-state" class="muted">Disconnected</span></div>
     <code id="wallet-address">No wallet connected</code>
     <div class="button-row"><button id="authenticate" type="button">Continue with Telegram</button><button id="connect" type="button" disabled>Connect wallet</button></div>
+    <div id="ownership-controls" hidden><button id="ownership-prepare" type="button" disabled>Verify wallet ownership</button><button id="logout" type="button">Log out</button></div>
+    <div id="ownership-card" hidden>
+      <p>Authentication signature only. This proves ownership for this private PAPER preview and authorizes no transaction or approval.</p>
+      <label for="ownership-message">Exact sign-in message</label><textarea id="ownership-message" readonly rows="9" spellcheck="false"></textarea>
+      <button id="ownership-sign" type="button" disabled>Sign ownership proof only</button>
+    </div>
     <div id="fallback" hidden><p class="muted">No compatible wallet provider is available in this browser. Open this secure link in a wallet’s browser or an external browser with an EIP-1193 provider, then authenticate again. Native iPhone wallet compatibility depends on the app and version.</p>
       <div class="button-row"><button id="copy-link" type="button">Copy secure link</button><a id="external-browser" class="button secondary" rel="noopener noreferrer" target="_blank">Open external browser ↗</a></div>
       <output id="copy-status" aria-live="polite"></output></div>
@@ -44,9 +50,9 @@
   </section>
   <section id="review-card" class="card review" aria-labelledby="review-title" hidden>
     <p class="eyebrow">EXACT UNSIGNED PAYLOAD</p><h2 id="review-title">Check every detail.</h2>
-    <p>No transaction request will be sent to your wallet. Signing and broadcasting are disabled in C1.</p>
+    <p>No transaction request will be sent to your wallet. Transaction signing and broadcasting are disabled in C1.</p>
     <dl id="review-details"></dl><label for="calldata">Read-only calldata</label><textarea id="calldata" readonly rows="5" spellcheck="false"></textarea>
-    <button id="signing-disabled" class="wide" type="button" disabled>Signing disabled in C1</button>
+    <button id="signing-disabled" class="wide" type="button" disabled>Transaction signing disabled in C1</button>
   </section>
   <footer><button id="cancel" class="wide secondary" type="button">Cancel preview</button><p class="muted">No private keys, seed phrases, approvals or live transactions.</p></footer>
 </main>

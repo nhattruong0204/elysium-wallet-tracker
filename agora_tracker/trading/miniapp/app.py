@@ -1,6 +1,6 @@
 """Isolated unsigned-preview UI; never mount on the public research dashboard.
 
-The default authenticator denies all API access. #89 supplies real authentication;
+The default authenticator denies all API access. The optional #89 adapter verifies ownership;
 #90 supplies any Stage C revalidation contract. Tests inject explicitly labelled mocks.
 This adapter only reuses existing PAPER state/provider; there is no Send/Confirm API.
 """
@@ -17,7 +17,7 @@ from starlette.applications import Starlette
 from starlette.concurrency import run_in_threadpool
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
-from starlette.responses import FileResponse, JSONResponse
+from starlette.responses import HTMLResponse, JSONResponse
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
@@ -38,6 +38,7 @@ class Principal:
     user_id: int
     verified_wallet: str | None = None
     fixture: bool = False
+    intent_id: str | None = None
 
 
 class Authenticator(Protocol):
@@ -69,10 +70,23 @@ class Guard(BaseHTTPMiddleware):
 def create_app(flow: PaperFlow | None = None, auth: Authenticator | None = None) -> Starlette:
     """Dependency injection only: no mock-auth flag, keys, scanner or DB connection."""
     authenticator = auth or DenyAuth()
+    secure_auth = getattr(authenticator, "ownership_proof", False) is True
+    if secure_auth and getattr(authenticator, "flow", None) is not flow:
+        raise ValueError("Authentication must use the Mini App's existing PAPER flow")
+    auth_routes = getattr(authenticator, "routes", lambda: ())() if secure_auth else ()
     links = Links(LinksConfig())
 
     async def index(request):
-        return FileResponse(HERE / "index.html", media_type="text/html")
+        mode = (
+            "telegram-siwe-v1"
+            if getattr(authenticator, "ownership_proof", False) is True
+            else "disabled"
+        )
+        return HTMLResponse(
+            (HERE / "index.html")
+            .read_text()
+            .replace('<main id="app"', f'<main data-auth-mode="{mode}" id="app"')
+        )
 
     async def api(request: Request):
         try:
@@ -96,17 +110,19 @@ def create_app(flow: PaperFlow | None = None, auth: Authenticator | None = None)
                 claimed is not None and not isinstance(claimed, str)
             ):
                 raise TradeRefused("Invalid authentication request")
+            request.state.miniapp_intent = sid
             principal = await authenticator.authenticate(request, init_data, claimed)
             if (
                 principal is None
                 or type(principal.user_id) is not int
                 or principal.user_id <= 0
                 or flow is None
+                or (not principal.fixture and principal.intent_id != sid)
             ):
                 return JSONResponse(
                     {
                         "error": "not_authenticated",
-                        "message": "Telegram and wallet authentication are not connected in C1. No signing is available.",
+                        "message": "Authentication required or expired. Open a fresh private Telegram alert. Transaction signing is unavailable.",
                     },
                     401,
                 )
@@ -126,7 +142,9 @@ def create_app(flow: PaperFlow | None = None, auth: Authenticator | None = None)
                 "signing_enabled": False,
                 "auth": {
                     "telegram_authenticated": True,
-                    "wallet_verified": bool(principal.verified_wallet and principal.verified_wallet == i.wallet),
+                    "wallet_verified": bool(
+                        principal.verified_wallet and principal.verified_wallet == i.wallet
+                    ),
                     "wallet": principal.verified_wallet,
                     "fixture": principal.fixture,
                 },
@@ -157,6 +175,19 @@ def create_app(flow: PaperFlow | None = None, auth: Authenticator | None = None)
                 return flow.review(uid, uid, sid, slippage)
 
             q = await run_in_threadpool(preview)
+            # Logout/account revocation during network I/O must not release a private
+            # quote under a principal checked before those operations.
+            if secure_auth:
+                fresh = await authenticator.authenticate(request, "", claimed)
+                if fresh != principal:
+                    return JSONResponse(
+                        {
+                            "error": "not_authenticated",
+                            "message": "Authentication changed; reconnect",
+                            "signing_enabled": False,
+                        },
+                        401,
+                    )
             context["server_time"] = flow.now()
             result = asdict(q)
             # Every financial integer crosses JSON as a decimal string, never a JS Number.
@@ -201,6 +232,7 @@ def create_app(flow: PaperFlow | None = None, auth: Authenticator | None = None)
                 Route("/api/" + action, api, methods=["POST"])
                 for action in ("session", "quote", "cancel")
             ],
+            *auth_routes,
             Mount("/static", StaticFiles(directory=HERE / "static"), name="static"),
         ]
     )
