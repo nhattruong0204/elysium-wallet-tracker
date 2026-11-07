@@ -1,83 +1,87 @@
-# Trading security — staged design, review required
+# Trading security — independent review required
 
-Live execution is absent, not merely hidden behind a boolean. There is no signer,
-private-key input, signed-byte endpoint or RPC write transport. `PaperFlow.broadcast`
-unconditionally refuses. `trading.paper_enabled` defaults false and accepts booleans only;
-there is no live_enabled setting. Production has no QuoteProvider or approved route.
-The paper module has no public web API and no dashboard/public_api additions.
+Live execution is absent. There is no private-key input, signer, approval sender,
+signed-byte endpoint or transaction broadcaster. `PaperFlow.broadcast` always refuses.
+`trading.paper_enabled` defaults false and has no corresponding live-enable setting.
+PAPER data is never exposed through the dashboard or public PostgreSQL views.
 
-## Stage B controls implemented
+## Implemented PAPER boundaries
 
-- Existing Telegram from.id/admin allowlist checked before paper dispatch; a group never
-  edits an order panel or executes an action for other members. Initial selection goes to
-  the caller's own DM. Every subsequent action requires matching private user/chat IDs.
-- Token CA, chain 99901 and original chat/message bound to opaque server-side sessions.
-  Callback text is a selector, never authorization. Separate users cannot access a session.
-- Three-minute expiry, bounded 256-session storage, duplicate alert selection reuse,
-  serialized operations, cancellation, pause, fresh review and one-time PAPER confirmation.
-  Restart invalidates all sessions; no stale callback can recover a previous order intent.
-  Optional private hypothetical journals are described below.
-- Exact integer wei parsing; 1 HYPE paper cap, 1% max slippage/impact, 30-second quote
-  expiry, matching input/route, gas/balance checks and exact minOut. Sell percentages refer
-  to a future verified wallet token balance, never an invented bot position.
-- Empty production quote/route configuration fails closed. Tests inject clearly named
-  fixture providers only. No unavailable quote, balance or fee is converted to zero.
+- Existing IntelBot allowlist and a matching private user/chat govern wallet associations,
+  amount selection, balances, review, confirmation and history. Group alerts open only the
+  caller's DM. A watched public address proves no ownership or spending authority.
+- Token/chain/source message/wallet are bound to opaque, bounded, expiring sessions. Changing
+  a wallet cancels that caller's existing sessions. No other user's state is disclosed.
+- Each review has a new random confirmation token and a digest of the entire quote, including
+  nested unsigned payload. Refresh, amount changes, expiry, cancellation and completion revoke
+  prior confirmation. Duplicate confirmations produce at most one private hypothetical record.
+- Quotes release the session lock during I/O and recheck selection, wallet, generation, expiry
+  and pause afterwards. Cancel/history remain available during pause. Network operations have
+  a busy guard, bounded total budget, five-second per-call timeouts and no retries.
+- RPC dispatch accepts only seven explicit read methods. Signing, approvals and all transaction
+  submission methods refuse before network I/O. Scanner RPC sessions/transactions are unused.
+- Canonical V2 ABI fragments come from pinned published Uniswap artifacts, not invented selectors.
+  Router immutables are filled only with the documented factory/wrapped HYPE addresses. Runtime
+  keccak hashes, factory/token identities and pinned-block reads are checked on every quote.
+- Exact integer input/percentage math, decimals <=36, matching router/reserve quotes, minOut,
+  liquidity, impact, age, gas and balance controls are enforced. Confirmation reconstructs and
+  compares the exact target/recipient/value/path/minimum/deadline payload. No ticker routing.
+- The proposed fee-on-transfer-supporting payload enforces minimum output in read-only simulation.
+  It returns no delivered amount. Expected output assumes normal transfers; token taxes, malicious
+  balance reporting, future restrictions, RPC honesty and future execution remain uncertain.
+- Missing SELL allowance is an explicitly conditional PAPER record with no successful simulation
+  or gas estimate. No approvals are sent, and transport errors are never relabelled as approvals.
+- The public Agora v1 builder is only a validated-envelope API comparison. Its outer contract ABI
+  and source/build identity remain unresolved; opaque calldata is never treated as verified.
+  Fees/output are API-reported, not independent on-chain fee verification.
+- The private journal requires an owned 0700 directory and 0600 regular file, rejects direct
+  symlinks and stores unique intent IDs plus user-filtered records. Initialization failure pauses
+  PAPER; write failure refuses confirmation. Watch associations persist; sessions/tokens do not.
+  No keys, signatures, live receipts or fake fills are stored. This is single-process PAPER
+  persistence, not a reviewed execution-service audit database.
 
-## Mandatory unresolved gates before Stage C / any real funds
+## Independent reviewer checklist
 
-Peer review has NOT occurred. This code is not an audited live trading implementation.
-Verify official current docs, route ABI/code/factory/pool/hook/ownership/fees and submission
-semantics; implement verified real quotes and simulations for supported routes only.
-Do not infer a swap ABI from attribution events or bytecode presence. Token taxes, sell
-restrictions, multi-hop, Permit2 and approval lifecycle remain unsupported.
+All items below remain **unapproved by an independent reviewer**. Author tests and this
+checklist are preparation only; neither constitutes independent approval.
 
-Design noncustodial wallet ownership proof, Telegram Mini App init-data signature/freshness,
-CSRF, one-time reviewed intents, typed destination/recipient/value/deadline/minOut checks,
-finite approvals and a strict destination/code allowlist. No generic calldata endpoint.
-Use a separate execution process/private DB role and authenticated ingress; no dashboard
-trading authority. Review nonce reservation, concurrent orders, ambiguous timeouts,
-same-byte rebroadcast, explicit replacement policy, receipt/reorg reconciliation and audit
-retention before creating a broadcast path. A hash acknowledgment is not a fill.
+- [ ] Review exact #84 head, dependency changes, canonical artifact provenance, immutable filling,
+  code pins, ABI encoding and the unsupported-venue refusal boundary. Reproduce verifier output.
+- [ ] Exercise forged/private/group callbacks, cross-user wallets/history, wallet changes during
+  quotes, refresh races, nested payload mutation, expiry, pause/cancel and duplicate confirmations.
+- [ ] Review conditional SELL labels: missing allowance must never imply simulation success,
+  estimated gas, actual fill, sellability or permission to submit. Verify zero broadcast traffic.
+- [ ] Reconcile fee units, price impact, input/output decimals, integer rounding and minimums.
+  Review thin pools, zero output, token taxes/restrictions and dishonest RPC/token responses.
+- [ ] Review journal ownership, symlink/rename threat assumptions, corruption/full disk, unique
+  constraints, crash-after-commit behavior, privacy, persistent mount, backups and retention.
+- [ ] Review startup/dependency isolation: PAPER failure must not change scanner/outbox reliability
+  or create another production getUpdates consumer. Approve any deployment/restart separately.
 
-Bot-token compromise must not authorize wallet spending. Never send seeds/private keys
-through Telegram or store them in .env, Postgres, source, CI or logs. Optional hot-wallet
-mode is a separate design/review with isolated KMS signing, revocation and strict limits.
-No such mode exists here. Obtain explicit owner approval for a bounded live BUY and SELL
-and for enabling real execution, in addition to independent review. No implicit consent.
+## Exact gates before Stage C
 
-## WSL continuation controls
+- [ ] Establish canonical AgoraRouter source/ABI/build identity before accepting aggregator payloads;
+  verify every chosen venue/hook/factory/pool, token behavior, applicable fees and actual net output.
+  No private API/session scraping or ABI inference from a selector is sufficient.
+- [ ] Use noncustodial signing first: wallet-controlled client signs only a reviewed exact intent.
+  Telegram bot tokens and public watch addresses cannot authorize spending. Implement wallet
+  ownership proof, Mini App init-data signature/freshness, CSRF, domain/chain binding and replay limits.
+- [ ] Threat-model compromised bot token/UI/provider/RPC, malicious calldata/recipient/approval,
+  token transfer restrictions, MEV, stale state, reorgs, key compromise and infrastructure compromise.
+  Independent reviewer signs off on the chosen signer architecture and trust assumptions.
+- [ ] Isolate execution from scanner and public web service. Use authenticated private ingress,
+  typed allowlisted transaction plans, least-privilege private storage and secure operational logs.
+  No generic destination/calldata endpoint. No wallet secrets in chat, .env, DB, source or CI logs.
+- [ ] Implement finite allowance/zero-reset lifecycle, serialize wallet/chain nonce reservations,
+  one conflicting order at a time, idempotent submission and ambiguous-timeout reconciliation.
+  Re-broadcast only identical signed bytes; review replacement limits and revocation procedures.
+- [ ] Validate on-chain minOut/deadline/recipient/value and fresh balance/allowance/gas/simulation
+  immediately before signing. Receipt matching, actual output/gas/fees, finality/reorg handling,
+  reconciled balances and truthful order statuses are required. RPC acknowledgment is not a fill.
+- [ ] Rehearse private-state backup/migration/rollback and emergency pause. Review resource/RPC
+  budgets and health metrics with both bots. Obtain explicit owner approval for a capped real BUY
+  and SELL test, then separate approval for enabling live execution after reviewing results.
 
-Official public API discovery is resolved: see the Stage A WSL evidence. An optional
-PAPER panel can fetch a bounded indicative BUY price without a recipient or API key.
-This uses a distinct `IndicativeQuote` type and cannot populate the reviewed `Quote`
-store or enable Confirm. No calldata/approval response is accepted. Unknown decimals
-stay explicitly raw units; token-specific sell amounts are not guessed. The transport
-uses five-second timeouts, no retries, no redirects, a shared 2.1-second client budget
-and a 60-second cooldown on 429. Other users of the same IP can still consume its budget.
-Fees are provider-reported, with wallet applicability unknown. No quote freshness,
-balance, route safety or sellability is inferred from this indicative observation.
-
-The full hypothetical Review → Confirm UI is exercised with approved fixture providers
-only. Confirmation carries a random token for that exact review, invalidated on refresh,
-selection, cancellation, completion or expiry; an old button cannot confirm a new quote.
-It rechecks private user/chat, current quote validity, balance/gas/minOut/route limits
-and the emergency pause before creating a record. Custom HYPE and percentage input
-uses exact integer parsing and the existing update consumer/allowlist.
-
-Optional `trading.paper_order_path` stores PAPER snapshots in a separate local SQLite
-file, never in scanner tables or dashboard views. The dedicated directory must be owned
-by the UI user with mode 0700; the regular file must be 0600, and direct symlinks are
-rejected. Records have a unique intent ID and user-filtered reads. Storage errors prevent
-confirmation; initialization failure pauses PAPER actions while normal UI remains usable.
-Sessions and confirmation tokens are not restored after restart. No private keys,
-wallet seeds, signed bytes, live receipts or fabricated fills are stored. This local
-single-process journal is not an execution-service audit database: encrypted retention,
-multiple-process access, least-privilege live DB roles and rollback/reconciliation still
-require independent design and review. Keep it on a private local filesystem, not a
-shared/network volume. Back up/rotate its file only through an authorized future runbook.
-
-Remaining release gates are unchanged: publisher-linked source/ABI/build verification,
-actual payload simulation and fees, wallet ownership and balances, finite approvals,
-Mini App/authentication, nonce/idempotency/reconciliation/reorg handling, independent
-signer threat model/security review and explicit owner consent for capped live testing.
-PAPER tests do not establish real-money readiness.
+Stage D hot-wallet mode would need a separate opt-in design, isolated KMS/secret-manager
+signer, strict per-trade/daily budgets, revocation, key rotation and independent review.
+No such mode is implemented or authorized. PAPER tests establish no real-money readiness.

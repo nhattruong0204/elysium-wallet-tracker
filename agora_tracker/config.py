@@ -276,8 +276,12 @@ class TradingConfig:
     """Stage B only. There is no live execution configuration switch."""
     paper_enabled: bool = False
     paper_order_path: str | None = None
+    paper_rpc_url: str = 'https://rpc.agoradex.app'
 
     def __post_init__(self) -> None:
+        from urllib.parse import urlsplit
+        if not isinstance(self.paper_rpc_url, str) or urlsplit(self.paper_rpc_url).scheme != 'https':
+            raise ValueError('paper_rpc_url must use HTTPS')
         if self.paper_order_path is not None and (not isinstance(self.paper_order_path, str) or not self.paper_order_path.strip()):
             raise ValueError('paper_order_path must be a local private file path')
         if type(self.paper_enabled) is not bool:

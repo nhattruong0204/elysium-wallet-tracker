@@ -168,12 +168,17 @@ class IntelBot:
         self.paper_trades = PaperFlow(self.allowed)
         self.paper_market = None
         if cfg.trading.paper_enabled:
+            from .trading.agora import AgoraV1
+            from .trading.chain import ReadRpc
             from .trading.indicative import AgoraIndicative
+            from .trading.v2 import DIRECT_ROUTE, DirectV2Provider
             self.paper_market = AgoraIndicative()
             if cfg.trading.paper_order_path:
                 from .trading.journal import PaperJournal
                 try:
                     self.paper_trades.journal = PaperJournal(cfg.trading.paper_order_path)
+                    self.paper_trades.provider = DirectV2Provider(ReadRpc(cfg.trading.paper_rpc_url), agora=AgoraV1())
+                    self.paper_trades.routes = frozenset({DIRECT_ROUTE})
                 except (OSError, ValueError):
                     self.paper_trades.paused = True
                     log.error("Private PAPER journal unavailable; paper actions paused")
@@ -299,6 +304,10 @@ class IntelBot:
             return
         trade_cmd, _, trade_arg = text.partition(" ")
         trade_cmd = trade_cmd.split("@", 1)[0].lower()
+        if trade_cmd in ("/paper_wallet", "/paper_balances"):
+            from .trading.telegram import wallet_command
+            wallet_command(self, msg, trade_cmd, trade_arg)
+            return
         if trade_cmd == "/paper_amount":
             from .trading.telegram import custom_amount
             custom_amount(self, msg, trade_arg)
@@ -313,19 +322,22 @@ class IntelBot:
             elif trade_cmd == "/orders":
                 from .trading.paper import TradeRefused
                 try:
-                    rows = self.paper_trades.orders(uid, chat)
-                    text = "PAPER hypothetical records — no fills or transactions\n" + (
-                        "\n".join(r['intent_id'] + " — " + r['status'] for r in rows)
-                        if rows else "No durable PAPER records; no connected wallet.")
+                    from .trading.telegram import order_history
+                    text = order_history(self.paper_trades, uid, chat)
                 except TradeRefused as e:
                     text = str(e)
                 self._send(chat, text, None)
             elif trade_cmd != "/trade":
-                self._send(chat, "PAPER only: no connected wallet, verified holdings or durable live orders.", None)
+                self._send(chat, "PAPER records are hypothetical scenarios. Use /paper_balances TOKEN for an on-chain watch-wallet snapshot; no live positions or receipts are created.", None)
             else:
                 from .trading.telegram import callback
+                parts = trade_arg.split()
+                if len(parts) not in (1, 2) or (len(parts) == 2 and parts[1] not in ('buy', 'sell')):
+                    self._send(chat, 'Use /trade TOKEN buy|sell (PAPER only)', None)
+                    return
+                side = 's' if len(parts) == 2 and parts[1] == 'sell' else 'b'
                 callback(self, {"id": "", "from": {"id": uid}, "message": msg,
-                                "data": "tp|b|" + trade_arg.strip()})
+                                "data": "tp|" + side + "|" + parts[0]})
             return
         sess = self.sessions.get(uid)
         cmd, _, arg = text.partition(" ")

@@ -143,9 +143,10 @@ scoring:
   min_snapshots: 12            # accepted lists needed for list persistence
   limited_cap: 50              # a score without measured trade evidence cannot exceed this
 
-# Experimental Issue #82 PAPER UI only. No live signer, quote adapter or broadcaster.
+# Issue #82 PAPER UI with read-only canonical V2 quotes. No signer or broadcaster.
 # Keep OFF pending review; turning this on never enables real-money execution.
 trading:
   paper_enabled: false
-  # Optional private local PAPER journal; parent directory must be owned by UI user, mode 0700.
+  # Required for the read-only quote workflow; parent directory must be owned by UI user, mode 0700.
   # paper_order_path: /data/private-trading/paper.sqlite
+  # paper_rpc_url: https://rpc.agoradex.app  # dedicated read transport, independent of scanner

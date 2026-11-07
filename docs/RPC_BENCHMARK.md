@@ -97,3 +97,43 @@ There is only one observation per token/size; no tail or direct-router latency c
 is supported. `venues` compares outputs reported by Agora only. Transactions are null
 because no recipient was supplied. Actual fee applicability, balances, swap gas and
 simulation remain unverified. The new public API resolves discovery, not execution safety.
+
+
+## Verified V2 PAPER workload — November 7 continuation
+
+Canonical artifact/ABI/runtime evidence is in
+`benchmarks/v2-contract-verification-2026-11-07.json`. This verifies the direct V2
+router, its declared factory/wrapped-HYPE immutables, factory and AGORA pair against
+published Uniswap build artifacts. It does not establish the aggregator's outer ABI.
+Reproduce with `scripts/verify_trade_contracts.py --pair PAIR_ADDRESS`.
+
+`benchmarks/paper-workflow-wsl-2026-11-07.json` measures the actual private Telegram
+review and confirmation handlers with a fake sender, real read-only RPC/API requests
+and a private temporary journal. The owner's supplied public wallet was used without
+publishing its address, balances or private snapshots. The 0.1 HYPE preset refused when
+the observed native balance was insufficient; the measured BUY size was 0.0001 HYPE.
+SELL size was 1% of the verified token balance; larger presets retain the 1% impact cap.
+
+| Workload | Samples | p50 / p95 / p99 ms |
+| --- | --- | --- |
+| Local Review click → panel rendered | 6 | 4379.52 / 4643.31 / 4643.31 |
+| Public Agora v1 quote/builder | 6 | 311.42 / 498.30 / 498.30 |
+| Direct V2 `getAmountsOut` call | 6 | 215.31 / 229.08 / 229.08 |
+| RPC `eth_call` (metadata, quotes, simulations) | 69 | 209.63 / 225.56 / 456.42 |
+| Actual BUY payload `estimateGas` | 3 | 216.56 / 217.02 / 217.02 |
+
+All six reviews produced private hypothetical records. Three BUY payloads simulated
+successfully; three SELL payloads required allowance, reverted as expected, and were
+recorded only as `hypothetical_requires_approval`, with no gas estimate or approval sent.
+The canonical supporting-fee-on-transfer methods enforce minOut at simulation time but
+return no delivered amount; pool expected output still assumes normal token transfers.
+No actual token balance, allowance or native balance was changed by these calls.
+
+Agora-reported expected output differed from the direct pool quote by -50 bps for these
+BUY observations and -31 bps for these SELL observations. They may observe different
+blocks/routes. Those differences are not a causal fee attribution, synchronized best-
+net-output proof or guaranteed fill. Fees remain API-reported for the aggregator.
+Three observations per side cannot establish tail latency or provider superiority.
+The handler timing excludes user dwell, Telegram network delivery and production-VPS
+latency. Only Agora RPC was used for this exact workload; the earlier six-provider run
+used a different read mix. These timings cannot be treated as a cross-provider swap test.

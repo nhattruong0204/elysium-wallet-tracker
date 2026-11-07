@@ -1,71 +1,107 @@
-# Trading operations — Issue #82
+# PAPER trading operations — Issue #82
 
-## Current release state
+## Current capability
 
-Stages A/B are proposed for review; no new bot service has been deployed. Stage A's bounded
-read-only benchmark ran on the VPS without signing, broadcasting, migrations or restarts.
-Both existing bots must remain running. Do not turn on paper controls in production during
-this task: applying UI/alert code would require a separately reviewed maintenance window.
+PR #83 is merged. Draft #84 adds a read-only PAPER provider; it is not deployed.
+`trading.paper_enabled` remains **false by default**. No signer, approval sender or
+broadcaster exists. Existing scanner/outbox delivery, PostgreSQL and Revival are unchanged.
+Do not restart production bots or enable PAPER there without the reviewed release window
+and explicit authorization. Passing CI is not independent security approval.
 
-`trading: {paper_enabled: false}` is the default. Existing YAML does not need changing.
-A local/test opt-in adds PAPER Buy/Sell controls to existing token alert keyboards; normal
-notifier fallback remains. `/trade <CA>` is private and PAPER-only; `/pause_trading` blocks
-paper actions until restart. `/orders` and `/positions` report that no connected wallet or
-durable live records exist, rather than fabricating holdings. Buy presets are 0.1/0.5/1 HYPE;
-sell presets are 25/50/100% of verified wallet balance. Quote review refuses in production
-because no verified adapter is installed. No confirmation button is presented with the default provider/route configuration.
-The WSL continuation below adds custom chat input, a fixture-tested review UI, public
-indicative prices and optional private hypothetical journals. No live record is created.
+Supported pool family: single-hop HYPE ↔ ERC-20 through Agora's canonical Uniswap V2
+router/factory, with exact runtime checks, canonical ABI and the verified token pair.
+Other factories, curves, hooks, V3/V4, multi-hop and wrapped/native conversion refuse.
+Every quote rechecks chain 99901, head freshness, code identity, pair tokens/factory,
+reserves, decimals, watch-wallet balances and, for sells, allowance at one pinned block.
+Limits: 1 HYPE buy cap, 1% price impact including the 0.3% pool fee, 0.5% default
+slippage, 5 HYPE minimum native reserve, 30-second quote validity and three-minute session.
+Nothing silently raises a cap. Unsupported decimals, missing pools, stale heads, bad code,
+insufficient funds, mismatched quotes and unexpected simulation failures refuse.
 
-## Run read-only research
+The public Agora v1 builder is used for **labelled API comparisons** for the same input
+and supplied watch wallet. Its returned destination/chain/value/amounts/minimum and finite
+approval plan are checked. Its opaque aggregator calldata is not accepted as a verified
+route: the canonical outer ABI/source identity is still unresolved. Agora fee and expected
+output are API reports, possibly from a different block; they are not independent proofs.
 
-Use scripts/trade_rpc_bench.py with the same workload file per endpoint and conservative
-provider budgets. The ops `trade-routing-benchmark` step executes only this standalone
-script inside the existing image, followed by health inspection; no services are recreated.
-Prefer documented approved RPCs. Never pass credentials in report labels. Keep raw URL
-paths/query keys, exception text and unsigned/signed payloads out of artifacts and logs.
-No actual swap quote or gas test is currently authorized by a verified route interface;
-record it as unrun rather than substituting a transfer estimate.
+## Local evaluation
 
-## Rollback and future live release
+Use `LOCAL_WSL_SETUP.md`. Do not reuse production credentials or a production database.
+For a separately authorized local PAPER UI, configure a private journal and dedicated RPC:
 
-No migrations are introduced. Keep feature flag false. Do not reset databases, checkpoint,
-positions, outbox or trade history, and never touch Revival. Future paper rollout needs bot
-health baselines and a controlled UI/tracker restart window; this task does not approve it.
-If UI behavior degrades, pause paper flow and use the previously verified image/config in
-an authorized window, preserving DB state. Live release requires the security checklist in
-TRADING_SECURITY.md, backup/rehearsal, independently verified contracts, spend limits,
-owner-reviewed signer design and explicit capped test approval. Stage D hot-wallet signing
-requires a separate review. No quote or unsupported route -> use the existing wallet/DEX
-links, never manufacture calldata or silently loosen risk limits.
+```yaml
+trading:
+  paper_enabled: true        # local opt-in only; shipped default remains false
+  paper_order_path: /absolute/private-directory/paper.sqlite
+  paper_rpc_url: https://rpc.agoradex.app
+```
 
-## WSL continuation — local evaluation only
+The UI user must own the journal directory (0700); the regular file is 0600. Invalid
+journal setup pauses PAPER while leaving normal UI initialization available. The journal
+is separate from PostgreSQL and dashboard views. No new migrations are needed. The existing
+IntelBot remains the only Telegram update consumer. Local handler demonstrations use a fake
+sender and send no Telegram messages. Do not start a second consumer for a production bot.
 
-See `LOCAL_WSL_SETUP.md` for the validated isolated environment. Stage A now records
-reachable official public API docs, six indicative quotes, current RPC reads and Eleos's
-self-reported inbox mode. Source/ABI verification and actual submission remain blocked.
-No production restart, deployment, migration, bot message or OPS_REQUEST is needed.
+Private commands / interactions:
 
-With PAPER enabled **locally**, select a buy preset and choose "Indicative Agora price"
-for a real public market observation. It does not connect a wallet, validate a route or
-permit confirmation. It shows raw token units because decimals are unverified. Sells
-remain unavailable without verified wallet balances/decimals. The verified Review path
-still refuses with the default empty route/provider configuration. A separate approved
-fixture provider exercises the complete hypothetical Review → Confirm UI in tests only.
+1. `/paper_wallet ADDRESS` saves a public **watch-only** address for the caller. It proves
+   no wallet ownership or spending authority. Changing it invalidates existing selections
+   and reviews. The association persists privately and never appears in group alerts.
+2. Open Buy/Sell from an existing alert, or `/trade TOKEN buy` / `/trade TOKEN sell`.
+3. Choose 0.1/0.5/1 HYPE or a custom HYPE amount; sells offer 25/50/100% or a custom percent
+   of the real wallet balance. `/paper_amount SESSION AMOUNT` accepts exact decimal input.
+4. Review / refresh fetches real pool and balance reads and proposes an unsigned payload.
+   The panel shows decimal amounts, minimum, pool fee, impact, wallet, timestamp/age,
+   gas reserve when available, simulation state and a separately labelled Agora comparison.
+5. Confirm records a hypothetical scenario only; Cancel always remains available, including
+   while paused. `/pause_trading` blocks new actions until restart. `/orders` shows only the
+   caller's latest ten persisted scenario details. `/paper_balances TOKEN` reads real balances;
+   these are not simulated positions. No realized PnL, actual fill or live receipt is fabricated.
 
-Custom input uses `/paper_amount SESSION AMOUNT` in the caller's private chat, after
-"Custom amount" shows the opaque session. Buy units are HYPE (at most 1); sell units
-are percent of verified wallet token balance (positive, at most 100, two decimal places).
-Sessions expire in three minutes. A fresh review needs its own confirmation token.
-Every panel retains Cancel, Agora, explorer and, for supergroup alerts, the source link.
+Quote/confirmation tokens are one-time, user-bound and rotated on refresh. Wallet/amount
+changes, cancellation, expiry, pause during I/O and nested payload mutation invalidate the
+review. Network I/O holds no global session lock or scanner transaction. Dedicated quote
+requests fail busy rather than queue; reads have per-call timeouts and total request budgets.
 
-For optional local durability, set `trading.paper_order_path` to a private filesystem
-path under a directory owned by the UI process with mode 0700. The file is mode 0600.
-`/orders` lists only the caller's latest ten hypothetical record IDs. Without that
-setting, confirmation explicitly says the record is in memory only. No production
-provider currently reaches confirmation, and no live position or receipt is fabricated.
-A journal initialization failure pauses PAPER; a write failure preserves the review
-and refuses confirmation. Restart discards sessions/tokens but retains stored records.
-This introduces no PostgreSQL migration and no scanner or public-dashboard changes.
-A future isolated execution service needs its own reviewed durable schema/role and
-backup, retention, reconciliation and rollback procedures before live operation.
+## Simulation and missing allowances
+
+BUY and already-approved SELL use the canonical fee-on-transfer-supporting methods so
+`eth_call` enforces the recipient's minimum at the pinned block. `eth_estimateGas` runs
+on the **same payload**, with a 20% gas-unit reserve and a 0.01 HYPE reserve cap. No state
+overrides, approvals, signatures or transaction submissions are performed.
+
+These methods return no delivered amount: the expected output remains the pool's quote,
+assuming normal token transfers. Taxed/restricted tokens can differ or fail. A successful
+call proves the minimum check at that block, not a guaranteed future fill or sellability.
+The exact delivered amount is unavailable without an actual transaction/receipt.
+
+If a SELL lacks allowance and its actual payload reverts, the panel explicitly offers a
+**conditional PAPER scenario** (`hypothetical_requires_approval`), not a successful
+simulation. It shows the finite amount/spender required, unknown gas, and transfer/tax
+uncertainty. A transport failure never becomes this state. Recording the scenario sends
+no approval and does not imply that a live order is ready. Other simulation failures refuse.
+Larger sell presets may exceed the impact cap; choose a smaller custom percentage.
+
+## Reproduce read-only verification and measurements
+
+```bash
+.venv/bin/python scripts/verify_trade_contracts.py --pair PAIR_ADDRESS
+.venv/bin/python scripts/trade_paper_bench.py --wallet PUBLIC_WALLET \
+  --token TOKEN_ADDRESS --buy 0.0001 --sell-percent 1 --samples 3
+```
+
+The verifier checks the published artifact SHA-256, ABI membership and deployed runtime,
+filling only the canonical router's declared factory/wrapped-HYPE immutable references.
+The bounded benchmark invokes the actual Telegram handler with a fake sender, persists
+PAPER records in a private temporary journal and reports sanitized latency/outcome data.
+Wallet addresses, balances and complete private quote snapshots are excluded from output.
+It does not measure Telegram network delivery or user dwell. See `RPC_BENCHMARK.md`.
+
+## Release / rollback
+
+Keep #84 draft pending review. No live rollout is authorized. Preserve both bot processes,
+DB data/checkpoints/outbox and OPS_REQUEST. An authorized later PAPER rollout needs a
+private persistent journal mount, health baseline and rollback image/config. A future live
+execution service needs independent wallet authentication, signer threat review, least-
+privilege storage, approvals, nonce/reorg/reconciliation, backup and stop procedures from
+`TRADING_SECURITY.md`, followed by explicit capped live-test and enablement approval.

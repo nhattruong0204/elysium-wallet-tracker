@@ -3,8 +3,11 @@ from __future__ import annotations
 
 import html
 import re
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from ..cards import Links
+from .chain import units
 from .paper import PaperFlow, TradeRefused
 
 
@@ -24,22 +27,56 @@ def panel(flow: PaperFlow, uid: int, chat: int, sid: str, links: Links) -> tuple
             f"Original alert: message {i.source_message}\n"
             f"Session expires in {max(0, int(i.expires_at - flow.now()))} seconds.\n"
             "Slippage limit: 0.50%; max price impact: 1%\n")
+    if i.wallet:
+        text += f"Watch-only wallet: <code>{html.escape(i.wallet)}</code> (ownership unverified)\n"
+    else:
+        text += "Set a public watch-only wallet with /paper_wallet ADDRESS.\n"
     q = flow.reviewed(uid, chat, sid)
     if q:
+        observed = datetime.fromtimestamp(q.created_at, ZoneInfo('Asia/Ho_Chi_Minh')).isoformat(timespec='seconds')
+        text += f'Quote observation: {observed}\n'
+        idec = 18 if i.side == 'buy' else (q.token_decimals if q.token_decimals is not None else 0)
+        odec = (q.token_decimals if q.token_decimals is not None else 0) if i.side == 'buy' else 18
+        inu, outu = ('HYPE', 'tokens') if i.side == 'buy' else ('tokens', 'HYPE')
         text += (f"<b>Hypothetical review — no actual fill</b>\n"
                  f"Route: {html.escape(q.route.kind)} / <code>{html.escape(q.route.target)}</code>\n"
-                 f"Input: {q.amount_in_wei} raw units\nExpected output: {q.amount_out_wei} raw units\n"
-                 f"Minimum output: {q.min_out_wei} raw units\n"
-                 f"Available input balance: {q.balance_wei} raw units\n"
-                 f"Native HYPE balance: {q.native_balance_wei} wei\n"
-                 f"Fee reserve: {q.fee_wei} wei HYPE; gas reserve: {q.gas_wei} wei HYPE\n"
-                 f"Price impact: {q.price_impact_bps} bps\n"
-                 f"Quote age: {int(flow.now() - q.created_at)} seconds\n"
-                 "Confirm records a PAPER outcome only. Nothing is signed or submitted.")
+                 f"Input: {units(q.amount_in_wei, idec)} {inu}\n"
+                 f"Expected output: {units(q.amount_out_wei, odec)} {outu}\n"
+                 f"Minimum output: {q.min_out_wei} raw units ({units(q.min_out_wei, odec)} {outu})\n"
+                 f"Available input balance: {units(q.balance_wei, idec)} {inu}\n"
+                 f"Native HYPE balance: {units(q.native_balance_wei, 18)} HYPE\n"
+                 f"Pool fee: {q.pool_fee_bps if q.pool_fee_bps is not None else 'fixture'} bps, included in output\n"
+                 f"Price impact including pool fee: {q.price_impact_bps} bps\n"
+                 f"Quote age: {int(flow.now() - q.created_at)} seconds; expires in {max(0, int(q.expires_at-flow.now()))} seconds\n"
+                 f"Simulation: {html.escape(q.simulation_status)}\n")
+        if q.gas_wei is not None:
+            text += f"Gas reserve: {units(q.gas_wei, 18)} HYPE (estimate plus 20% gas-unit buffer)\n"
+        else:
+            text += "Gas estimate: unavailable until required approval exists.\n"
+        if q.simulation_status == 'approval_required':
+            text += (f"<b>CONDITIONAL PAPER scenario — not simulated</b>\n"
+                     f"Required finite allowance: {units(q.approval_required_wei, idec)} tokens\n"
+                     f"Spender: <code>{html.escape(q.approval_spender or '')}</code>\n"
+                     "No approval is requested or sent. Output assumes normal token transfers; token taxes/sell restrictions remain uncertain.\n")
+        else:
+            text += "Read-only simulation enforced the minimum at the quoted block. Exact delivered output is unavailable; future execution is not guaranteed.\n"
+        if q.agora_amount_out_wei is not None:
+            text += (f"Agora API comparison: {units(q.agora_amount_out_wei, odec)} {outu} via {html.escape(q.agora_venue or '')}\n"
+                     f"Agora-reported fee: {q.agora_fee_bps} bps; aggregator calldata ABI unverified.\n"
+                     "Venue comparisons can observe different blocks; this is not guaranteed net output.\n")
+        elif q.wallet:
+            text += "Agora comparison: unavailable.\n"
+        if q.wallet:
+            text += "Expected pool output assumes normal transfers; token taxes remain unverified.\n"
+        if q.block_number is not None:
+            text += f"Quote block: {q.block_number}\n"
+        text += "Confirm records a PAPER scenario only. Nothing is signed or submitted."
+    elif flow.provider:
+        text += "Select an amount, then Review / refresh quote. Unsupported routes refuse.\n"
     else:
         text += ("Wallet/balance: not connected, unknown\nVerified route/fees/gas: unavailable\n"
-                 "This token is not tradeable through the bot. Indicative prices cannot be confirmed.\n"
-                 "No order is signed or submitted.")
+                 "No verified quote adapter is configured. This token is not tradeable through the bot.\n"
+                 "Indicative prices cannot be confirmed. No order is signed or submitted.")
     if i.amount_wei:
         text += f"\nRequested input: {i.amount_wei} wei (HYPE)"
     if i.sell_bps:
@@ -48,11 +85,11 @@ def panel(flow: PaperFlow, uid: int, chat: int, sid: str, links: Links) -> tuple
     presets = [{"text": v + (" HYPE" if i.side == "buy" else "%"),
                 "callback_data": f"ps|{sid}|{v}"} for v in values]
     rows = [presets, [{"text": "Custom amount", "callback_data": f"pa|{sid}"}],
-        [{"text": "Review / refresh verified quote", "callback_data": f"pr|{sid}"}]]
+        [{"text": "Review / refresh pool quote", "callback_data": f"pr|{sid}"}]]
     if i.side == 'buy':
         rows.append([{"text": "Indicative Agora price (read-only)", "callback_data": f"pq|{sid}"}])
     if q:
-        rows.append([{"text": "Confirm PAPER record", "callback_data":
+        rows.append([{"text": ("Record conditional PAPER scenario" if q.simulation_status == "approval_required" else "Confirm PAPER record"), "callback_data":
                       f"pf|{sid}|{flow.confirmation_token(uid, chat, sid)}"}])
     rows += [[{"text": "Open Agora (token page)", "url": links.agora_token(i.token)},
               {"text": "Explorer", "url": links.explorer_token(i.token)}],
@@ -139,6 +176,8 @@ def callback(bot, cq: dict) -> None:
         elif data[0] == 'pf' and len(data) == 3:
             order = bot.paper_trades.confirm(uid, chat, sid, data[2])
             text = f'PAPER {order.status}. No actual fill, signing or submission.\nRecord: {order.intent_id}'
+            if order.status == 'hypothetical_requires_approval':
+                text += '\nCONDITIONAL: missing allowance; swap not simulated, gas unavailable. No approval sent.'
             if not bot.paper_trades.journal:
                 text += '\nIn-memory only; no durable journal configured.'
             bot._show(chat, msg.get('message_id'), text, None)
@@ -155,3 +194,53 @@ def callback(bot, cq: dict) -> None:
         answer('PAPER only')
     except TradeRefused as e:
         answer(str(e))
+
+
+def wallet_command(bot, msg: dict, command: str, arg: str) -> None:
+    uid, chat = msg.get('from', {}).get('id'), msg.get('chat', {}).get('id')
+    try:
+        if not bot.cfg.trading.paper_enabled or msg.get('chat', {}).get('type') != 'private':
+            raise TradeRefused('Watch-only PAPER wallets require your private chat with PAPER enabled')
+        if command == '/paper_wallet':
+            bot.paper_trades.set_wallet(uid, chat, arg.strip())
+            text = ('Watch-only public wallet saved. Ownership is unverified; PAPER only.\n'
+                    'Previous selections were cancelled. Open Buy/Sell from an alert or use /trade TOKEN buy|sell.')
+        else:
+            wallet = bot.paper_trades.wallet(uid, chat)
+            provider = bot.paper_trades.provider
+            if not wallet or not provider or not hasattr(provider, 'balances'):
+                raise TradeRefused('Configure a private PAPER journal and watch-only wallet first')
+            token_balance, native, decimals, block = provider.balances(wallet, arg.strip())
+            text = (f'On-chain snapshot at block {int(block, 16)} — not a PAPER position\n'
+                    f'Watch-only wallet: <code>{html.escape(wallet)}</code>\n'
+                    f'Token: <code>{html.escape(arg.strip())}</code>\n'
+                    f'Token balance: {units(token_balance, decimals)} (decimals {decimals})\n'
+                    f'HYPE: {units(native, 18)}\nNo wallet ownership or spending authority is established.')
+        bot._send(chat, text, None)
+    except TradeRefused as e:
+        bot._send(chat, str(e), None)
+
+
+def order_history(flow: PaperFlow, uid: int, chat: int) -> str:
+    rows = flow.orders(uid, chat)
+    if not rows:
+        return 'No durable PAPER records. No live position or receipt is implied.'
+    lines = ['<b>PAPER scenario history — no actual fills</b>']
+    for row in rows:
+        snapshot = row.get('snapshot') or {}
+        i, q = snapshot.get('intent') or {}, snapshot.get('quote') or {}
+        decimals = q.get('token_decimals')
+        decimals = decimals if type(decimals) is int and 0 <= decimals <= 36 else 0
+        side = i.get('side', 'unknown')
+        idec, odec = (18, decimals) if side == 'buy' else (decimals, 18)
+        try:
+            timestamp = datetime.fromtimestamp(row['created_at'], ZoneInfo('Asia/Ho_Chi_Minh')).strftime('%m-%d %H:%M:%S +07')
+            details = (f"{html.escape(side.upper())} <code>{html.escape(i.get('token', 'unknown'))}</code>\n"
+                f"Input {units(q['amount_in_wei'], idec)} → expected {units(q['amount_out_wei'], odec)} "
+                f"({'tokens' if side == 'buy' else 'HYPE'})\n"
+                f"{html.escape(row['status'])}; {html.escape(q.get('simulation_status', 'unknown'))}\n"
+                f"{timestamp}; <code>{html.escape(row['intent_id'])}</code>")
+        except (KeyError, ValueError, TypeError):
+            details = 'Stored PAPER details unavailable'
+        lines.append(details)
+    return '\n\n'.join(lines)

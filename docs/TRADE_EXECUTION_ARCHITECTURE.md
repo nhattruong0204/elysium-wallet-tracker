@@ -1,7 +1,8 @@
 # Trade execution architecture — Issue #82
 
 Stage A is read-only research. Stage B is an isolated PAPER intent flow. There is no
-production signer, swap adapter or broadcast implementation in this stage. Enabling
+signer or broadcast implementation. Draft Stage B now has a canonical direct V2
+read-only quote/simulation adapter; its scope and limits are in TRADING_OPERATIONS.md. Enabling
 paper controls must never enable execution. Existing scanner/outbox delivery and the
 single Telegram update consumer are preserved.
 
@@ -93,3 +94,17 @@ Remaining research gates: obtain publisher-linked source/ABI/build identity and 
 permissions; verify actual unsigned swap semantics, token taxes/approvals and simulations;
 independently compare direct quotes/net output/gas with the same pinned workload. Stage A
 routing verification remains incomplete even though public API discovery is resolved.
+
+
+## Canonical V2 PAPER adapter (November 7 continuation)
+
+`agora_tracker/trading/contracts/v2.json` pins official published Uniswap artifacts,
+ABI fragments and deployed runtime keccak hashes. Router immutables match the official
+Agora V2 factory and wrapped HYPE addresses; factory and pair runtimes match exactly.
+`verify_trade_contracts.py` reproduces those comparisons without signing or writes.
+This supports single-hop HYPE ↔ ERC-20 pool scenarios only, checked again at every quote.
+The fee-on-transfer-supporting payload enforces the minimum in read-only simulation;
+its void return does not establish an exact delivered output. Missing SELL allowance
+is a conditional PAPER scenario with unknown gas, not successful simulation or readiness.
+The separate public Agora v1 comparison does not verify its opaque outer router ABI.
+All live signing, approval, submission and settlement gates remain unresolved.
