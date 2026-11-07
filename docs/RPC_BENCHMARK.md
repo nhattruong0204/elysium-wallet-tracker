@@ -12,7 +12,8 @@ Wrong chains are rejected before further calls. Report p50/p95/p99 per method an
 error counts; small sample tail statistics are descriptive only. Heads are sampled at
 different times, so relative lag includes sampling skew. Freshness qualification requires
 chain 99901, head age <=60 seconds and sampled lag <=50; it does not authorize execution.
-Output contains host labels and aggregate values, never URL paths, query keys, credentials,
+Output contains public host labels and aggregate values; custom/premium hosts are redacted
+because hostnames may contain API keys. Never record URL paths, query keys, credentials,
 raw RPC errors, payloads or signed bytes. Router code SHA-256 is a reproducibility aid,
 not Ethereum's codehash or proof of an audited contract.
 

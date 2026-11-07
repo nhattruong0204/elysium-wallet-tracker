@@ -19,6 +19,8 @@ from urllib.parse import urlsplit
 import requests
 
 CHAIN = 99901
+PUBLIC_HOSTS = frozenset({'rpc.thekleos.pro', 'rpc.thekleos.xyz', 'rpc-live.boxa.club',
+                          'rpc-live.elyspump.com', 'rpc.agoradex.app', 'rpc.eleos.fun'})
 ROUTER = '0xaf8dec958df2bd664aa661716a8de5fe0417a295'
 READS = frozenset({'eth_chainId', 'eth_blockNumber', 'eth_getBlockByNumber',
                   'eth_getCode', 'eth_call', 'eth_estimateGas'})
@@ -88,7 +90,8 @@ def benchmark(endpoints: list[str], samples: int, workloads: list[dict], locatio
         if urlsplit(url).scheme != 'https':
             raise ValueError('HTTPS endpoints required')
         rpc = ReadOnlyRpc(url)
-        row = {'endpoint': f'candidate_{index + 1}', 'host': urlsplit(url).hostname,
+        row = {'endpoint': f'candidate_{index + 1}', 'host': (urlsplit(url).hostname if urlsplit(url).hostname in PUBLIC_HOSTS
+                        else 'redacted_custom_endpoint'),
                'chain_id': None, 'eligible': False, 'head': None, 'methods': {}}
         chain, _, err = rpc.call('eth_chainId', [])
         try:
