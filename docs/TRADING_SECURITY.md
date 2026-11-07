@@ -1,9 +1,17 @@
 # Trading security — independent review required
 
-Live execution is absent. There is no private-key input, signer, approval sender,
+Live execution is absent. There is no private-key input, transaction signer, approval sender,
 signed-byte endpoint or transaction broadcaster. `PaperFlow.broadcast` always refuses.
 `trading.paper_enabled` defaults false and has no corresponding live-enable setting.
 PAPER data is never exposed through the dashboard or public PostgreSQL views.
+
+## Optional C1 authentication — independent review still pending
+
+Issue #89 adds private HTTPS Telegram/SIWE ownership proof for read-only preview
+access. See [TRADING_AUTH.md](TRADING_AUTH.md) for cryptography, replay, storage,
+cookie/CSRF, revocation and trust assumptions. The factory still defaults to deny;
+no production startup or spending authorization was added. Ownership proof is
+separate from transaction signing. Independent approval is still required.
 
 ## Implemented PAPER boundaries
 

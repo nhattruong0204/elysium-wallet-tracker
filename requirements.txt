@@ -12,3 +12,6 @@ jinja2>=3.1,<4
 # Read-only verified ABI encoding and Ethereum code hashes
 eth-abi>=5.2,<6
 eth-hash[pycryptodome]>=0.7,<1
+
+# EOA ownership signature recovery only (never wallet transaction signing)
+eth-keys>=0.7,<0.8
