@@ -115,7 +115,7 @@ class PaperFlow:
                  routes: frozenset[ExecutionRoute] = frozenset(),
                  now: Callable[[], float] = time.time, ttl: int = 180,
                  max_buy_wei: int = 10**18):
-        if not 0 < ttl <= 180 or not 0 < max_buy_wei <= 10**18:
+        if type(ttl) is not int or type(max_buy_wei) is not int or not 0 < ttl <= 180 or not 0 < max_buy_wei <= 10**18:
             raise TradeRefused('Invalid paper limits')
         self.allowed = frozenset(allowed)
         self.provider, self.routes, self.now = provider, routes, now
@@ -128,7 +128,7 @@ class PaperFlow:
     def _auth(self, uid: int, chat: int) -> None:
         if self.paused:
             raise TradeRefused("Paper trading paused")
-        if type(uid) is not int or uid <= 0 or uid not in self.allowed or uid != chat:
+        if type(uid) is not int or type(chat) is not int or uid <= 0 or uid not in self.allowed or uid != chat:
             raise TradeRefused('Authorized private chat required')
 
     def create(self, uid: int, chat: int, token: str, side: str,
@@ -186,7 +186,7 @@ class PaperFlow:
             raise TradeRefused('Quote binding mismatch')
         if not 0 <= now - q.created_at <= 30 or not now < q.expires_at <= q.created_at + 30:
             raise TradeRefused('Stale or future quote')
-        if q.route not in self.routes or q.route.chain_id != CHAIN or not q.simulated:
+        if q.route not in self.routes or q.route.chain_id != CHAIN or q.simulated is not True:
             raise TradeRefused('Unverified route or failed simulation')
         if not 0 <= q.price_impact_bps <= 100 or q.gas_wei > 10**16 or q.amount_out_wei <= 0:
             raise TradeRefused('Unsafe price impact, gas or output')
@@ -206,7 +206,7 @@ class PaperFlow:
             # A failed refresh must never leave an older quote confirmable.
             self._quotes.pop(sid, None)
             self._intents[sid] = replace(i, state='select')
-            if not 0 <= slippage <= 100:
+            if type(slippage) is not int or not 0 <= slippage <= 100:
                 raise TradeRefused('Slippage exceeds paper limit')
             if not self.provider:
                 raise RouteUnavailable('No verified quote adapter; no order was quoted, signed or submitted')

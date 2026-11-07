@@ -93,7 +93,7 @@ def test_paper_review_confirm_once_does_not_submit(side):
 @pytest.mark.parametrize('changes', [
     {'chain_id':1339}, {'token':'0x'+'ee'*20}, {'intent_id':'forged'},
     {'expires_at':99.}, {'created_at':101.}, {'simulated':False},
-    {'min_out_wei':0}, {'balance_wei':0}, {'price_impact_bps':101},
+    {'simulated':'false'}, {'min_out_wei':0}, {'balance_wei':0}, {'price_impact_bps':101},
     {'amount_in_wei':1}, {'gas_wei':-1}, {'amount_out_wei':0},
     {'route':ExecutionRoute(99901,'0x'+'ee'*20,'unverified','v4')},
 ])
@@ -261,3 +261,16 @@ def test_forged_private_chat_and_group_command_are_rejected():
     b.on_message({'from':{'id':1}, 'chat':{'id':1,'type':'private'},
                   'message_id':56, 'text':'/pause_trading'})
     assert b.paper_trades.paused
+
+
+def test_boolean_identity_and_noninteger_policy_inputs_are_rejected():
+    f = flow(FixtureProvider())
+    i = intent(f)
+    with pytest.raises(TradeRefused):
+        f.get(1, True, i.id)
+    with pytest.raises(TradeRefused):
+        f.review(1, 1, i.id, True)
+    with pytest.raises(TradeRefused):
+        PaperFlow({1}, ttl=True)
+    with pytest.raises(TradeRefused):
+        PaperFlow({1}, max_buy_wei=1.0)
