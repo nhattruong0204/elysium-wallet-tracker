@@ -68,6 +68,11 @@ def panel(flow: PaperFlow, uid: int, chat: int, sid: str, links: Links) -> tuple
             text += "Agora comparison: unavailable.\n"
         if q.wallet:
             text += "Expected pool output assumes normal transfers; token taxes remain unverified.\n"
+        if q.transaction and q.deadline is not None:
+            deadline = datetime.fromtimestamp(q.deadline, ZoneInfo('Asia/Ho_Chi_Minh')).isoformat(timespec='seconds')
+            text += (f"Native transaction value: {units(int(q.transaction['value'], 16), 18)} HYPE\n"
+                     f"Deadline: {deadline}\n"
+                     f"Verified method selector: <code>{q.transaction['data'][:10]}</code>\n")
         if q.block_number is not None:
             text += f"Quote block: {q.block_number}\n"
         text += "Confirm records a PAPER scenario only. Nothing is signed or submitted."
