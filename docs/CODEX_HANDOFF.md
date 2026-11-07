@@ -196,3 +196,53 @@ Preflight 42195765872 and post-release verification 42196646277 both passed. Tra
 healthy; Revival logs show recent scans with errors=0. Start times unchanged before/after:
 tracker 08:02:25.462890682 UTC, UI 08:02:25.251302434 UTC, Revival October 16 03:02:20 UTC;
 all restart counts zero. Scanner logic, polling and database data were not changed.
+
+## Issue #82 staged work — November 7, 2026
+
+Stage A PR #83 (`feat/trade-execution-stage-a`, head 2d50e21618f14b77629fee817ca701e5ce199c47)
+adds a bounded read-only benchmark and execution architecture/report. Initial VPS run
+42345299584 used 42 read RPC requests across Kleos pro/xyz, BOXA, ElysPump, Agora and Eleos.
+All reported chain 99901 and matching nonempty candidate AgoraRouter bytecode. No signer,
+submissions, migrations, application deployment or bot restarts. Normal alerts and both
+bots remained healthy. Three-sample p50/p95/p99 statistics are descriptive; no global RPC
+winner is selected. Sequential head skew and calendar-based launch labels are documented.
+Quote/net-output, actual swap gas and submission/settlement phases remain unmeasured.
+Current script additionally redacts custom/premium hostnames that could contain API keys.
+
+Draft Stage B foundation PR #84 (`feat/trade-paper-workflow`, head
+45a4e2dcd5a0c74ffc700cfed16c5bf2f8f0ad86) is stacked on #83. It adds default-OFF PAPER
+alert buttons via the existing renderer and IntelBot consumer, allowlisted private-DM
+binding, opaque expiring sessions, exact wei parsing, presets, cancellation/pause,
+quote validation and one-time hypothetical confirmation fixtures. There is no configured
+production QuoteProvider or approved route; Review fails closed. Broadcast always refuses.
+No keys, signer, live transaction endpoint, trade DB migration or new public API exists.
+Do not enable or deploy this bot code without review and a controlled maintenance window.
+Full local regression: 681 passed, 3 skipped (backup clients and unrelated wallet browser
+fixtures). Final focused security/benchmark tests: 36 passed. Ruff and mypy pass (54 files).
+Exact-head remote CI results are recorded below when complete.
+
+Required documents are in the staged branches: TRADE_EXECUTION_ARCHITECTURE.md,
+RPC_BENCHMARK.md (with sanitized JSON evidence), TRADING_SECURITY.md and
+TRADING_OPERATIONS.md. Stage B is a foundation, not a complete quoted paper-trading release:
+verified quotes/balances, usable Review/Confirm UI, custom chat amounts and durable records
+remain incomplete. Stages C/D wallet ownership, Mini App security, finite approvals, signer,
+nonces, ambiguity/rebroadcast/receipt/reorg handling remain unimplemented. No real-funds
+approval is requested or implied. Keep parent issue #82 open.
+
+Official docs access is blocked by cloud egress. Draft additions saved, not applied:
+docs.agoradex.app, rpc.agoradex.app, rpc.eleos.fun. Apply the settings and recheck official
+ABI/builder/fees/submission semantics before choosing an adapter. Do not invent selectors,
+scrape session secrets or infer execution support from token-page links/bytecode presence.
+Next: finish independent security/design review; establish a stable authorized quote API
+or verified direct route with pinned contracts and actual unsigned simulation payloads;
+then complete paper quotes/UI, noncustodial signing design and a capped live-test proposal.
+Explicit owner approval and peer review remain mandatory before any funds or execution.
+
+Final staged validation: PR #83 exact-head CI 42346403939 passed lint, 659 tests and Docker.
+Draft PR #84 exact-head CI 42346638717 passed lint, 690 tests and Docker (tests 153.55s).
+Final local focused security/benchmark checks: 36 passed; Ruff and mypy 54 files passed.
+Final public health was ok: indexer heartbeat 2s, Telegram menu heartbeat 9s, outbox sent
+11260 with no pending/failed entries reported. Neither PR was merged or deployed. The
+only VPS operation was the explicitly requested read-only benchmark plus health inspection.
+No live funds, signing or submissions. Saved network changes are still unapplied. Keep
+#84 draft for independent security/design review and #82 open for its unmet acceptance gates.
