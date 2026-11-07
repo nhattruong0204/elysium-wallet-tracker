@@ -197,6 +197,13 @@ SQL
       echo "tracker log, last 20 min: 429s=$(docker logs --since 20m elysium-wallet-tracker 2>&1 | grep -c '429') warnings=$(docker logs --since 20m elysium-wallet-tracker 2>&1 | grep -c WARNING) errors=$(docker logs --since 20m elysium-wallet-tracker 2>&1 | grep -c ERROR)"
       docker logs --since 20m elysium-wallet-tracker 2>&1 | grep -E "WARNING|ERROR|scan mode|full scan|tracking " | tail -15 | cut -c1-220
       ;;
+    trade-routing-benchmark)
+      say "Issue 82: bounded read-only RPC research; no signing or submission"
+      docker exec -i elysium-wallet-tracker python - --config /config/config.yaml \
+        --rpc https://rpc.agoradex.app --rpc https://rpc.eleos.fun \
+        --samples 3 --location production-vps < "$REPO/scripts/trade_rpc_bench.py" || exit 1
+      healthy_bots
+      ;;
     activity-release-verify)
       say "Activity web release: read-only bot health checks"
       healthy_bots

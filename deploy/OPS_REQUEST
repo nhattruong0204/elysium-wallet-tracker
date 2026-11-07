@@ -1,3 +1,3 @@
 action=maint
-steps=activity-release-verify
-requested=2026-11-06-montra-obol-after-web-release
+steps=trade-routing-benchmark
+requested=2026-11-07-issue82-readonly-benchmark
