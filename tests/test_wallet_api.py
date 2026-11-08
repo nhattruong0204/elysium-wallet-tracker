@@ -145,7 +145,7 @@ def test_strict_bodies_and_origin(api):
     base = {"intent": SID, "init_data": "", "wallet": WALLET}
     extra = client.post("/wallet/api/order", json={**base, "plan_id": p.id, "user_id": 2}, headers=h)
     missing = client.post("/wallet/api/order", json=base, headers=h)
-    dup = client.post("/wallet/api/order", content='{"intent":"%s","intent":"%s"}' % (SID, SID), headers=h)
+    dup = client.post("/wallet/api/order", content=f'{{"intent":"{SID}","intent":"{SID}"}}', headers=h)
     cross = client.post("/wallet/api/order", json={**base, "plan_id": p.id},
                         headers={**h, "origin": "https://evil.example"})
     huge = client.post("/wallet/api/order", content=b"{" + b" " * 10_000 + b"}", headers=h)
