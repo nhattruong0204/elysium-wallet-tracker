@@ -25,6 +25,7 @@ from ..paper import TradeRefused
 from ..plans import PlanBook, PlanOwner
 from .approvals import ApprovalError
 from .flow import FlowRefused, WalletFlow
+from .status import order_status
 
 log = logging.getLogger(__name__)
 HERE = Path(__file__).parent
@@ -44,6 +45,7 @@ class WalletRuntime:
     ledger: OrderLedger
     flow: WalletFlow
     plans: PlanBook
+    links: Any | None = None          # explorer Links (tx urls); optional
 
 
 def _err(code: str, status: int, message: str) -> JSONResponse:
@@ -75,7 +77,7 @@ async def _body(request: Request) -> dict:
 
 
 def wallet_routes(rt: WalletRuntime, authenticator, paper_flow) -> list[Route]:
-    ledger, flow, plans = rt.ledger, rt.flow, rt.plans
+    ledger, flow, plans, links = rt.ledger, rt.flow, rt.plans, rt.links
 
     async def authed(request: Request, allowed: set[str]):
         data = await _body(request)
@@ -174,7 +176,10 @@ def wallet_routes(rt: WalletRuntime, authenticator, paper_flow) -> list[Route]:
     def status(p, sid, owner, data):
         oid = need(data, "order_id", ORDER_ID)
         v = ledger.get_order(p.user_id, oid)
-        return {"order": v.public(), "settled": v.state == "finalized"}
+        o = v.public()
+        st = order_status(o, ledger.get_legs(p.user_id, oid),
+                          ledger.get_fills(p.user_id, oid, include_rolled_back=True), links)
+        return {"order": o, "settled": v.state == "finalized", "status": st}
 
     def cancel(p, sid, owner, data):
         oid = need(data, "order_id", ORDER_ID)

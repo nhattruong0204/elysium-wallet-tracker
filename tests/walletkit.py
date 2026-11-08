@@ -177,3 +177,105 @@ class Served:
     def close(self) -> None:
         self.server.should_exit = True
         self.thread.join(5)
+
+
+# ------------------------------------------------------------------ receipts / fills (#94)
+from agora_tracker.trading.paper import TradeRefused  # noqa: E402
+
+TRANSFER = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
+DEPOSIT = "0xe1fffcc4923d04b559f4d29a8bfc6cda04eb5b0d3c460751c2402c5c5cc9109c"
+WITHDRAWAL = "0x7fcf532c15f0a6db0bd6d0e038bea71d30d808c7d98cb3bf7268a95bf5081b65"
+
+
+def block_hash(number: int, fork: int = 0) -> str:
+    return "0x" + f"{fork:02x}{number:062x}"
+
+
+def transfer_log(token, frm, to, amount) -> dict:
+    return {"address": token, "topics": [TRANSFER, "0x" + a(frm), "0x" + a(to)], "data": "0x" + w(amount)}
+
+
+def deposit_log(party, amount) -> dict:
+    return {"address": WRAPPED, "topics": [DEPOSIT, "0x" + a(party)], "data": "0x" + w(amount)}
+
+
+def withdrawal_log(party, amount) -> dict:
+    return {"address": WRAPPED, "topics": [WITHDRAWAL, "0x" + a(party)], "data": "0x" + w(amount)}
+
+
+class ReceiptChain:
+    """Scriptable chain for receipt/fill tests: blocks, canonical headers, receipts, balances.
+    A missing balance raises like a pruned/unavailable state would."""
+
+    def __init__(self, head: int = 2000):
+        self.head_n = head
+        self.canon: dict[int, str] = {}
+        self.txs: dict[str, dict] = {}
+        self.receipts: dict[str, dict] = {}
+        self.blocks: dict[int, list[dict]] = {}
+        self.tok: dict[tuple[str, str, int], int] = {}
+        self.nat: dict[tuple[str, int], int] = {}
+        self.down = False
+
+    def _up(self):
+        if self.down:
+            raise TradeRefused("node down")
+
+    def head(self):
+        self._up()
+        return Head(self.head_n, block_hash(self.head_n), 0)
+
+    def transaction(self, h):
+        self._up()
+        return self.txs.get(h)
+
+    def receipt(self, h):
+        self._up()
+        return self.receipts.get(h)
+
+    def block_header(self, n):
+        self._up()
+        return {"hash": self.canon[n], "number": hex(n)} if n in self.canon else None
+
+    def block_transactions(self, n):
+        self._up()
+        return self.blocks.get(n, [])
+
+    def native_balance(self, address, block):
+        self._up()
+        if (address, block) not in self.nat:
+            raise TradeRefused("state unavailable")
+        return self.nat[(address, block)]
+
+    def token_balance(self, token, address, block):
+        self._up()
+        if (token, address, block) not in self.tok:
+            raise TradeRefused("state unavailable")
+        return self.tok[(token, address, block)]
+
+    def mine(self, leg, tx_hash, number, *, fork=0, status=1, logs=(), gas_used=150_000,
+             price=10**9, nonce=5, others=(), tx=None, rc=None):
+        """Put `leg`'s transaction in block `number` and make that block canonical."""
+        bh = block_hash(number, fork)
+        t = {"hash": tx_hash, "from": leg["wallet"], "to": leg["expected_to"],
+             "value": hex(int(leg["expected_value_wei"])), "input": leg["expected_data"],
+             "gas": hex(int(leg["gas_limit"] or 210_000)), "gasPrice": hex(price),
+             "chainId": "0x1863d", "nonce": hex(nonce), "blockHash": bh, "blockNumber": hex(number)}
+        r = {"transactionHash": tx_hash, "from": leg["wallet"], "to": leg["expected_to"],
+             "status": hex(status), "blockHash": bh, "blockNumber": hex(number),
+             "gasUsed": hex(gas_used), "effectiveGasPrice": hex(price), "contractAddress": None,
+             "logs": [dict(lg) for lg in logs]}
+        t.update(tx or {})
+        r.update(rc or {})
+        self.canon[number] = bh
+        self.txs[tx_hash], self.receipts[tx_hash] = t, r
+        self.blocks[number] = [t, *others]
+        return t, r
+
+    def drop(self, tx_hash):
+        self.txs.pop(tx_hash, None)
+        self.receipts.pop(tx_hash, None)
+
+    def buy_balances(self, number, tokens, *, before=0, wallet=WALLET, token=TOKEN):
+        self.tok[(token, wallet, number - 1)] = before
+        self.tok[(token, wallet, number)] = before + tokens

@@ -37,7 +37,7 @@ log = logging.getLogger(__name__)
 READ_METHODS = frozenset({
     "eth_chainId", "eth_blockNumber", "eth_getBlockByNumber", "eth_getTransactionByHash",
     "eth_getTransactionReceipt", "eth_getTransactionCount", "eth_call", "eth_getCode",
-    "eth_estimateGas", "eth_gasPrice",
+    "eth_estimateGas", "eth_gasPrice", "eth_getBalance",
 })
 FORBIDDEN_PREFIXES = ("eth_send", "eth_sign", "personal_", "wallet_", "miner_", "admin_", "debug_",
                       "txpool_", "engine_")
@@ -342,3 +342,26 @@ class ExecutionRpc:
         if not isinstance(b, dict) or not isinstance(b.get("transactions"), list):
             raise RpcUnavailable("malformed block")
         return [t for t in b["transactions"] if isinstance(t, dict)]
+
+    def block_header(self, number: int) -> dict | None:
+        """Header (no transactions) of a canonical block, or None if the node does not have it."""
+        b = self.rpc("eth_getBlockByNumber", [hex(number), False])
+        if b is None:
+            return None
+        if (not isinstance(b, dict) or not isinstance(b.get("hash"), str)
+                or not HASH.fullmatch(b["hash"]) or _qty(b.get("number")) != number):
+            raise RpcUnavailable("malformed block header")
+        return b
+
+    def native_balance(self, address: str, block: int) -> int:
+        if not ADDR.fullmatch(address):
+            raise TradeRefused("invalid address")
+        return _qty(self.rpc("eth_getBalance", [address, hex(block)]))
+
+    def token_balance(self, token: str, address: str, block: int) -> int:
+        if not ADDR.fullmatch(token) or not ADDR.fullmatch(address):
+            raise TradeRefused("invalid address")
+        out = self.call(token, "0x70a08231" + address[2:].rjust(64, "0"), hex(block))
+        if not re.fullmatch(r"0x[0-9a-f]{64}", out):
+            raise RpcUnavailable("malformed balance")
+        return int(out, 16)

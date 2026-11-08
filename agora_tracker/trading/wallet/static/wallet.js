@@ -53,6 +53,19 @@ async function connect() {
   say('Wallet connected. Ownership is verified by the server, not by this page.');
 }
 
+function showStatus(st) {
+  if (!st) return;
+  const rows = [['Status', st.label], ['What this means', st.detail]];
+  if (st.provisional) rows.push(['Finality', 'provisional until the configured confirmations']);
+  if (st.fill && st.fill.verdict === 'verified') {
+    rows.push(['Verified fill', st.fill.side + ': native ' + st.fill.native_wei + ' wei, tokens ' + st.fill.token_wei + ' wei (' + st.fill.status + ')']);
+  }
+  if (st.gas_cost_wei !== null) rows.push(['Gas paid (wei)', st.gas_cost_wei]);
+  for (const l of st.legs) if (l.tx_hash) rows.push([l.kind + ' transaction', l.tx_hash + ' (' + l.state + (l.final ? ', final' : '') + ')']);
+  fill($('receipt-fields'), rows);
+  $('receipt-card').hidden = false;
+}
+
 function showOrder(o) {
   order = o;
   fill($('order-fields'), [['Order', o.id], ['State', o.state], ['Side', o.side], ['Token', o.token],
@@ -129,7 +142,7 @@ async function send() {
   try {
     const out = await api('report', {request_id: req.id, outcome, tx_hash: hash, reason});
     say(out.message || ('Recorded: ' + out.status));
-    if (order) { const s = await api('status', {order_id: order.id}); showOrder(s.order); }
+    if (order) { const s = await api('status', {order_id: order.id}); showOrder(s.order); showStatus(s.status); }
   } catch (e) { say('Your wallet answered (' + outcome + ') but the server could not record it: ' + (e.code || 'error') + '. Do not retry; check your wallet history.'); }
   sending = false;
 }
@@ -137,6 +150,11 @@ async function send() {
 $('connect').addEventListener('click', () => connect().catch(() => say('Wallet connection failed.')));
 $('create').addEventListener('click', () => createOrder());
 $('send').addEventListener('click', () => send());
+$('refresh').addEventListener('click', async () => {
+  if (!order) return;
+  try { const s = await api('status', {order_id: order.id}); showOrder(s.order); showStatus(s.status); }
+  catch (e) { say('Could not refresh: ' + (e.code || 'error')); }
+});
 $('cancel').addEventListener('click', async () => {
   $('cancel').disabled = true;
   try { showOrder((await api('cancel', {order_id: order.id})).order); say('Order cancelled. Nothing was sent.'); }

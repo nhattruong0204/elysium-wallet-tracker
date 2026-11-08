@@ -40,7 +40,7 @@ from sqlalchemy.exc import DBAPIError, IntegrityError
 from ..paper import CHAIN
 from ..plans import UnsignedTradePlan, fingerprint
 from . import legs as _legs
-from .legs import WALLET_REASONS, LegSpec
+from .legs import WALLET_REASONS, FillRecord, LegSpec
 from .policy import RiskPolicy
 from .states import (
     ACTIVE,
@@ -931,7 +931,7 @@ class OrderLedger:
                 rows = c.execute(sa.text(
                     f"SELECT {_legs.COLS} FROM order_legs WHERE state = ANY(:s) "
                     "ORDER BY prompted_at, id LIMIT :l"),
-                    {"s": list(_legs.ACTIVE_LEG_STATES), "l": limit}).all()
+                    {"s": list(_legs.EVIDENCE_LEG_STATES), "l": limit}).all()
                 return [_legs.public(r) for r in rows]
         return self._run(go)
 
@@ -1078,7 +1078,7 @@ class OrderLedger:
                 leg = _legs.by_id(c, leg_id, lock=True)
                 if leg.version != expected_version:
                     return False
-                terminal = to_state in ("rejected", "superseded", "abandoned", "included", "reverted")
+                terminal = to_state in ("rejected", "superseded", "abandoned")
                 try:
                     with c.begin_nested():
                         c.execute(sa.text(
@@ -1113,6 +1113,172 @@ class OrderLedger:
                     self._transition_in_tx(c, leg.order_id, step_to, system,
                                            f"recon-{leg_id}-v{version}-{i}", None, order_reason, now)
                     current = step_to
+                return True
+        return bool(self._run(go))
+
+
+    # ------------------------------------------------------------------ receipts and fills (#94)
+
+    def receipt_candidates(self, *, limit: int = 200) -> list[dict]:
+        """Legs the receipt worker must keep checking until final (system scope). Oldest first so
+        a flood of new legs cannot starve an old one; it works while trading is paused."""
+        def go():
+            with self._tx("system") as c:
+                rows = c.execute(sa.text(
+                    f"SELECT {_legs.COLS} FROM order_legs WHERE finalized_at IS NULL "
+                    "AND state = ANY(:s) AND (tx_hash IS NOT NULL OR final_tx_hash IS NOT NULL) "
+                    "ORDER BY id LIMIT :l"),
+                    {"s": list(_legs.RECEIPT_LEG_STATES), "l": limit}).all()
+                return [_legs.public(r) for r in rows]
+        return self._run(go)
+
+    def get_fills(self, user_id: int, order_id: str | UUID | None = None, *,
+                  include_rolled_back: bool = False) -> list[dict]:
+        oid = self._uuid(order_id) if order_id is not None else None
+
+        def go():
+            with self._tx(user_id) as c:
+                rows = c.execute(sa.text(
+                    f"SELECT {_legs.FILL_COLS} FROM order_fills WHERE "
+                    "(CAST(:o AS uuid) IS NULL OR order_id = CAST(:o AS uuid)) "
+                    "AND (:rb OR status <> 'rolled_back') ORDER BY id"),
+                    {"o": oid, "rb": include_rolled_back}).all()
+                return [_legs.fill_public(r) for r in rows]
+        return self._run(go)
+
+    def apply_receipt(self, leg_id: int, *, expected_version: int, state: str,
+                      block_number: int, block_hash: str, receipt_status: int, gas_used: int,
+                      gas_cost_wei: int, fill: FillRecord | None, finalize: bool) -> bool:
+        """Record a validated receipt (system scope), atomically: the leg, the fill (one row per
+        inclusion, so re-applying the same inclusion changes nothing), and the swap order's move
+        (submitted/ambiguous/orphaned -> included|reverted [-> finalized]). An approval leg never
+        touches the order and never produces a fill. Optimistic on `expected_version`."""
+        if state not in ("included", "reverted") or receipt_status not in (0, 1) or (
+                state == "included") != (receipt_status == 1):
+            raise LedgerRefused("invalid_request", "receipt state does not match its status")
+        if not TXHASH.fullmatch(block_hash or ""):
+            raise LedgerRefused("invalid_request", "malformed block hash")
+        now = float(self.clock())
+        system = Actor.system()
+        S_ = OrderState
+
+        def go() -> bool:
+            with self._tx("system") as c:
+                head = _legs.by_id(c, leg_id)
+                if head is None:
+                    raise LedgerRefused("not_found", "unknown leg")
+                self._controls(c, lock=True)
+                c.execute(sa.text("SELECT 1 FROM orders WHERE id = :i FOR UPDATE"),
+                          {"i": head.order_id})
+                leg = _legs.by_id(c, leg_id, lock=True)
+                if leg.version != expected_version or leg.finalized_at is not None:
+                    return False
+                is_swap = leg.kind == "swap"
+                try:
+                    with c.begin_nested():
+                        c.execute(sa.text(
+                            "UPDATE order_legs SET state = :s, version = version + 1, "
+                            "block_number = :bn, block_hash = :bh, receipt_status = :rs, "
+                            "gas_used = :gu, gas_cost_wei = :gc, "
+                            "included_at = coalesce(included_at, :t), "
+                            "finalized_at = CASE WHEN :fin THEN :t ELSE NULL END, "
+                            "seen_at = coalesce(seen_at, :t), "
+                            "resolution = :r WHERE id = :i"),
+                            {"s": state, "bn": block_number, "bh": block_hash, "rs": receipt_status,
+                             "gu": gas_used, "gc": gas_cost_wei, "t": _utc(now), "fin": finalize,
+                             "r": "receipt_final" if finalize else "receipt_provisional",
+                             "i": leg_id})
+                except IntegrityError as exc:
+                    raise LedgerRefused("invalid_transition",
+                                        f"leg {leg.state} -> {state} is not allowed") from exc
+                if is_swap and fill is not None:
+                    # an older provisional row for a different block is a rolled-back inclusion
+                    c.execute(sa.text(
+                        "UPDATE order_fills SET status = 'rolled_back' WHERE leg_id = :l "
+                        "AND status = 'provisional' AND block_hash <> :bh"),
+                        {"l": leg_id, "bh": block_hash})
+                    c.execute(sa.text("""
+                        INSERT INTO order_fills (order_id, leg_id, user_id, wallet, chain_id, token,
+                            side, tx_hash, block_number, block_hash, verdict, native_wei, token_wei,
+                            gas_cost_wei, basis, reason)
+                        VALUES (:o, :l, :u, :w, :c, :tk, :sd, :tx, :bn, :bh, :v, :nw, :tw, :gc,
+                                :b, :r)
+                        ON CONFLICT (leg_id, block_hash) DO NOTHING"""),
+                        {"o": leg.order_id, "l": leg_id, "u": leg.user_id, "w": leg.wallet,
+                         "c": leg.chain_id, "tk": fill.token, "sd": fill.side,
+                         "tx": leg.final_tx_hash or leg.tx_hash, "bn": block_number,
+                         "bh": block_hash, "v": fill.verdict, "nw": fill.native_wei,
+                         "tw": fill.token_wei, "gc": fill.gas_cost_wei, "b": fill.basis,
+                         "r": fill.reason})
+                    if finalize:
+                        c.execute(sa.text(
+                            "UPDATE order_fills SET status = 'final' WHERE leg_id = :l "
+                            "AND block_hash = :bh AND status = 'provisional'"),
+                            {"l": leg_id, "bh": block_hash})
+                version = expected_version + 1
+                self._event(c, kind="WALLET_RESULT", actor=system, order_id=leg.order_id,
+                            user_id=int(leg.user_id), request_key=f"recon-{leg_id}-v{version}",
+                            detail={"outcome": f"receipt_{state}", "tx_hash": leg.tx_hash,
+                                    "block_number": block_number, "block_hash": block_hash,
+                                    "final": finalize, "leg_no": int(leg.leg_no),
+                                    "verdict": fill.verdict if fill else None})
+                if is_swap:
+                    cur = OrderState(c.execute(sa.text("SELECT state FROM orders WHERE id = :i"),
+                                               {"i": leg.order_id}).scalar_one())
+                    target = S_.INCLUDED if state == "included" else S_.REVERTED
+                    path = (target, S_.FINALIZED) if finalize else (target,)
+                    for i, step_to in enumerate(path):
+                        if cur == step_to:
+                            continue
+                        self._transition_in_tx(c, leg.order_id, step_to, system,
+                                               f"recon-{leg_id}-v{version}-{i}", None,
+                                               "receipt " + state, now)
+                        cur = step_to
+                return True
+        return bool(self._run(go))
+
+    def apply_reorg(self, leg_id: int, *, expected_version: int, reason: str) -> bool:
+        """The block that held this leg's transaction is no longer canonical (or the receipt is
+        gone): undo the provisional fill, mark the leg and its swap order `orphaned`, and let
+        reconciliation find the canonical outcome. Never deletes anything; refuses to touch a
+        finalized order."""
+        now = float(self.clock())
+        system = Actor.system()
+        why = (_check_reason(reason) or "")[:200]
+
+        def go() -> bool:
+            with self._tx("system") as c:
+                head = _legs.by_id(c, leg_id)
+                if head is None:
+                    raise LedgerRefused("not_found", "unknown leg")
+                self._controls(c, lock=True)
+                c.execute(sa.text("SELECT 1 FROM orders WHERE id = :i FOR UPDATE"),
+                          {"i": head.order_id})
+                leg = _legs.by_id(c, leg_id, lock=True)
+                if (leg.version != expected_version or leg.finalized_at is not None
+                        or leg.state not in ("included", "reverted")):
+                    return False
+                try:
+                    with c.begin_nested():
+                        c.execute(sa.text(
+                            "UPDATE order_legs SET state = 'orphaned', version = version + 1, "
+                            "resolution = :r WHERE id = :i"), {"r": why, "i": leg_id})
+                except IntegrityError as exc:
+                    raise LedgerRefused("invalid_transition", "leg cannot be orphaned") from exc
+                c.execute(sa.text("UPDATE order_fills SET status = 'rolled_back' WHERE leg_id = :l "
+                                  "AND status = 'provisional'"), {"l": leg_id})
+                version = expected_version + 1
+                self._event(c, kind="WALLET_RESULT", actor=system, order_id=leg.order_id,
+                            user_id=int(leg.user_id), request_key=f"recon-{leg_id}-v{version}",
+                            detail={"outcome": "reorg", "tx_hash": leg.tx_hash, "reason": why,
+                                    "block_hash": leg.block_hash, "leg_no": int(leg.leg_no)})
+                if leg.kind == "swap":
+                    cur = OrderState(c.execute(sa.text("SELECT state FROM orders WHERE id = :i"),
+                                               {"i": leg.order_id}).scalar_one())
+                    if cur in (OrderState.INCLUDED, OrderState.REVERTED):
+                        self._transition_in_tx(c, leg.order_id, OrderState.ORPHANED, system,
+                                               f"recon-{leg_id}-v{version}-0", None,
+                                               "reorg: " + why[:150], now)
                 return True
         return bool(self._run(go))
 

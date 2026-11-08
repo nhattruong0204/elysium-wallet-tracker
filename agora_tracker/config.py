@@ -289,6 +289,10 @@ class TradingConfig:
     # environment variable only, never from config files. Separate from the scanner's RPC.
     execution_rpc_url_env: str = 'TRADING_EXEC_RPC_URL'
     ledger_owner_ids_env: str = 'TRADING_OWNER_IDS'   # extra owner ids; TG_CHAT_ID is always one
+    # Receipt finality (Stage C2 #94): confirmations after which an inclusion is treated as final.
+    # An ASSUMPTION about this chain's reorg depth, not a protocol guarantee: until it is reached a
+    # fill is provisional and a reorg can roll it back. Raise it if reorgs deeper than this occur.
+    finality_confirmations: int = 12
 
     def __post_init__(self) -> None:
         import re as _re
@@ -299,6 +303,9 @@ class TradingConfig:
             raise ValueError("trading.wallet_execution_enabled must be a boolean")
         if self.wallet_execution_enabled and not self.ledger_enabled:
             raise ValueError("trading.wallet_execution_enabled requires trading.ledger_enabled")
+        if (type(self.finality_confirmations) is not int
+                or not 1 <= self.finality_confirmations <= 256):
+            raise ValueError("trading.finality_confirmations must be an integer in 1..256")
         for name in (self.ledger_db_url_env, self.ledger_owner_ids_env, self.execution_rpc_url_env):
             if not isinstance(name, str) or not _re.fullmatch(r'[A-Z][A-Z0-9_]{2,63}', name):
                 raise ValueError("trading ledger environment variable names must be UPPER_SNAKE_CASE")

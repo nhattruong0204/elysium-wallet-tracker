@@ -19,6 +19,10 @@ from sqlalchemy.exc import IntegrityError
 
 LEG_KINDS = ("reset", "approve", "swap")
 ACTIVE_LEG_STATES = ("prompted", "hash_reported", "ambiguous")
+# legs the #93 evidence reconciler still has to place (an orphaned tx may be back in the mempool)
+EVIDENCE_LEG_STATES = ("prompted", "hash_reported", "ambiguous", "orphaned")
+# legs the #94 receipt worker watches until they are final
+RECEIPT_LEG_STATES = ("hash_reported", "included", "reverted", "orphaned")
 HEX_ADDR = re.compile(r"^0x[0-9a-f]{40}$")
 
 # Wallet-reported reasons are untrusted browser input: only these codes are ever stored.
@@ -28,7 +32,8 @@ WALLET_REASONS = frozenset({"user_rejected", "disconnected", "unsupported", "cha
 COLS = ("id, order_id, user_id, leg_no, kind, wallet, chain_id, idempotency_key, request_digest, "
         "expected_to, expected_value, expected_data, gas_limit, max_fee_wei, nonce_hint, "
         "prompt_block, nonce, tx_hash, final_tx_hash, state, resolution, version, prompted_at, "
-        "answered_at, seen_at, resolved_at")
+        "answered_at, seen_at, resolved_at, block_number, block_hash, receipt_status, gas_used, "
+        "gas_cost_wei, included_at, finalized_at")
 
 
 @dataclass(frozen=True)
@@ -44,6 +49,34 @@ class LegSpec:
     max_fee_wei: int | None
     nonce_hint: int | None
     prompt_block: int | None
+
+
+@dataclass(frozen=True)
+class FillRecord:
+    """What a swap actually moved, from on-chain evidence only (see wallet/fills.py)."""
+    verdict: str                 # verified | unknown | reverted
+    side: str
+    token: str
+    native_wei: int | None       # BUY: native spent; SELL: native received
+    token_wei: int | None        # BUY: tokens received; SELL: tokens sent
+    gas_cost_wei: int
+    basis: str | None = None
+    reason: str | None = None
+
+
+def fill_public(row) -> dict[str, Any]:
+    def s(v):
+        return None if v is None else str(int(v))
+    return {"id": int(row.id), "order_id": str(row.order_id), "leg_id": int(row.leg_id),
+            "wallet": row.wallet, "chain_id": int(row.chain_id), "token": row.token,
+            "side": row.side, "tx_hash": row.tx_hash, "block_number": int(row.block_number),
+            "block_hash": row.block_hash, "verdict": row.verdict, "native_wei": s(row.native_wei),
+            "token_wei": s(row.token_wei), "gas_cost_wei": s(row.gas_cost_wei),
+            "status": row.status, "basis": row.basis, "reason": row.reason}
+
+
+FILL_COLS = ("id, order_id, leg_id, user_id, wallet, chain_id, token, side, tx_hash, block_number, "
+             "block_hash, verdict, native_wei, token_wei, gas_cost_wei, status, basis, reason")
 
 
 def _ts(v) -> float | None:
@@ -66,6 +99,11 @@ def public(row) -> dict[str, Any]:
         "state": row.state, "resolution": row.resolution, "version": int(row.version),
         "prompted_at": _ts(row.prompted_at), "answered_at": _ts(row.answered_at),
         "seen_at": _ts(row.seen_at), "resolved_at": _ts(row.resolved_at),
+        "block_number": None if row.block_number is None else int(row.block_number),
+        "block_hash": row.block_hash,
+        "receipt_status": None if row.receipt_status is None else int(row.receipt_status),
+        "gas_used": s(row.gas_used), "gas_cost_wei": s(row.gas_cost_wei),
+        "included_at": _ts(row.included_at), "finalized_at": _ts(row.finalized_at),
     }
 
 

@@ -19,7 +19,7 @@ only broadcaster; nothing here can send, replace or rebroadcast a transaction.
   `TRADING_EXEC_RPC_URL` (never config files) and must differ from the scanner/paper URLs;
 * **read-only allowlist** (`eth_chainId`, `eth_blockNumber`, `eth_getBlockByNumber`,
   `eth_getTransactionByHash`, `eth_getTransactionReceipt`, `eth_getTransactionCount`, `eth_call`,
-  `eth_getCode`, `eth_estimateGas`, `eth_gasPrice`). `eth_send*`, `eth_sign*`, `personal_*`,
+  `eth_getCode`, `eth_estimateGas`, `eth_gasPrice`, `eth_getBalance` (added in #94)). `eth_send*`, `eth_sign*`, `personal_*`,
   `wallet_*` … are refused *before* any request is made, so there is no code path to broadcast;
 * chain id 99901 verified before first use and every 5 min (mismatch ⇒ hard breaker trip);
   head must be ≤ 30 s old to be trusted;
