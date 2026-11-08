@@ -116,9 +116,9 @@ An INFO summary line is logged every 5 minutes. `healthy()` = running and a succ
 ## Unresolved (not part of this change)
 
 * F-02 owner force-resolve tool, F-04 finality depth, F-15 single RPC, F-06/F-07/F-08 unverified.
-* **The wallet/Mini App HTTP routes are not mounted by any process entrypoint** in this repository
-  (`miniapp.create_app(wallet=…)` has no caller), so the end-to-end user flow still cannot run; this
-  PR deliberately does not change that (new finding F-16).
+* The wallet/Mini App HTTP routes were not mounted by any entrypoint when this was written (F-16);
+  the follow-up ingress change (`docs/TRADING_INGRESS.md`) adds the flag-gated, loopback-only,
+  fail-closed listener in the same `--ui` process and shares this worker's execution RPC.
 * No alert delivery: health is pull (owner command / log); pushing alerts to Telegram would add a
   second sender and was left out.
 * Real-process behaviour (signals under the real supervisor/Docker, real Postgres failover) is

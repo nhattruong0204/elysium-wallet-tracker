@@ -72,18 +72,24 @@ class Guard(BaseHTTPMiddleware):
 
 
 def create_app(flow: PaperFlow | None = None, auth: Authenticator | None = None,
-               wallet=None) -> Starlette:
-    """Dependency injection only: no mock-auth flag, keys, scanner or DB connection."""
+               wallet=None, plans: PlanBook | None = None) -> Starlette:
+    """Dependency injection only: no mock-auth flag, keys, scanner or DB connection.
+
+    `plans` lets the caller (the F-16 ingress) hand in the PlanBook that its WalletRuntime was
+    built with; without it the app makes its own, which a wallet runtime could never share."""
     authenticator = auth or DenyAuth()
     secure_auth = getattr(authenticator, "ownership_proof", False) is True
     if secure_auth and getattr(authenticator, "flow", None) is not flow:
         raise ValueError("Authentication must use the Mini App's existing PAPER flow")
     auth_routes = getattr(authenticator, "routes", lambda: ())() if secure_auth else ()
-    plans = (
-        PlanBook(flow)
-        if secure_auth and flow and isinstance(flow.provider, DirectV2Provider)
-        else None
-    )
+    if plans is not None and (not secure_auth or flow is None or plans.flow is not flow):
+        raise ValueError("A PlanBook needs the secure authenticator and its own PAPER flow")
+    if plans is None:
+        plans = (
+            PlanBook(flow)
+            if secure_auth and flow and isinstance(flow.provider, DirectV2Provider)
+            else None
+        )
     links = Links(LinksConfig())
 
     async def index(request):

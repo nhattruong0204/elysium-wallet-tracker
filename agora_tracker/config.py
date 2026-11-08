@@ -303,6 +303,21 @@ class TradingConfig:
     worker_pass_budget_s: float = 20.0       # wall-clock cap of one cycle
     worker_rpc_calls_per_min: int = 240      # hard ceiling on execution-RPC calls per minute
     worker_standby_retry_s: float = 15.0     # how often a standby worker retries the lease
+    # Private Mini App / wallet ingress (Stage C2 #95 F-16). OFF by default: no listener exists
+    # unless `ingress_enabled` is true. It binds LOOPBACK only and is meant to sit behind an
+    # explicitly configured HTTPS reverse proxy (docs/TRADING_INGRESS.md). The wallet routes are
+    # mounted only if `wallet_execution_enabled` is ALSO true.
+    ingress_enabled: bool = False
+    ingress_origin: str | None = None        # canonical public origin, e.g. https://app.example.com
+    ingress_bind_host: str = '127.0.0.1'     # must be a loopback address
+    ingress_port: int = 8765
+    ingress_auth_path: str | None = None     # private SQLite for sessions (dir 0700, file 0600)
+    ingress_secret_env: str = 'TRADING_INGRESS_SECRET'   # shared secret the proxy must inject
+    ingress_max_concurrency: int = 32        # open connections (idle keep-alive included); 503 above
+    ingress_threads: int = 8                 # blocking-work threads (RPC / sqlite / ledger)
+    ingress_max_body_bytes: int = 16384
+    ingress_request_timeout_s: float = 30.0
+    ingress_keepalive_s: float = 5.0
 
     def __post_init__(self) -> None:
         import re as _re
@@ -326,9 +341,11 @@ class TradingConfig:
             v = getattr(self, fname)
             if type(v) is not int or not lo <= v <= hi:
                 raise ValueError(f"trading.{fname} must be an integer in {lo}..{hi}")
-        for name in (self.ledger_db_url_env, self.ledger_owner_ids_env, self.execution_rpc_url_env):
+        for name in (self.ledger_db_url_env, self.ledger_owner_ids_env, self.execution_rpc_url_env,
+                     self.ingress_secret_env):
             if not isinstance(name, str) or not _re.fullmatch(r'[A-Z][A-Z0-9_]{2,63}', name):
                 raise ValueError("trading ledger environment variable names must be UPPER_SNAKE_CASE")
+        self._check_ingress()
         if not isinstance(self.paper_rpc_url, str) or urlsplit(self.paper_rpc_url).scheme != 'https':
             raise ValueError('paper_rpc_url must use HTTPS')
         if self.paper_order_path is not None and (not isinstance(self.paper_order_path, str) or not self.paper_order_path.strip()):
@@ -341,6 +358,54 @@ class TradingConfig:
                 raise ValueError('miniapp_url must be a clean HTTPS URL')
         if type(self.paper_enabled) is not bool:
             raise ValueError("trading.paper_enabled must be a boolean")
+
+    def _check_ingress(self) -> None:
+        import ipaddress as _ip
+        from urllib.parse import urlsplit
+        if type(self.ingress_enabled) is not bool:
+            raise ValueError("trading.ingress_enabled must be a boolean")
+        try:
+            loopback = _ip.ip_address(self.ingress_bind_host).is_loopback
+        except (TypeError, ValueError):
+            loopback = False
+        if not loopback:
+            raise ValueError("trading.ingress_bind_host must be a loopback IP address; the public "
+                             "listener is the HTTPS reverse proxy, never this process")
+        if type(self.ingress_port) is not int or not 1024 <= self.ingress_port <= 65535:
+            raise ValueError("trading.ingress_port must be an integer in 1024..65535")
+        for fname, lo, hi in (("ingress_max_concurrency", 1, 256), ("ingress_threads", 1, 32),
+                              ("ingress_max_body_bytes", 1024, 65536)):
+            v = getattr(self, fname)
+            if type(v) is not int or not lo <= v <= hi:
+                raise ValueError(f"trading.{fname} must be an integer in {lo}..{hi}")
+        for fname, lo, hi in (("ingress_request_timeout_s", 1, 120), ("ingress_keepalive_s", 1, 60)):
+            v = getattr(self, fname)
+            if type(v) not in (int, float) or not lo <= v <= hi:
+                raise ValueError(f"trading.{fname} must be a number in {lo}..{hi}")
+        if self.ingress_auth_path is not None and (
+                not isinstance(self.ingress_auth_path, str) or not self.ingress_auth_path.strip()):
+            raise ValueError("trading.ingress_auth_path must be a local private file path")
+        if self.ingress_origin is not None:
+            origin = self.ingress_origin
+            u = urlsplit(origin) if isinstance(origin, str) else None
+            if (u is None or u.scheme != 'https' or not u.hostname or u.username or u.password
+                    or u.path or u.query or u.fragment or not origin.isascii()
+                    or u.netloc != u.netloc.lower()):
+                raise ValueError("trading.ingress_origin must be a canonical lower-case https "
+                                 "origin without a path")
+        if self.ingress_enabled:
+            if not self.ingress_origin:
+                raise ValueError("trading.ingress_enabled requires trading.ingress_origin")
+            if not self.paper_enabled or not self.paper_order_path:
+                raise ValueError("trading.ingress_enabled requires trading.paper_enabled and "
+                                 "trading.paper_order_path")
+            if not self.ingress_auth_path:
+                raise ValueError("trading.ingress_enabled requires trading.ingress_auth_path")
+            m = urlsplit(self.miniapp_url or '')
+            if (m.scheme, m.netloc) != ('https', urlsplit(self.ingress_origin).netloc) \
+                    or m.path not in ('', '/'):
+                raise ValueError("trading.miniapp_url must be the ingress origin's root, so the "
+                                 "Telegram launcher and the listener cannot drift apart")
 
 
 @dataclass
