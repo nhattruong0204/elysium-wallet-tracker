@@ -160,6 +160,7 @@ class Sessions:
 class IntelBot:
     ledger: OrderLedger | None = None     # class defaults keep partially built test bots valid
     worker: Any = None                    # wallet reconciliation supervisor (None: off)
+    ingress: Any = None                   # private Mini App listener (None: off, the default)
     _paper_broken = False
 
     def __init__(self, cfg: Config, api: TelegramApi, store: Store, reports: Reports,
@@ -351,17 +352,24 @@ class IntelBot:
         return False
 
     def _worker_health(self, chat: int, uid: int, msg: dict) -> None:
-        """Private health of the wallet reconciliation worker: ledger owners, private chat only.
-        Everyone else gets the same neutral reply as when the worker is off."""
-        owner = self.ledger is not None and uid in self.ledger.owner_ids
-        if not (owner and self.worker is not None and chat == uid
-                and msg.get("chat", {}).get("type") == "private"):
+        """Private health of the wallet worker and the Mini App ingress: owners, private chat
+        only. Everyone else gets the same neutral reply as when both are off."""
+        from .trading.ledger.runtime import owner_ids
+        owners = self.ledger.owner_ids if self.ledger is not None else owner_ids(self.cfg)
+        ingress = getattr(self, "ingress", None)
+        if not (uid in owners and (self.worker is not None or ingress is not None)
+                and chat == uid and msg.get("chat", {}).get("type") == "private"):
             self._send(chat, "Not available.", None)
             return
         import html as _h
-
-        from .trading.wallet.supervisor import render_text
-        self._send(chat, render_text(self.worker.snapshot(), _h.escape), None)
+        parts = []
+        if self.worker is not None:
+            from .trading.wallet.supervisor import render_text
+            parts.append(render_text(self.worker.snapshot(), _h.escape))
+        if ingress is not None:
+            from .trading.ingress import render_text as render_ingress
+            parts.append(render_ingress(ingress.snapshot(), _h.escape))
+        self._send(chat, "\n\n".join(parts), None)
 
     def _wallet_section(self, uid: int, *, positions: bool) -> str:
         """Wallet-managed orders / verified positions, appended to the PAPER text. Empty when the

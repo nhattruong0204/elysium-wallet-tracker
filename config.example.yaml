@@ -171,3 +171,18 @@ trading:
   # worker_pass_budget_s: 20         # wall-clock cap of one cycle
   # worker_rpc_calls_per_min: 240    # hard cap on execution-RPC calls per minute
   # worker_standby_retry_s: 15       # standby retries the one-worker lease this often
+  # Private Mini App / wallet ingress (docs/TRADING_INGRESS.md, #95 F-16). OFF: no listener exists.
+  # Loopback only; an operator-owned HTTPS reverse proxy is the public side and must inject the
+  # shared secret in TRADING_INGRESS_SECRET (>= 32 chars, env only) as X-Elysium-Ingress. Needs
+  # paper_enabled + paper_order_path; miniapp_url must be the origin's root. The wallet routes are
+  # mounted only if wallet_execution_enabled is ALSO true (and then still need the durable flag).
+  # ingress_enabled: false
+  # ingress_origin: https://app.example.com
+  # ingress_auth_path: /data/private-trading/auth.sqlite   # dir 0700, file 0600
+  # ingress_bind_host: 127.0.0.1     # loopback only (validated)
+  # ingress_port: 8765
+  # ingress_max_concurrency: 32      # open connections; 503 above
+  # ingress_threads: 8               # blocking-work threads
+  # ingress_max_body_bytes: 16384
+  # ingress_request_timeout_s: 30
+  # ingress_keepalive_s: 5

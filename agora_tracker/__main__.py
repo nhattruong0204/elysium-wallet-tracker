@@ -658,14 +658,24 @@ def run_ui(cfg: Config) -> None:
         stop.set()
     signal.signal(signal.SIGINT, _stop)
     signal.signal(signal.SIGTERM, _stop)
-    worker = None
+    worker = exec_rpc = None
     if cfg.trading.wallet_execution_enabled:   # default OFF; when ON a missing piece is fatal
+        from .trading.wallet.runtime import ExecutionRpcConfigError, build_execution_rpc
         from .trading.wallet.supervisor import WorkerSetupError, build_worker
         try:
-            worker = build_worker(cfg, ledger, stop=stop)
-        except WorkerSetupError as exc:
+            exec_rpc = build_execution_rpc(cfg)
+            worker = build_worker(cfg, ledger, stop=stop, rpc=exec_rpc)
+        except (ExecutionRpcConfigError, WorkerSetupError) as exc:
             raise SystemExit(f"wallet reconciliation worker misconfigured: {exc}") from exc
         bot.worker = worker
+    ingress = None
+    if cfg.trading.ingress_enabled:            # default OFF; when ON a missing piece is fatal (F-16)
+        from .trading.ingress import IngressSetupError, build_ingress
+        try:
+            ingress = build_ingress(cfg, flow=bot.paper_trades, ledger=ledger, exec_rpc=exec_rpc)
+        except IngressSetupError as exc:
+            raise SystemExit(f"Mini App ingress misconfigured: {exc}") from exc
+        bot.ingress = ingress
     if cfg.collector.enabled:
         coll = Collector(store, AgoraMarket(cfg.market), cfg.collector,
                          new_launchpad_alerts=cfg.intel.new_launchpad_alerts)
@@ -677,8 +687,16 @@ def run_ui(cfg: Config) -> None:
     if worker is not None:
         worker.start()
     try:
-        bot.run(stop)
+        if ingress is not None:
+            from .trading.ingress import IngressSetupError
+            try:
+                ingress.start()
+            except IngressSetupError as exc:
+                raise SystemExit(f"Mini App ingress failed to start: {exc}") from exc
+        bot.run(stop)                          # the ONE getUpdates consumer; ingress never polls
     finally:
+        if ingress is not None:                # stop accepting requests before the workers go
+            ingress.stop()
         if worker is not None:
             worker.stop()
         bot.shutdown()
