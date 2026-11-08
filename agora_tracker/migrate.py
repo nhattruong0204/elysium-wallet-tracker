@@ -54,3 +54,14 @@ def set_dashboard_password(engine: Engine, password: str) -> None:
     with engine.begin() as conn:
         # DDL cannot take bind parameters; the charset check above makes inlining safe
         conn.exec_driver_sql(f"ALTER ROLE dashboard_ro PASSWORD '{password}'")
+
+
+def set_trading_password(engine: Engine, password: str) -> None:
+    """Give the private order-ledger role (`trading_rw`, migration 0011) a scram-sha-256
+    password. Created without one, so it cannot log in until the operator provisions it."""
+    import re
+    if not re.fullmatch(r"[A-Za-z0-9_-]{24,128}", password):
+        raise ValueError("TRADING_DB_PASSWORD must be 24-128 characters of [A-Za-z0-9_-] "
+                         "(e.g. `openssl rand -hex 24`)")
+    with engine.begin() as conn:
+        conn.exec_driver_sql(f"ALTER ROLE trading_rw PASSWORD '{password}'")
