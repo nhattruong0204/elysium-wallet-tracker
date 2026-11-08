@@ -71,7 +71,8 @@ class Guard(BaseHTTPMiddleware):
         return response
 
 
-def create_app(flow: PaperFlow | None = None, auth: Authenticator | None = None) -> Starlette:
+def create_app(flow: PaperFlow | None = None, auth: Authenticator | None = None,
+               wallet=None) -> Starlette:
     """Dependency injection only: no mock-auth flag, keys, scanner or DB connection."""
     authenticator = auth or DenyAuth()
     secure_auth = getattr(authenticator, "ownership_proof", False) is True
@@ -316,9 +317,18 @@ def create_app(flow: PaperFlow | None = None, auth: Authenticator | None = None)
                 409,
             )
 
+    wallet_routes: list = []
+    if wallet is not None:
+        # Stage C2 (default OFF): only with the secure authenticator, the exact planner and a ledger.
+        if not secure_auth or plans is None or wallet.plans is not plans:
+            raise ValueError("The wallet flow needs the secure authenticator and its own PlanBook")
+        from ..wallet.api import wallet_routes as build_wallet_routes
+        wallet_routes = build_wallet_routes(wallet, authenticator, flow)
+
     app = Starlette(
         routes=[
             Route("/", index),
+            *wallet_routes,
             *[
                 Route("/api/" + action, api, methods=["POST"])
                 for action in ("session", "quote", "cancel", "plan", "revalidate", "revoke-plan")

@@ -281,6 +281,9 @@ class TradingConfig:
     # Private order ledger (Stage C2). OFF by default; enabling it never enables execution, which
     # has its own durable, owner-only flag (also OFF). The URL must log in as `trading_rw`.
     ledger_enabled: bool = False
+    # Wallet-managed Buy/Sell prompts (Stage C2). OFF by default and meaningless without the ledger
+    # and the (also OFF, owner-only) durable execution flag. The server never signs or broadcasts.
+    wallet_execution_enabled: bool = False
     ledger_db_url_env: str = 'TRADING_DB_URL'
     ledger_owner_ids_env: str = 'TRADING_OWNER_IDS'   # extra owner ids; TG_CHAT_ID is always one
 
@@ -289,6 +292,10 @@ class TradingConfig:
         from urllib.parse import urlsplit
         if type(self.ledger_enabled) is not bool:
             raise ValueError("trading.ledger_enabled must be a boolean")
+        if type(self.wallet_execution_enabled) is not bool:
+            raise ValueError("trading.wallet_execution_enabled must be a boolean")
+        if self.wallet_execution_enabled and not self.ledger_enabled:
+            raise ValueError("trading.wallet_execution_enabled requires trading.ledger_enabled")
         for name in (self.ledger_db_url_env, self.ledger_owner_ids_env):
             if not isinstance(name, str) or not _re.fullmatch(r'[A-Z][A-Z0-9_]{2,63}', name):
                 raise ValueError("trading ledger environment variable names must be UPPER_SNAKE_CASE")
