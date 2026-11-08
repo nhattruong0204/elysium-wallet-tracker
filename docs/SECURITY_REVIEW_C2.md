@@ -15,6 +15,7 @@
 | #94 receipts, reorgs, verified fills, status | #106 | `feat/trading-c2-receipt-reconciliation` | `de3bdc1` (CI green) |
 | #95 F-01 supervised worker lifecycle | #108 | `feat/trading-c2-worker-lifecycle` | `8985c1f` (CI green; head of integration PR #109) |
 | #95 F-16 Mini App / wallet ingress | #110 | `feat/trading-c2-ingress` | `80e12a6` (CI green: docker, lint, test) |
+| #95 F-02 owner-audited leg recovery | #111 | `feat/trading-c2-leg-recovery` | `026277c` (CI green: docker, lint, test; stacked on #110) |
 
 Stack base: `feat/trading-c1-unsigned-plans` (auth, plans, ledger) — **`main` contains only #100;
 #101–#103 are not on `main` yet**, so these PRs cannot merge to `main` until that chain does.
@@ -47,7 +48,8 @@ fill. Anything uncertain fails closed (no prompt, no state change, amounts `unkn
 | Exactly-once | durable leg per request, unique idempotency key, one unsettled leg per wallet+chain, one swap per order, set-once hash/nonce, legal-edge trigger | `test_wallet_reconcile.py`, `test_wallet_ledger_gate.py`, `test_wallet_receipts.py` (racing workers, restart) |
 | Truthful receipts | validated receipt + canonical block + two-measure fills; reorg rollback; finalized rows immutable | `test_wallet_fills.py`, `test_wallet_receipts.py` |
 | Mini App / wallet routes not publicly reachable unless explicitly configured (F-16) | `ingress_enabled` default false (no listener); loopback-only bind validated in config; `IngressGuard` refuses anything not forwarded by the configured HTTPS proxy (secret, Host, https); wallet routes need `wallet_execution_enabled` as a second opt-in; public dashboard is a separate service and untouched | `tests/test_wallet_ingress.py`, `tests/test_wallet_ingress_e2e.py` (see `docs/TRADING_INGRESS.md` §2) |
-| Scanner/Postgres/web/Revival unaffected | additive migrations 0012–0014 confined to the `trading_private` schema (no `public`/scanner table altered); wallet code is imported by nothing in the collector/engine/web/Revival paths. The only touch of a shared module is `tgui.py` (a ledger-gated, exception-safe text section; returns `""` when the ledger is off) and `config.py` (one validated field) | `git diff --stat`; `test_migration_*` round-trip tests; `test_telegram_section_never_raises_into_the_command_handler` |
+| Stuck legs are never released without proof (F-02) | owner-only, private-chat, two-step (one-time code + mandatory reason); ≥ 2 distinct-host sources, all healthy/fresh/same-fork; only monotone facts (final consumed nonce, passed swap deadline + margin); fresh re-diagnosis must match the prepared decision; append-only `leg_recoveries` + hash-chained audit events; receipts/fills/hashes/nonces never rewritten; no signing, no broadcast, no wallet request | `tests/test_wallet_recovery.py` (see `docs/TRADING_LEG_RECOVERY.md` §4–§6) |
+| Scanner/Postgres/web/Revival unaffected | additive migrations 0012–0015 confined to the `trading_private` schema (no `public`/scanner table altered); wallet code is imported by nothing in the collector/engine/web/Revival paths. The only touch of a shared module is `tgui.py` (a ledger-gated, exception-safe text section; returns `""` when the ledger is off) the owner-only `/wallet_recover` / `/wallet_resolve` commands (F-02; "Not available." for everyone else) and `config.py` (validated fields) | `git diff --stat`; `test_migration_*` round-trip tests; `test_telegram_section_never_raises_into_the_command_handler`, `test_telegram_commands_are_owner_private_chat_only` |
 
 ## 4. Threat model (STRIDE-oriented)
 
@@ -59,7 +61,7 @@ flag, the execution-RPC secret, the Telegram identity binding.
 | T1 | Server asks the wallet for something other than the reviewed trade | compromised server / bug | Request is derived from the plan and digest-bound; browser re-checks target/spender/sender/chain/finite amount; **the wallet's own confirmation screen is the final control** | A server that also serves tampered JS defeats the in-page check (see F-11) |
 | T2 | Replay/steal a request id | other user, session thief | request bound to user+session+wallet+order+digest+expiry; unknown/foreign ids are indistinguishable 404 | session theft is #101's boundary |
 | T3 | Double prompt / double order | double click, retry, two tabs, crash | DB-enforced keys and partial unique indexes; single-flight JS; ambiguous never re-prompts | none known |
-| T4 | Wallet sends, answer lost | network, crash | leg `ambiguous`; wallet stays blocked until **chain evidence** resolves it | needs operator tool if evidence never arrives (F-02) |
+| T4 | Wallet sends, answer lost | network, crash | leg `ambiguous`; wallet stays blocked until **chain evidence** resolves it | owner-audited recovery tool (F-02, `docs/TRADING_LEG_RECOVERY.md`): corrects only with corroborated, final chain evidence; otherwise stays blocked |
 | T5 | Hash for someone else's tx / different payload | malicious client | payload (from/to/value/input) compared before any accounting; mismatch ⇒ `invalid`/ambiguous, never "the reviewed trade" | — |
 | T6 | Fake or wrong receipt/balances | malicious or buggy RPC | validation + two-measure fills + canonical-header check | **single execution RPC** is trusted for facts (F-04/F-17) |
 | T7 | Reorg after "included" | chain | provisional until N confirmations; rollback keeps history; finalized immutable | N is an assumption (F-04) |
@@ -82,7 +84,7 @@ documented trade-off; **unverified** = could not be tested in this environment.
 | F-16 | Med | No process entrypoint mounted the wallet/Mini App routes (`miniapp.create_app(wallet=…)` had no caller, and could not be given a matching `PlanBook` from outside), so the user-facing flow could not run end to end; found while wiring F-01. | **mitigated in code (ingress PR); awaiting human verification** | `docs/TRADING_INGRESS.md`: in-process loopback listener in `--ui`, default OFF, fail-closed startup, ingress-secret/Host/https guard, resource limits, wallet routes behind a second flag, one `getUpdates` consumer. Evidence: `tests/test_wallet_ingress.py` (54, incl. the real `run_ui` wiring and real PostgreSQL ledger) and `tests/test_wallet_ingress_e2e.py` (13, real signed Telegram/SIWE session over the real listener). Not exercised: a real proxy/TLS, browser, Telegram client or RPC (F-17, F-18). |
 | F-17 | Med | The reverse proxy is a trusted component: it terminates TLS and injects the shared ingress secret, `X-Forwarded-Proto` and the client IP (which feeds the per-IP bootstrap rate limit). Anyone holding the secret who can reach loopback bypasses the edge controls (they still need Telegram identity, SIWE ownership and CSRF); rotation needs a restart. Proxy/TLS/DNS config is outside this repository and unreviewed. | open | Human review of the real vhost against `docs/TRADING_INGRESS.md` §4 (overwriting headers, single host, body/time limits, secret file mode). |
 | F-18 | Low | Listener liveness is pull-only: if the ingress thread dies the bot keeps running and the Mini App is silently unavailable until `/wallet_health` is read; no auto-restart or alert push. | open | Add an alert/automatic restart before #96, or accept explicitly. |
-| F-02 | Med | No owner force-resolve tool for a leg stuck `ambiguous`/`orphaned`; the (wallet, chain) pair stays blocked until chain evidence appears. | open | Owner-only, audited resolve command (requires entering evidence), never a re-prompt. |
+| F-02 | Med | No owner force-resolve tool for a leg stuck `ambiguous`/`orphaned`; the (wallet, chain) pair stays blocked until chain evidence appears. | **mitigated in code (leg-recovery PR); awaiting human verification** | `docs/TRADING_LEG_RECOVERY.md`: read-only diagnosis (tx hash, nonce, chain, wallet, last evidence, state, reason, category: confirmed / reverted / replaced / nonce consumed externally / RPC unavailable / unknown); a correction (`superseded` or `abandoned`, nothing else) only with chain evidence from ≥ 2 distinct-host sources that are all healthy, fresh and on one fork, identical on every fact, and only monotone facts (final consumed nonce; passed swap deadline + margin with no matching tx and no queued tx); owner-only two-step confirmation with a mandatory reason; fresh re-diagnosis must reproduce the prepared decision; append-only `leg_recoveries` (+ `LEG_RECOVERY` / `LEG_RECOVERY_REFUSED` hash-chained events, migration 0015); receipts, fills, hashes and nonces are never rewritten; approvals/resets can never be abandoned; nothing signs, broadcasts or prompts a wallet. Everything unproven stays blocked with an escalation procedure. Evidence: `tests/test_wallet_recovery.py` (74 cases against the real PostgreSQL ledger incl. stale/lagging/forked/down providers, single source, delayed inclusion, external nonce change, duplicate/concurrent confirms, restarts, unauthorized users, append-only guards, orphaned legs, Telegram gating); 7 hand-made mutations of the safety guards were each caught. **Residual:** quality depends on two truly independent endpoints (F-15 still open); owner reason is unverified free text; a hostile endpoint lying consistently to every configured source is not mitigated. |
 | F-03 | Low | An approval/swap the wallet holds but did not broadcast could be sent after we abandoned the leg (approval: 1 h; swap: after deadline+margin). Swaps expire by their on-chain deadline; approvals are finite and bound to the router. | accepted | Keep amounts finite; consider revoking via a new reviewed zero-approval prompt. |
 | F-04 | Med | Finality (12 confirmations) is an assumption; no finality gadget queried; reorg depth on chain 99901 unmeasured. | open | Measure on the production RPC; set `finality_confirmations` from data. |
 | F-05 | Info | Telegram's in-app WebView usually has no injected wallet provider; users must open the page in a wallet browser. | accepted | UX only; the page explains instead of faking. |
@@ -92,12 +94,12 @@ documented trade-off; **unverified** = could not be tested in this environment.
 | F-09 | Info | Fills are `unknown` whenever another transaction from/to the wallet shares the block, for fee-on-transfer/rebasing mismatches, or when state is pruned. PnL then reads unknown. | accepted | Intended fail-closed behaviour. |
 | F-10 | Low | Fill rows are immutable; a wrong `unknown` cannot be corrected in place. | accepted | Add a compensating-entry mechanism if it becomes common. |
 | F-11 | Med | The in-page re-check cannot protect against a server that also serves modified JS (same origin). | accepted | Wallet confirmation screen is the control; consider SRI/CSP hash pinning of `wallet.js`. |
-| F-12 | Info | `main` lacks #101–#103; #104/#105/#94 are stacked drafts. The paused clustering PR's migration number must be renumbered (now 0015). | process | Owner decides merge order. |
+| F-12 | Info | `main` lacks #101–#103; #104/#105/#94 are stacked drafts. The paused clustering PR's migration number must be renumbered (now 0016; 0015 is `leg_recoveries`). | process | Owner decides merge order. |
 | F-13 | Low | Telegram status section swallows all exceptions (logs a warning). | accepted | Acceptable for a read-only display. |
 | F-14 | Low | Migration 0014 downgrade drops `order_fills`. | accepted | Backup before downgrade (documented). |
 | F-15 | Med | Facts about a transaction come from one execution RPC (reconciliation can use several, receipts use one). A dishonest endpoint could fabricate a receipt, a balance or a block. | open | Corroborate receipts/balances from a second independent endpoint before real funds; treat disagreement as `unknown`. |
 
-No critical or high finding was identified *in the code*, but F-02, F-04, F-15, F-17 and F-18 are open (F-01 and F-16 are mitigated in code, unverified by a human) and
+No critical or high finding was identified *in the code*, but F-04, F-15, F-17 and F-18 are open (F-01, F-02 and F-16 are mitigated in code, unverified by a human) and
 F-06/F-07/F-08 are unverifiable here. **These are the reasons the sign-off is blocked.**
 
 ## 6. What this review did NOT do
@@ -116,7 +118,7 @@ git fetch origin && git checkout de3bdc1          # or each frozen head in §1
 ruff check agora_tracker tests
 mypy agora_tracker/trading
 export TEST_DATABASE_URL=postgresql+psycopg://…/tracker_test     # disposable database only
-pytest tests/test_wallet_*.py tests/test_trading_ledger.py -q   # includes test_wallet_ingress*.py (F-16)
+pytest tests/test_wallet_*.py tests/test_trading_ledger.py -q   # includes test_wallet_ingress*.py (F-16) and test_wallet_recovery.py (F-02)
 # no key material in the wallet/ledger packages (expect no hits besides docs/comments):
 grep -rniE "private_key|mnemonic|seed phrase|keystore|sign_transaction" agora_tracker/trading/wallet agora_tracker/trading/ledger
 # no send/sign RPC in the allowlist:
@@ -136,7 +138,7 @@ and `eth_getBalance`/`eth_call` at a block 1000 back succeed (historical state);
 
 ## 9. Preconditions for #96 (NOT started; each needs explicit owner authorization)
 
-1. A human reviewer signs §10 after verifying F-01 and F-16 and closing or consciously accepting F-02, F-04, F-15, F-17, F-18 and
+1. A human reviewer signs §10 after verifying F-01, F-02 and F-16 and closing or consciously accepting F-04, F-15, F-17, F-18 and
    resolving F-06/F-07/F-08 by evidence.
 2. Owner provisions the dedicated execution RPC (and ideally a second source) and approves a funded
    test wallet with a hard cap far below the policy ceilings.

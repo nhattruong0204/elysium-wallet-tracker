@@ -167,6 +167,18 @@ class AnswerResult:
 
 
 @dataclass(frozen=True)
+class RecoveryResult:
+    recovery_id: int
+    leg_id: int
+    action: str
+    leg_state: str
+    order_state: str
+    applied: bool          # False: this request key was already applied (idempotent replay)
+    evidence_digest: str
+    event_chain_no: int | None
+
+
+@dataclass(frozen=True)
 class Controls:
     paused: bool
     pause_reason: str | None
@@ -1114,6 +1126,244 @@ class OrderLedger:
                                            f"recon-{leg_id}-v{version}-{i}", None, order_reason, now)
                     current = step_to
                 return True
+        return bool(self._run(go))
+
+
+    # ------------------------------------------------------------------ owner leg recovery (F-02)
+
+    RECOVERABLE_LEG_STATES = ("ambiguous", "orphaned")
+    RECOVERY_ACTIONS = ("superseded", "abandoned")
+    MAX_EVIDENCE_BYTES = 24_000
+
+    @staticmethod
+    def evidence_digest(evidence: dict) -> str:
+        return hashlib.sha256(json.dumps(evidence, sort_keys=True, separators=(",", ":"),
+                                         ensure_ascii=True).encode()).hexdigest()
+
+    def recoverable_legs(self, actor: Actor, *, limit: int = 20) -> list[dict]:
+        """Owner-only, read-only: legs reconciliation could not settle, oldest first, with the
+        order state and whether a recovery was already recorded. Changes nothing."""
+        self._require_owner(actor)
+
+        def go():
+            with self._tx("system") as c:
+                rows = c.execute(sa.text(
+                    "SELECT l.*, o.state AS order_state, "
+                    "(SELECT count(*) FROM leg_recoveries r WHERE r.leg_id = l.id) AS recs "
+                    f"FROM (SELECT {_legs.COLS} FROM order_legs WHERE state = ANY(:s)) l "
+                    "JOIN orders o ON o.id = l.order_id ORDER BY l.prompted_at, l.id LIMIT :l"),
+                    {"s": list(self.RECOVERABLE_LEG_STATES), "l": max(1, min(int(limit), 100))}).all()
+                return [{**_legs.public(r), "order_state": r.order_state, "recoveries": int(r.recs)}
+                        for r in rows]
+        return self._run(go)
+
+    def leg_for_recovery(self, actor: Actor, leg_id: int) -> dict:
+        """Owner-only, read-only: one leg (any state, for diagnosis) plus its order state."""
+        self._require_owner(actor)
+        if type(leg_id) is not int or leg_id <= 0:
+            raise LedgerRefused("invalid_request", "invalid leg id")
+
+        def go():
+            with self._tx("system") as c:
+                r = c.execute(sa.text(
+                    "SELECT l.*, o.state AS order_state, "
+                    "(SELECT count(*) FROM leg_recoveries x WHERE x.leg_id = l.id) AS recs "
+                    f"FROM (SELECT {_legs.COLS} FROM order_legs WHERE id = :i) l "
+                    "JOIN orders o ON o.id = l.order_id"), {"i": leg_id}).first()
+                if r is None:
+                    raise LedgerRefused("not_found", "unknown leg")
+                return {**_legs.public(r), "order_state": r.order_state, "recoveries": int(r.recs)}
+        return self._run(go)
+
+    def list_recoveries(self, actor: Actor, *, leg_id: int | None = None,
+                        limit: int = 50) -> list[dict]:
+        self._require_owner(actor)
+
+        def go():
+            with self._tx("system") as c:
+                rows = c.execute(sa.text(
+                    "SELECT id, leg_id, order_id, owner_id, request_key, action, category, "
+                    "from_state, to_state, leg_version, reason, evidence, evidence_digest, "
+                    "event_chain_no FROM leg_recoveries WHERE (CAST(:l AS bigint) IS NULL OR leg_id = CAST(:l AS bigint)) "
+                    "ORDER BY id DESC LIMIT :n"),
+                    {"l": leg_id, "n": max(1, min(int(limit), 200))}).all()
+                return [dict(r._mapping) | {"order_id": str(r.order_id)} for r in rows]
+        return self._run(go)
+
+    @classmethod
+    def _check_recovery_evidence(cls, evidence: dict, *, leg_id: int, action: str,
+                                 version: int) -> str:
+        """Structural gate: no code path may apply a correction without evidence from at least
+        two distinct sources that names this exact leg version and action. (Whether the evidence
+        is TRUE is established by wallet/recovery.py before it ever calls here.)"""
+        if not isinstance(evidence, dict):
+            raise LedgerRefused("evidence_required", "evidence is required")
+        try:
+            raw = json.dumps(evidence, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+        except (TypeError, ValueError):
+            raise LedgerRefused("evidence_required", "evidence must be plain JSON") from None
+        if len(raw) > cls.MAX_EVIDENCE_BYTES:
+            raise LedgerRefused("evidence_required", "evidence is too large")
+        srcs, anchor, leg = evidence.get("sources"), evidence.get("anchor"), evidence.get("leg")
+        names = [x.get("name") for x in srcs if isinstance(x, dict)] if isinstance(srcs, list) else []
+        if (evidence.get("schema") != 1 or evidence.get("action") != action
+                or not isinstance(anchor, dict) or not TXHASH.fullmatch(str(anchor.get("hash", "")))
+                or type(anchor.get("number")) is not int
+                or len(names) < 2 or len(set(names)) != len(names)
+                or not all(isinstance(n, str) and n for n in names)
+                or not isinstance(leg, dict) or leg.get("id") != leg_id
+                or leg.get("version") != version or not isinstance(evidence.get("facts"), dict)):
+            raise LedgerRefused("evidence_required",
+                                "evidence must name the leg version, the action and two sources")
+        if evidence.get("problems"):
+            raise LedgerRefused("evidence_required", "evidence records unresolved source problems")
+        facts = evidence["facts"]
+        if action == "superseded":
+            ct = facts.get("consuming_tx")
+            if (not isinstance(ct, dict) or not TXHASH.fullmatch(str(ct.get("hash", "")))
+                    or not TXHASH.fullmatch(str(ct.get("block_hash", "")))
+                    or type(ct.get("block_number")) is not int
+                    or type(ct.get("confirmations")) is not int or ct["confirmations"] < 1
+                    or not isinstance(ct.get("mismatches"), list) or not ct["mismatches"]):
+                raise LedgerRefused("evidence_required",
+                                    "a supersession needs the different, mined transaction")
+        else:
+            dl, margin, ts = (facts.get("swap_deadline"), facts.get("deadline_margin_s"),
+                              facts.get("anchor_timestamp"))
+            if (any(type(x) is not int for x in (dl, margin, ts)) or margin < 600
+                    or ts <= dl + margin):
+                raise LedgerRefused("evidence_required",
+                                    "an abandonment needs a passed swap deadline plus margin")
+        return raw
+
+    def apply_leg_recovery(self, actor: Actor, leg_id: int, *, expected_version: int, action: str,
+                           category: str, reason: str, evidence: dict,
+                           request_key: str) -> RecoveryResult:
+        """Owner-confirmed correction of a leg stuck `ambiguous` / `orphaned`. The ONLY states it
+        can produce are `superseded` and `abandoned`; it never writes a receipt, fill, hash, nonce
+        or any transaction fact, and it never creates a wallet request. The leg change, the
+        append-only `leg_recoveries` row (with the exact evidence), the hash-chained audit event
+        and the order's cancellation commit together or not at all. Idempotent by `request_key`;
+        a leg can be recovered at most once (database-enforced)."""
+        self._require_owner(actor)
+        if action not in self.RECOVERY_ACTIONS:
+            raise LedgerRefused("invalid_request", "unsupported recovery action")
+        why = _check_reason(reason)
+        if why is None or len(why) < 10 or not why.isprintable():
+            raise LedgerRefused("invalid_request", "a recovery needs a reason of 10-200 printable characters")
+        _check_key(request_key, "request key")
+        if not isinstance(category, str) or not 1 <= len(category) <= 60:
+            raise LedgerRefused("invalid_request", "invalid category")
+        if type(leg_id) is not int or type(expected_version) is not int:
+            raise LedgerRefused("invalid_request", "invalid leg reference")
+        raw = self._check_recovery_evidence(evidence, leg_id=leg_id, action=action,
+                                            version=expected_version)
+        digest = self.evidence_digest(evidence)
+        now = float(self.clock())
+        system = Actor.system()
+
+        def go() -> RecoveryResult:
+            with self._tx("system") as c:
+                head = _legs.by_id(c, leg_id)
+                if head is None:
+                    raise LedgerRefused("not_found", "unknown leg")
+                self._controls(c, lock=True)
+                c.execute(sa.text("SELECT 1 FROM orders WHERE id = :i FOR UPDATE"),
+                          {"i": head.order_id})
+                leg = _legs.by_id(c, leg_id, lock=True)
+                prior = c.execute(sa.text(
+                    "SELECT id, leg_id, action, evidence_digest, event_chain_no FROM leg_recoveries "
+                    "WHERE request_key = :k"), {"k": request_key}).first()
+                if prior is not None:
+                    if prior.leg_id != leg_id or prior.action != action:
+                        raise LedgerRefused("idempotency_conflict",
+                                            "this request key was used for a different recovery")
+                    ost = c.execute(sa.text("SELECT state FROM orders WHERE id = :i"),
+                                    {"i": leg.order_id}).scalar_one()
+                    return RecoveryResult(int(prior.id), leg_id, action, leg.state, ost, False,
+                                          prior.evidence_digest, prior.event_chain_no)
+                if leg.version != expected_version:
+                    raise LedgerRefused("stale_version", "the leg changed; diagnose again")
+                if leg.state not in self.RECOVERABLE_LEG_STATES or leg.finalized_at is not None:
+                    raise LedgerRefused("not_recoverable", f"a {leg.state} leg cannot be recovered")
+                if c.execute(sa.text("SELECT 1 FROM leg_recoveries WHERE leg_id = :l"),
+                             {"l": leg_id}).first() is not None:
+                    raise LedgerRefused("already_recovered", "this leg was already recovered")
+                order = c.execute(sa.text("SELECT state, user_id FROM orders WHERE id = :i"),
+                                  {"i": leg.order_id}).one()
+                cur = OrderState(order.state)
+                if leg.kind == "swap" and cur not in (OrderState.AMBIGUOUS, OrderState.ORPHANED,
+                                                      OrderState.AWAITING_WALLET,
+                                                      OrderState.SUBMITTED, OrderState.CANCELLED):
+                    raise LedgerRefused("not_recoverable",
+                                        f"the order is {cur.value}; a receipt-bearing order is never rewritten")
+                from_state = leg.state
+                try:
+                    with c.begin_nested():
+                        c.execute(sa.text(
+                            "UPDATE order_legs SET state = :s, version = version + 1, "
+                            "resolution = :r, resolved_at = :t WHERE id = :i"),
+                            {"s": action, "r": f"owner_recovery:{action}", "t": _utc(now),
+                             "i": leg_id})
+                except IntegrityError as exc:
+                    raise LedgerRefused("invalid_transition",
+                                        f"leg {leg.state} -> {action} is not allowed") from exc
+                chain_no = c.execute(sa.text("""
+                    INSERT INTO order_events (order_id, user_id, actor_kind, actor_id, kind,
+                        from_state, to_state, request_key, detail, prev_hash, hash)
+                    VALUES (:o, :u, 'owner', :a, 'LEG_RECOVERY', :f, :t, :k, CAST(:d AS jsonb),
+                            '', '') RETURNING chain_no"""),
+                    {"o": leg.order_id, "u": int(leg.user_id), "a": actor.id, "f": from_state,
+                     "t": action, "k": request_key,
+                     "d": json.dumps({"leg_id": leg_id, "leg_no": int(leg.leg_no), "action": action,
+                                      "category": category, "reason": why,
+                                      "evidence_digest": digest, "tx_hash": leg.tx_hash,
+                                      "nonce": None if leg.nonce is None else int(leg.nonce)},
+                                     sort_keys=True, separators=(",", ":"))}).scalar_one()
+                rec_id = c.execute(sa.text("""
+                    INSERT INTO leg_recoveries (leg_id, order_id, user_id, owner_id, request_key,
+                        action, category, from_state, to_state, leg_version, reason, evidence,
+                        evidence_digest, event_chain_no)
+                    VALUES (:l, :o, :u, :ow, :k, :a, :cat, :f, :a, :v, :r, CAST(:e AS jsonb),
+                            :dg, :cn) RETURNING id"""),
+                    {"l": leg_id, "o": leg.order_id, "u": int(leg.user_id), "ow": actor.id,
+                     "k": request_key, "a": action, "cat": category, "f": from_state,
+                     "v": expected_version, "r": why, "e": raw, "dg": digest,
+                     "cn": chain_no}).scalar_one()
+                if leg.kind == "swap" and cur != OrderState.CANCELLED:
+                    key = f"recovery-{leg_id}"
+                    if cur == OrderState.SUBMITTED:      # system-only edge: the reconciler's own step
+                        self._transition_in_tx(c, leg.order_id, OrderState.AMBIGUOUS, system,
+                                               key + "-0", None,
+                                               "owner recovery: leg unsettled", now)
+                    self._transition_in_tx(c, leg.order_id, OrderState.CANCELLED, actor, key + "-1",
+                                           None, f"owner recovery ({action}): {why}"[:200], now)
+                ost = c.execute(sa.text("SELECT state FROM orders WHERE id = :i"),
+                                {"i": leg.order_id}).scalar_one()
+                return RecoveryResult(int(rec_id), leg_id, action, action, ost, True, digest,
+                                      int(chain_no))
+        result = self._run(go)
+        if result.applied:
+            log.warning("owner %s recovered leg %s as %s", actor.id, leg_id, action)
+        return result
+
+    def record_recovery_refusal(self, actor: Actor, leg_id: int, *, request_key: str,
+                                code: str, evidence_digest: str | None) -> bool:
+        """Audit an owner attempt that was refused (evidence insufficient/changed). Best effort,
+        deduplicated by request key; never changes a leg or an order."""
+        self._require_owner(actor)
+        _check_key(request_key, "request key")
+
+        def go() -> bool:
+            with self._tx("system") as c:
+                leg = _legs.by_id(c, leg_id)
+                if leg is None:
+                    return False
+                return self._event(
+                    c, kind="LEG_RECOVERY_REFUSED", actor=actor, order_id=leg.order_id,
+                    user_id=int(leg.user_id), request_key=request_key,
+                    detail={"leg_id": leg_id, "code": str(code)[:60],
+                            "evidence_digest": evidence_digest, "leg_state": leg.state})
         return bool(self._run(go))
 
 

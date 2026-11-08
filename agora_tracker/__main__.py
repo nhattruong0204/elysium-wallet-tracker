@@ -668,6 +668,15 @@ def run_ui(cfg: Config) -> None:
         except (ExecutionRpcConfigError, WorkerSetupError) as exc:
             raise SystemExit(f"wallet reconciliation worker misconfigured: {exc}") from exc
         bot.worker = worker
+        from .trading.wallet.recovery import LegRecovery
+        from .trading.wallet.runtime import build_recovery_sources
+        if ledger is None:
+            raise SystemExit("wallet leg recovery needs the ledger")
+        try:                                    # owner leg recovery (F-02): read-only, owner-driven
+            bot.recovery = LegRecovery(ledger, build_recovery_sources(cfg, exec_rpc),
+                                       finality_confirmations=cfg.trading.finality_confirmations)
+        except (ExecutionRpcConfigError, ValueError) as exc:
+            raise SystemExit(f"wallet leg recovery misconfigured: {exc}") from exc
     ingress = None
     if cfg.trading.ingress_enabled:            # default OFF; when ON a missing piece is fatal (F-16)
         from .trading.ingress import IngressSetupError, build_ingress
