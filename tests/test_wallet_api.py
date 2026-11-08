@@ -113,6 +113,9 @@ def test_full_buy_flow_over_http(api):
     assert rep.status_code == 200 and rep.json()["settled"] is False
     st = post(client, "status", order_id=order["id"]).json()
     assert st["order"]["state"] == "submitted" and st["settled"] is False
+    # a reported hash is an acknowledgment: the status says so and shows no fill or invented link
+    assert "not filled" in st["status"]["label"] and st["status"]["fill"] is None
+    assert st["status"]["legs"][0]["tx_hash"] == HASH and st["status"]["legs"][0]["tx_url"] is None
 
 
 def test_sell_flow_stops_at_a_finite_approval_not_a_swap(api):

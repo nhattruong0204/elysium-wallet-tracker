@@ -120,6 +120,12 @@ def test_buy_happy_path_sends_exactly_the_reviewed_transaction_once(env):
     assert int(tx["value"], 16) == p.amount_in_wei
     assert lg.list_orders(U1)[0].state == "submitted"
     expect(page.locator("#send")).to_be_disabled()
+    # the receipt card tells the truth about a bare hash: submitted, not filled, no fill numbers
+    expect(page.locator("#receipt-card")).to_be_visible()
+    expect(page.locator("#receipt-fields")).to_contain_text("Submitted — not filled")
+    expect(page.locator("#receipt-fields")).not_to_contain_text("Verified fill")
+    page.click("#refresh")
+    expect(page.locator("#receipt-fields")).to_contain_text("Submitted — not filled")
 
 
 def test_rejection_cancels_and_never_resends(env):

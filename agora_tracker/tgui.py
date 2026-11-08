@@ -349,6 +349,26 @@ class IntelBot:
                        "the owner can add it to TG_ADMIN_IDS.", None)
         return False
 
+    def _wallet_section(self, uid: int, *, positions: bool) -> str:
+        """Wallet-managed orders / verified positions, appended to the PAPER text. Empty when the
+        ledger is off or has nothing for this user; never raises into the command handler."""
+        if self.ledger is None:
+            return ""
+        try:
+            import html as _h
+
+            from .trading.wallet.status import positions as _pos
+            from .trading.wallet.status import render_text, wallet_overview
+            items = wallet_overview(self.ledger, uid, self.L)
+            if not items:
+                return ""
+            pos = _pos(self.ledger.get_fills(uid)) if positions else []
+            body = render_text(items[:5], pos, _h.escape)
+            return "\n\n<b>Wallet-managed orders (on-chain evidence only)</b>\n" + body
+        except Exception:                                  # noqa: BLE001 - status is best-effort
+            log.warning("wallet status section unavailable", exc_info=True)
+            return ""
+
     def on_message(self, msg: dict) -> None:
         uid, chat = msg.get("from", {}).get("id"), msg.get("chat", {}).get("id")
         text = (msg.get("text") or "").strip()
@@ -382,9 +402,10 @@ class IntelBot:
                     text = order_history(self.paper_trades, uid, chat)
                 except TradeRefused as e:
                     text = str(e)
-                self._send(chat, text, None)
+                self._send(chat, text + self._wallet_section(uid, positions=False), None)
             elif trade_cmd != "/trade":
-                self._send(chat, "PAPER records are hypothetical scenarios. Use /paper_balances TOKEN for an on-chain watch-wallet snapshot; no live positions or receipts are created.", None)
+                self._send(chat, "PAPER records are hypothetical scenarios. Use /paper_balances TOKEN for an on-chain watch-wallet snapshot; no live positions or receipts are created."
+                           + self._wallet_section(uid, positions=True), None)
             else:
                 from .trading.telegram import callback
                 parts = trade_arg.split()

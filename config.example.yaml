@@ -159,3 +159,6 @@ trading:
   # the owner-only execution flag, migrations 0012/0013 and TRADING_EXEC_RPC_URL (a SECRET,
   # dedicated RPC url: never the scanner's). The server never signs or broadcasts.
   # wallet_execution_enabled: false
+  # Confirmations before a receipt is treated as final (docs/TRADING_RECEIPTS.md). An assumption
+  # about reorg depth, not a guarantee; fills are provisional until it is reached.
+  # finality_confirmations: 12
