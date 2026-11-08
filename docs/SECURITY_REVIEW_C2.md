@@ -12,7 +12,7 @@
 |---|---|---|---|
 | #92 finite approvals, wallet-managed Buy/Sell | #104 | `feat/trading-c2-wallet-approvals` | `f769b42` (CI green) |
 | #93 nonce/idempotency, execution RPC, reconciliation | #105 | `feat/trading-c2-nonce-idempotency` | `e6c4fcd` (CI green) |
-| #94 receipts, reorgs, verified fills, status | #106 | `feat/trading-c2-receipt-reconciliation` | `de3bdc1` (CI pending when written; check the PR) |
+| #94 receipts, reorgs, verified fills, status | #106 | `feat/trading-c2-receipt-reconciliation` | `de3bdc1` (CI green) |
 
 Stack base: `feat/trading-c1-unsigned-plans` (auth, plans, ledger) — **`main` contains only #100;
 #101–#103 are not on `main` yet**, so these PRs cannot merge to `main` until that chain does.
@@ -120,8 +120,7 @@ assert not any(m.startswith(FORBIDDEN_PREFIXES) for m in READ_METHODS); print(so
 PY
 git diff --stat main...HEAD -- agora_tracker/web agora_tracker/collector.py agora_tracker/engine.py agora_tracker/rpc.py   # expect nothing
 ```
-CI (docker, lint, test) was green for `f769b42` and `e6c4fcd` when written; `de3bdc1` was still
-running (check PR #106). The human reviewer should re-run everything on the exact heads.
+CI (docker, lint, test) was green for `f769b42`, `e6c4fcd` and `de3bdc1` when written. The human reviewer should re-run everything on the exact heads.
 
 ## 8. Read-only smoke list for the real endpoint (no funds, no flag)
 
