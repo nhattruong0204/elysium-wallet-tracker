@@ -211,21 +211,55 @@ def test_swap_rejection_cancels_with_a_reason_and_cannot_be_reprompted(live):
     assert e.value.code == "invalid_state"
 
 
-def test_wallet_error_is_unknown_not_failed_and_survives_restart_without_a_second_prompt(
-        live, owner_engine):
+def test_wallet_error_makes_the_order_ambiguous_and_blocks_any_new_prompt(live, owner_engine):
     oid, plan = buy_order(live)
     flow = mkflow(live)
     rid = flow.swap_prompt(user_id=U1, session=SESSION, order_id=oid, plan=plan,
                            revalidate=ok)["request"]["id"]
     out = flow.report(user_id=U1, session=SESSION, request_id=rid, outcome="error",
                       reason="provider disconnected\nsecret=abc <script>")
-    assert out["status"] == "unknown"
-    assert state(live, oid) == "awaiting_wallet"
+    assert out["status"] == "ambiguous" and out["settled"] is False
+    assert state(live, oid) == "ambiguous"
     assert events(owner_engine, oid, "WALLET_RESULT")[0][0]["reason"] == "unspecified"
     restarted = mkflow(live)                       # new process: the in-memory prompt is gone
     with pytest.raises(FlowRefused) as e:
         restarted.swap_prompt(user_id=U1, session=SESSION, order_id=oid, plan=plan, revalidate=ok)
-    assert e.value.code == "already_requested"
+    assert e.value.code == "invalid_state"
+
+
+def test_a_late_hash_after_a_restart_is_still_recorded(live):
+    oid, plan = buy_order(live)
+    rid = mkflow(live).swap_prompt(user_id=U1, session=SESSION, order_id=oid, plan=plan,
+                                   revalidate=ok)["request"]["id"]
+    restarted = mkflow(live)                       # prompt only existed in the old process
+    out = restarted.report(user_id=U1, session=SESSION, request_id=rid, outcome="hash", tx_hash=HASH)
+    assert out["status"] == "acknowledged" and state(live, oid) == "submitted"
+    with pytest.raises(FlowRefused) as e:          # and only its owner can report it
+        restarted.report(user_id=U2, session=SESSION, request_id=rid, outcome="hash", tx_hash=HASH)
+    assert e.value.code == "not_found"
+
+
+def test_hash_after_the_deadline_sweep_resolves_ambiguity_forward(live, clock):
+    oid, plan = buy_order(live)
+    flow = mkflow(live)
+    rid = flow.swap_prompt(user_id=U1, session=SESSION, order_id=oid, plan=plan,
+                           revalidate=ok)["request"]["id"]
+    clock.t = NOW0 + 100_000
+    live.expire_due()
+    assert state(live, oid) == "ambiguous"
+    flow.report(user_id=U1, session=SESSION, request_id=rid, outcome="hash", tx_hash=HASH)
+    assert state(live, oid) == "submitted"         # evidence beats the timeout
+
+
+def test_a_second_wallet_busy_order_cannot_prompt_until_the_first_leg_settles(live):
+    a, plan_a = buy_order(live, "buy-order-a")
+    b, plan_b = buy_order(live, "buy-order-b", amount_in=E18 // 4)
+    flow = mkflow(live)
+    flow.swap_prompt(user_id=U1, session=SESSION, order_id=a, plan=plan_a, revalidate=ok)
+    with pytest.raises(FlowRefused) as e:
+        flow.swap_prompt(user_id=U1, session=SESSION, order_id=b, plan=plan_b, revalidate=ok)
+    assert e.value.code == "wallet_busy"
+    assert state(live, b) == "awaiting_wallet"
 
 
 def test_concurrent_prompts_produce_exactly_one_request(live, owner_engine):

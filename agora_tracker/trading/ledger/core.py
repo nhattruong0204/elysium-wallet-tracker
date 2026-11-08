@@ -39,6 +39,8 @@ from sqlalchemy.exc import DBAPIError, IntegrityError
 
 from ..paper import CHAIN
 from ..plans import UnsignedTradePlan, fingerprint
+from . import legs as _legs
+from .legs import WALLET_REASONS, LegSpec
 from .policy import RiskPolicy
 from .states import (
     ACTIVE,
@@ -154,6 +156,14 @@ class CreateResult:
 class TransitionResult:
     order: OrderView
     applied: bool          # False: this request key was already applied (duplicate callback)
+
+
+@dataclass(frozen=True)
+class AnswerResult:
+    leg: dict
+    order: OrderView
+    applied: bool          # False: the same answer was already recorded (duplicate callback)
+    order_conflict: bool = False   # a hash was recorded but the order could not follow (see log)
 
 
 @dataclass(frozen=True)
@@ -805,7 +815,8 @@ class OrderLedger:
     # ------------------------------------------------------------------ wallet requests
 
     def authorize_wallet_request(self, user_id: int, order_id: str | UUID, *, kind: str,
-                                 request_key: str, digest: str) -> bool:
+                                 request_key: str, digest: str, leg: LegSpec | None = None
+                                 ) -> bool:
         """The gate in front of EVERY wallet prompt (approval or swap), and its audit record.
 
         Refuses while paused or while the execution flag is off, re-applies the current policy,
@@ -851,6 +862,14 @@ class OrderLedger:
                         # reconciliation, never by asking the wallet to send the trade again
                         raise LedgerRefused("already_requested",
                                             "a swap prompt was already issued for this order")
+                    # The leg goes in FIRST: if the database refuses it (wallet busy, second swap)
+                    # nothing of this request, not even its audit event, is committed.
+                    if leg is not None and _legs.by_key(c, request_key) is None:
+                        if (leg.kind == "swap") != (kind == "swap"):
+                            raise LedgerRefused("invalid_request", "leg kind does not match prompt")
+                        _legs.insert(c, order_id=oid, user_id=user_id, key=request_key,
+                                     digest=digest, spec=leg, prompted_at=_utc(now),
+                                     refusal=LedgerRefused)
                     fresh = self._event(c, kind="WALLET_REQUEST", actor=Actor.user(user_id),
                                         order_id=oid, user_id=user_id, request_key=request_key,
                                         detail={"leg": kind, "digest": digest})
@@ -880,6 +899,8 @@ class OrderLedger:
         if tx_hash is not None and not TXHASH.fullmatch(tx_hash):
             raise LedgerRefused("invalid_request", "malformed transaction hash")
         why = _check_reason(reason)
+        if why is not None and why not in WALLET_REASONS:
+            raise LedgerRefused("invalid_request", "unknown wallet reason code")
         oid = self._uuid(order_id)
 
         def go():
@@ -890,6 +911,209 @@ class OrderLedger:
                 return self._event(c, kind="WALLET_RESULT", actor=Actor.user(user_id),
                                    order_id=oid, user_id=user_id, request_key=request_key,
                                    detail={"outcome": outcome, "tx_hash": tx_hash, "reason": why})
+        return bool(self._run(go))
+
+
+    # ------------------------------------------------------------------ wallet legs (#93)
+
+    def get_legs(self, user_id: int, order_id: str | UUID) -> list[dict]:
+        oid = self._uuid(order_id)
+
+        def go():
+            with self._tx(user_id) as c:
+                return [_legs.public(r) for r in _legs.for_order(c, oid)]
+        return self._run(go)
+
+    def active_legs(self, *, limit: int = 200) -> list[dict]:
+        """Unsettled legs for the reconciler (system scope), oldest first."""
+        def go():
+            with self._tx("system") as c:
+                rows = c.execute(sa.text(
+                    f"SELECT {_legs.COLS} FROM order_legs WHERE state = ANY(:s) "
+                    "ORDER BY prompted_at, id LIMIT :l"),
+                    {"s": list(_legs.ACTIVE_LEG_STATES), "l": limit}).all()
+                return [_legs.public(r) for r in rows]
+        return self._run(go)
+
+    def report_wallet_answer(self, user_id: int, request_key: str, *, outcome: str,
+                             tx_hash: str | None = None, reason: str | None = None
+                             ) -> AnswerResult:
+        """Record, in ONE transaction, what the user's wallet answered for a prompt: the audit
+        event, the leg, the attempt and the order's move. Exactly-once per request key.
+
+        * hash      -> leg `hash_reported`, attempt recorded, swap order `submitted`
+                       (an acknowledgment, never a fill);
+        * rejected  -> leg `rejected`; a swap order is cancelled (nothing was sent);
+        * error     -> leg `ambiguous`; a swap order becomes `ambiguous`: the wallet may have sent
+                       it, so only chain evidence (hash / nonce) can resolve it, never a re-prompt.
+        A repeat of the same answer is a no-op; a different second answer is a conflict."""
+        _check_key(request_key, "request_key")
+        if outcome not in ("hash", "rejected", "error"):
+            raise LedgerRefused("invalid_request", "unknown wallet outcome")
+        if outcome == "hash" and (not isinstance(tx_hash, str) or not TXHASH.fullmatch(tx_hash)):
+            raise LedgerRefused("invalid_request", "malformed transaction hash")
+        if outcome != "hash":
+            tx_hash = None
+        why = _check_reason(reason)
+        if why is not None and why not in WALLET_REASONS:
+            raise LedgerRefused("invalid_request", "unknown wallet reason code")
+        now = float(self.clock())
+        system = Actor.system()
+        out: AnswerResult | None = None
+
+        def go():
+            nonlocal out
+            with self._tx(user_id) as c:
+                head = _legs.by_key(c, request_key)
+                if head is None:
+                    raise LedgerRefused("not_found", "unknown wallet request")
+                oid = head.order_id
+                self._controls(c, lock=True)
+                order = c.execute(sa.text(f"SELECT {self._COLS} FROM orders WHERE id = :i "
+                                          "FOR UPDATE"), {"i": oid}).first()
+                leg = _legs.by_key(c, request_key, lock=True)
+                if order is None or leg is None:
+                    raise LedgerRefused("not_found", "unknown wallet request")
+                is_swap = leg.kind == "swap"
+                state = leg.state
+
+                if state != "prompted" and not (
+                        state == "ambiguous" and leg.tx_hash is None and outcome == "hash"):
+                    same = ((outcome == "hash" and leg.tx_hash == tx_hash)
+                            or (outcome == "rejected" and state == "rejected")
+                            or (outcome == "error" and state == "ambiguous"
+                                and leg.tx_hash is None))
+                    if not same:
+                        raise LedgerRefused("conflict", "this wallet request was already answered")
+                    out = AnswerResult(_legs.public(leg), self._view(order, self._attempts(c, oid)),
+                                       False)
+                    return
+
+                new_state = {"hash": "hash_reported", "rejected": "rejected",
+                             "error": "ambiguous"}[outcome]
+                try:
+                    with c.begin_nested():
+                        c.execute(sa.text(
+                            "UPDATE order_legs SET state = :s, tx_hash = :h, version = version + 1, "
+                            "answered_at = :t, resolution = :r WHERE id = :i"),
+                            {"s": new_state, "h": tx_hash, "t": _utc(now), "i": leg.id,
+                             "r": "wallet_error" if outcome == "error" else None})
+                except IntegrityError:
+                    raise LedgerRefused("conflict", "that transaction hash belongs to another request") from None
+                self._event(c, kind="WALLET_RESULT", actor=Actor.user(user_id), order_id=oid,
+                            user_id=user_id, request_key=request_key,
+                            detail={"outcome": {"hash": "sent"}.get(outcome, outcome),
+                                    "tx_hash": tx_hash, "reason": why, "leg_no": int(leg.leg_no)})
+                conflict = False
+                ostate = OrderState(order.state)
+                if outcome == "hash":
+                    allowed = ({OrderState.AWAITING_WALLET, OrderState.AMBIGUOUS,
+                                OrderState.SUBMITTED} if is_swap else {OrderState.REQUIRES_APPROVAL})
+                    if ostate in allowed:
+                        self._record_attempt_in_tx(c, oid, user_id, "swap" if is_swap else "approval",
+                                                   tx_hash, system)
+                        if is_swap and ostate != OrderState.SUBMITTED:
+                            self._transition_in_tx(c, oid, OrderState.SUBMITTED, system,
+                                                   f"submitted:{request_key}"[:128], None, None, now)
+                    else:
+                        conflict = True
+                        log.error("wallet hash for order %s arrived in state %s; leg recorded, "
+                                  "order left as is", oid, ostate.value)
+                elif outcome == "rejected":
+                    if is_swap and ostate == OrderState.AWAITING_WALLET:
+                        self._transition_in_tx(c, oid, OrderState.CANCELLED, system,
+                                               f"rejected:{request_key}"[:128], None,
+                                               "wallet_rejected", now)
+                else:
+                    if is_swap and ostate == OrderState.AWAITING_WALLET:
+                        self._transition_in_tx(c, oid, OrderState.AMBIGUOUS, system,
+                                               f"walleterr:{request_key}"[:128], None,
+                                               "wallet error; verify on chain", now)
+                fresh_leg = _legs.by_key(c, request_key)
+                fresh_order = c.execute(sa.text(f"SELECT {self._COLS} FROM orders WHERE id = :i"),
+                                        {"i": oid}).first()
+                out = AnswerResult(_legs.public(fresh_leg), self._view(fresh_order,
+                                   self._attempts(c, oid)), True, conflict)
+        self._run(go)
+        assert out is not None
+        return out
+
+    def _record_attempt_in_tx(self, c: Connection, oid: UUID, user_id: int, kind: str,
+                              tx_hash: str | None, actor: Actor) -> None:
+        if c.execute(sa.text("SELECT 1 FROM execution_attempts WHERE tx_hash = :h"),
+                     {"h": tx_hash}).first() is not None:
+            return
+        n = c.execute(sa.text("SELECT coalesce(max(attempt_no), 0) + 1 FROM execution_attempts "
+                              "WHERE order_id = :i"), {"i": oid}).scalar_one()
+        c.execute(sa.text("INSERT INTO execution_attempts (order_id, user_id, attempt_no, kind, "
+                          "tx_hash) VALUES (:o, :u, :n, :k, :h)"),
+                  {"o": oid, "u": user_id, "n": n, "k": kind, "h": tx_hash})
+        self._event(c, kind="ATTEMPT_RECORDED", actor=actor, order_id=oid, user_id=user_id,
+                    detail={"attempt_no": n, "attempt_kind": kind, "nonce": None,
+                            "tx_hash": tx_hash})
+
+    def resolve_leg(self, leg_id: int, *, expected_version: int, to_state: str, resolution: str,
+                    nonce: int | None = None, final_tx_hash: str | None = None,
+                    seen: bool = False, order_path: tuple[OrderState | str, ...] = (),
+                    order_reason: str | None = None) -> bool:
+        """Reconciler write path (system scope): move a leg on chain evidence, optionally with the
+        order (stepping through `order_path`, skipping states it is already in), in one
+        transaction. Optimistic: returns False if the leg changed since it was read
+        (another worker or a late wallet answer won), so evidence is never applied to stale state."""
+        now = float(self.clock())
+        system = Actor.system()
+        if final_tx_hash is not None and not TXHASH.fullmatch(final_tx_hash):
+            raise LedgerRefused("invalid_request", "malformed transaction hash")
+        path = tuple(OrderState(x) for x in order_path)
+        resolution = (_check_reason(resolution) or "")[:200]
+
+        def go() -> bool:
+            with self._tx("system") as c:
+                head = _legs.by_id(c, leg_id)
+                if head is None:
+                    raise LedgerRefused("not_found", "unknown leg")
+                self._controls(c, lock=True)
+                c.execute(sa.text("SELECT 1 FROM orders WHERE id = :i FOR UPDATE"),
+                          {"i": head.order_id})
+                leg = _legs.by_id(c, leg_id, lock=True)
+                if leg.version != expected_version:
+                    return False
+                terminal = to_state in ("rejected", "superseded", "abandoned", "included", "reverted")
+                try:
+                    with c.begin_nested():
+                        c.execute(sa.text(
+                            "UPDATE order_legs SET state = :s, version = version + 1, "
+                            "resolution = :r, nonce = coalesce(nonce, :n), "
+                            "final_tx_hash = coalesce(final_tx_hash, :f), "
+                            "seen_at = CASE WHEN :seen THEN coalesce(seen_at, :t) ELSE seen_at END, "
+                            "resolved_at = CASE WHEN :term THEN :t ELSE resolved_at END "
+                            "WHERE id = :i"),
+                            {"s": to_state, "r": resolution, "n": nonce, "f": final_tx_hash,
+                             "seen": seen, "t": _utc(now), "term": terminal, "i": leg_id})
+                except IntegrityError as exc:
+                    raise LedgerRefused("invalid_transition",
+                                        f"leg {leg.state} -> {to_state} is not allowed") from exc
+                version = expected_version + 1
+                evidence_hash = final_tx_hash or leg.tx_hash
+                if OrderState.SUBMITTED in path and evidence_hash is not None:
+                    # "submitted" needs a recorded transaction reference (database rule)
+                    self._record_attempt_in_tx(c, leg.order_id, int(leg.user_id), leg.kind
+                                               if leg.kind == "swap" else "approval",
+                                               evidence_hash, system)
+                self._event(c, kind="WALLET_RESULT", actor=system, order_id=leg.order_id,
+                            user_id=int(leg.user_id), request_key=f"recon-{leg_id}-v{version}",
+                            detail={"outcome": f"leg_{to_state}", "tx_hash": leg.tx_hash,
+                                    "reason": resolution, "leg_no": int(leg.leg_no),
+                                    "final_tx_hash": final_tx_hash, "nonce": nonce})
+                current = OrderState(c.execute(sa.text("SELECT state FROM orders WHERE id = :i"),
+                                               {"i": leg.order_id}).scalar_one())
+                for i, step_to in enumerate(path):       # e.g. submitted -> ambiguous -> cancelled
+                    if current == step_to:
+                        continue
+                    self._transition_in_tx(c, leg.order_id, step_to, system,
+                                           f"recon-{leg_id}-v{version}-{i}", None, order_reason, now)
+                    current = step_to
+                return True
         return bool(self._run(go))
 
     # ------------------------------------------------------------------ execution attempts

@@ -144,7 +144,7 @@ def test_wallet_error_text_is_never_sent_to_the_server_or_audit(env):
     page.click("#send")
     expect(page.locator("#status")).to_contain_text("error")
     assert "SECRET" not in json.dumps(lg.get_events(U1, lg.list_orders(U1)[0].id))
-    assert lg.list_orders(U1)[0].state == "awaiting_wallet"
+    assert lg.list_orders(U1)[0].state == "ambiguous"       # it may have been sent: not "failed"
 
 
 def sell_plan(plans, lg):

@@ -155,3 +155,7 @@ trading:
   # at --migrate time and TRADING_DB_URL (user trading_rw) in the ui service. Enabling it makes
   # /pause_trading durable; wallet requests stay disabled until an owner sets the execution flag.
   # ledger_enabled: false
+  # Wallet-managed Buy/Sell prompts (docs/TRADING_WALLET_APPROVALS.md). OFF; needs ledger_enabled,
+  # the owner-only execution flag, migrations 0012/0013 and TRADING_EXEC_RPC_URL (a SECRET,
+  # dedicated RPC url: never the scanner's). The server never signs or broadcasts.
+  # wallet_execution_enabled: false

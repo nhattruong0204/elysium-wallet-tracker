@@ -13,8 +13,10 @@ import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from typing import Protocol
 
-from ..ledger.core import Actor, LedgerRefused, OrderLedger
+from ..ledger.core import LedgerRefused, OrderLedger
+from ..ledger.legs import WALLET_REASONS, LegSpec
 from ..ledger.states import OrderState
 from ..plans import UnsignedTradePlan, fingerprint
 from .approvals import ApprovalPlanner
@@ -70,6 +72,12 @@ class RequestStore:
             return None            # same answer for "unknown" and "someone else's"
         return e
 
+    def known(self, request_id: str) -> bool:
+        """True if this process issued the prompt (to someone). Used only to keep the session
+        binding strict while the prompt is live."""
+        with self._lock:
+            return request_id in self._items
+
     def open_for(self, order_id: str, kind_group: str, user_id: int, session: str
                  ) -> WalletRequest | None:
         now = self._clock()
@@ -83,24 +91,27 @@ class RequestStore:
         return None
 
 
-# Wallet-reported reasons are untrusted browser input. Only these codes are ever stored; any other
-# text (URLs, keys, messages from a hostile page or extension) becomes "unspecified".
-REASON_CODES = frozenset({"user_rejected", "disconnected", "unsupported", "chain_mismatch",
-                          "timeout", "insufficient_funds", "unspecified"})
-
-
 def _clean(reason: str | None) -> str | None:
+    """Wallet-reported reasons are untrusted browser input: only known codes are stored."""
     if reason is None or reason == "":
         return None
-    return reason if reason in REASON_CODES else "unspecified"
+    return reason if reason in WALLET_REASONS else "unspecified"
+
+
+class NonceReader(Protocol):
+    def pending_nonce(self, address: str) -> int: ...
 
 
 class WalletFlow:
     def __init__(self, ledger: OrderLedger, planner: ApprovalPlanner, store: RequestStore | None
-                 = None, *, clock: Callable[[], float] = time.time, ttl: float = 120.0) -> None:
+                 = None, *, clock: Callable[[], float] = time.time, ttl: float = 120.0,
+                 nonce_reader: NonceReader | None = None) -> None:
         self.ledger, self.planner = ledger, planner
         self.clock, self.ttl = clock, ttl
         self.store = store or RequestStore(clock)
+        # With a reader configured the wallet's pending nonce at prompt time is REQUIRED: without
+        # it a lost answer could never be matched to chain evidence, so the prompt fails closed.
+        self.nonce_reader = nonce_reader
 
     # ------------------------------------------------------------------ guards
     def _order(self, user_id: int, order_id: str, plan: UnsignedTradePlan, state: OrderState):
@@ -115,10 +126,26 @@ class WalletFlow:
             raise FlowRefused("invalid_state", f"order is {view.state}, expected {state.value}")
         return view
 
+    def _nonce_hint(self, wallet: str) -> int | None:
+        if self.nonce_reader is None:
+            return None
+        try:
+            n = self.nonce_reader.pending_nonce(wallet)
+        except Exception:
+            log.warning("pending nonce unavailable for a wallet prompt", exc_info=False)
+            raise FlowRefused("nonce_unavailable", "cannot read the wallet nonce; try again") from None
+        if type(n) is not int or n < 0:
+            raise FlowRefused("nonce_unavailable", "cannot read the wallet nonce; try again")
+        return n
+
     def _authorize(self, user_id: int, order_id: str, kind: str, r: WalletRequest) -> None:
+        leg = LegSpec(kind=r.kind, wallet=r.sender, chain_id=r.chain_id, to=r.to,
+                      value_wei=r.value_wei, data=r.data, gas_limit=r.gas_limit,
+                      max_fee_wei=r.max_gas_fee_wei, nonce_hint=self._nonce_hint(r.sender),
+                      prompt_block=r.block_number)
         try:
             fresh = self.ledger.authorize_wallet_request(
-                user_id, order_id, kind=kind, request_key=r.id, digest=r.digest)
+                user_id, order_id, kind=kind, request_key=r.id, digest=r.digest, leg=leg)
         except LedgerRefused as e:
             raise FlowRefused(e.code, e.message) from None
         if not fresh:
@@ -161,45 +188,31 @@ class WalletFlow:
             raise FlowRefused("invalid_request", "malformed transaction hash")
         if outcome != "hash":
             tx_hash = None
+        # The in-memory prompt only adds a session check. After a restart it is gone, but the
+        # durable leg (scoped to this user by the database) still accepts the wallet's answer, so
+        # a late hash is never lost.
         entry = self.store.get(request_id, user_id, session)
-        if entry is None:
+        if entry is None and self.store.known(request_id):
             raise FlowRefused("not_found", "unknown wallet request")
-        with entry.lock:
-            if entry.answered is not None:
-                if entry.answered == (outcome, tx_hash):
-                    return {"status": "duplicate", "outcome": outcome}
-                raise FlowRefused("conflict", "this wallet request was already answered")
-            entry.answered = (outcome, tx_hash)
-            return self._apply(entry, outcome, tx_hash, _clean(reason))
-
-    def _apply(self, entry: _Entry, outcome: str, tx_hash: str | None, reason: str | None) -> dict:
-        r, uid = entry.request, entry.user_id
-        leg = "swap" if r.kind == "swap" else "approval"
-        audit = {"hash": "sent", "rejected": "rejected", "error": "error"}[outcome]
         try:
-            self.ledger.record_wallet_result(uid, r.order_id, request_key=r.id, outcome=audit,
-                                             tx_hash=tx_hash, reason=reason)
-            if outcome == "hash":
-                self.ledger.record_attempt(r.order_id, kind=leg, tx_hash=tx_hash)
-                if leg == "swap":
-                    self.ledger.transition(r.order_id, OrderState.SUBMITTED, actor=Actor.system(),
-                                           request_key=f"submitted:{r.id}")
-                return {"status": "acknowledged", "leg": leg, "tx_hash": tx_hash,
-                        "settled": False,
-                        "message": "The wallet reported a transaction hash. This is not a fill; "
-                                   "the order stays unsettled until the receipt is verified."}
-            if outcome == "rejected":
-                if leg == "swap":
-                    self.ledger.transition(r.order_id, OrderState.CANCELLED, actor=Actor.system(),
-                                           request_key=f"rejected:{r.id}",
-                                           reason="wallet_rejected")
-                return {"status": "rejected", "leg": leg, "settled": False}
+            res = self.ledger.report_wallet_answer(user_id, request_id, outcome=outcome,
+                                                   tx_hash=tx_hash, reason=_clean(reason))
         except LedgerRefused as e:
-            log.error("ledger refused wallet answer order=%s leg=%s code=%s", r.order_id, leg, e.code)
-            # the wallet may really have sent it: report honestly, never pretend it did not
+            log.error("ledger refused a wallet answer (%s) code=%s", outcome, e.code)
             raise FlowRefused(e.code, e.message) from None
-        # "error": the wallet failed without a hash. We cannot know nothing was sent, so the
-        # order is left as-is for chain reconciliation; no automatic second prompt is possible.
-        return {"status": "unknown", "leg": leg, "settled": False,
-                "message": "The wallet reported an error. If a transaction was sent it will be "
-                           "found by reconciliation; do not retry from another device."}
+        leg = res.leg["kind"]
+        group = "swap" if leg == "swap" else "approval"
+        if not res.applied:
+            return {"status": "duplicate", "outcome": outcome, "leg": group}
+        if res.order_conflict:
+            log.error("order did not follow wallet hash order=%s", res.order.id)
+        if outcome == "hash":
+            return {"status": "acknowledged", "leg": group, "tx_hash": tx_hash, "settled": False,
+                    "message": "The wallet reported a transaction hash. This is not a fill; "
+                               "the order stays unsettled until the receipt is verified."}
+        if outcome == "rejected":
+            return {"status": "rejected", "leg": group, "settled": False}
+        return {"status": "ambiguous", "leg": group, "settled": False,
+                "message": "The wallet reported an error. It may still have sent the transaction: "
+                           "the order is marked ambiguous until the chain shows what happened. "
+                           "Do not retry from another device."}
