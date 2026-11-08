@@ -133,3 +133,47 @@ class FakeChain:
         if self.quirk and self.allowance != 0 and amount != 0:
             raise ChainReverted("USDT-style non-zero to non-zero")
         return "0x" if self.void_return else "0x" + w(self.return_value)
+
+
+# ------------------------------------------------------------------ real HTTP server (no httpx)
+import threading  # noqa: E402
+import time  # noqa: E402
+
+import requests  # noqa: E402
+import uvicorn  # noqa: E402
+
+
+class Http:
+    """Tiny requests-based client with the few TestClient methods the tests use."""
+
+    def __init__(self, base: str) -> None:
+        self.base = base
+
+    def request(self, method, path, *, json=None, content=None, headers=None):
+        return requests.request(method, self.base + path, json=json, data=content,
+                                headers=headers, timeout=10)
+
+    def post(self, path, **kw):
+        return self.request("POST", path, **kw)
+
+    def get(self, path, **kw):
+        return self.request("GET", path, **kw)
+
+
+class Served:
+    def __init__(self, app) -> None:
+        self.server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=0,
+                                                    log_level="warning", lifespan="off"))
+        self.thread = threading.Thread(target=self.server.run, daemon=True)
+        self.thread.start()
+        for _ in range(200):
+            if self.server.started:
+                break
+            time.sleep(0.02)
+        assert self.server.started
+        self.base = f"http://127.0.0.1:{self.server.servers[0].sockets[0].getsockname()[1]}"
+        self.client = Http(self.base)
+
+    def close(self) -> None:
+        self.server.should_exit = True
+        self.thread.join(5)

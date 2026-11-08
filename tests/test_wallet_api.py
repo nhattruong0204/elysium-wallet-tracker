@@ -6,7 +6,6 @@ from __future__ import annotations
 import pytest
 from conftest import TEST_URL  # noqa: F401
 from starlette.applications import Starlette
-from starlette.testclient import TestClient
 from test_trading_ledger import (  # noqa: F401
     NOW0,
     U1,
@@ -17,7 +16,7 @@ from test_trading_ledger import (  # noqa: F401
     owner_engine,
     rw_engine,
 )
-from walletkit import E18, WALLET, FakeChain, make_plan
+from walletkit import E18, WALLET, FakeChain, Served, make_plan
 
 from agora_tracker.config import TradingConfig
 from agora_tracker.trading.miniapp.app import Principal, create_app
@@ -71,7 +70,9 @@ def api(live):
     flow = WalletFlow(live, ApprovalPlanner(FakeChain(), clock=live.clock), clock=live.clock)
     rt = WalletRuntime(live, flow, plans)
     app = Starlette(routes=wallet_routes(rt, StubAuth(), StubPaper()))
-    return TestClient(app), plans, live
+    served = Served(app)
+    yield served.client, plans, live
+    served.close()
 
 
 def post(client, name, user=U1, **fields):
@@ -183,9 +184,12 @@ def test_user_cancel_before_the_wallet_only(api):
 
 
 def test_flag_off_means_no_wallet_routes_in_the_miniapp():
-    client = TestClient(create_app())
-    assert client.get("/wallet").status_code == 404
-    assert client.post("/wallet/api/order", json={}).status_code == 404
+    served = Served(create_app())
+    try:
+        assert served.client.get("/wallet").status_code == 404
+        assert served.client.post("/wallet/api/order", json={}).status_code == 404
+    finally:
+        served.close()
 
 
 def test_wallet_runtime_requires_the_secure_planner():

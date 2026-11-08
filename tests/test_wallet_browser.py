@@ -11,7 +11,6 @@ import pytest
 from conftest import TEST_URL  # noqa: F401
 from playwright.sync_api import expect, sync_playwright
 from starlette.applications import Starlette
-from starlette.testclient import TestClient
 from test_trading_ledger import (  # noqa: F401
     NOW0,
     U1,
@@ -22,14 +21,14 @@ from test_trading_ledger import (  # noqa: F401
     rw_engine,
 )
 from test_wallet_api import SID, StubAuth, StubPaper, StubPlans
-from walletkit import E18, WALLET, FakeChain, make_plan
+from walletkit import E18, WALLET, FakeChain, Served, make_plan
 
 from agora_tracker.trading.wallet.api import WalletRuntime, wallet_routes
 from agora_tracker.trading.wallet.approvals import ApprovalPlanner
 from agora_tracker.trading.wallet.flow import WalletFlow
 
 pytestmark = pytest.mark.skipif(not TEST_URL, reason="TEST_DATABASE_URL not set")
-BASE = "http://wallet.test"
+BASE = ""
 HASH = "0x" + "cd" * 32
 
 MOCK = """
@@ -62,7 +61,9 @@ def env(live):
     plans = StubPlans()
     flow = WalletFlow(live, ApprovalPlanner(FakeChain(), clock=live.clock), clock=live.clock)
     app = Starlette(routes=wallet_routes(WalletRuntime(live, flow, plans), StubAuth(), StubPaper()))
-    client = TestClient(app, base_url=BASE)
+    served = Served(app)
+    global BASE
+    BASE = served.base
     with sync_playwright() as pw:
         browser = pw.chromium.launch()
         ctx = browser.new_context(viewport={"width": 390, "height": 844})
@@ -71,19 +72,18 @@ def env(live):
         hooks: dict = {}
 
         def forward(route):
+            """The page talks to the real server; only auth (a header the Telegram/SIWE layer
+            would supply) is added, and a test can swap in a hostile response body."""
             req = route.request
             path = req.url[len(BASE):]
-            headers = {"x-user": str(U1), "origin": BASE} if req.method == "POST" else {}
-            r = client.request(req.method, path, content=req.post_data or None, headers={
-                **headers, "content-type": "application/json"} if req.method == "POST" else headers)
-            body = r.content
+            res = route.fetch(headers={**req.headers, "x-user": str(U1)})
+            body = res.body()
             hook = hooks.get(path)
             if hook is not None:                 # a hostile/compromised server response
-                body = json.dumps(hook(r.json())).encode()
-            route.fulfill(status=r.status_code, body=body,
-                          headers={"content-type": r.headers.get("content-type", "text/plain")})
+                body = json.dumps(hook(res.json())).encode()
+            route.fulfill(response=res, body=body)
 
-        ctx.route(BASE + "/**", forward)
+        ctx.route(BASE + "/wallet/api/*", forward)
         page = ctx.new_page()
         page.on("pageerror", lambda e: errors.append(e))
         yield page, plans, live, hooks
@@ -91,6 +91,7 @@ def env(live):
         assert {c["method"] for c in page.evaluate("window.rpc")} <= ALLOWED
         ctx.close()
         browser.close()
+    served.close()
 
 
 def open_page(page, plan):
