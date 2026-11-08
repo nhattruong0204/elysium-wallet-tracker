@@ -1119,6 +1119,32 @@ class OrderLedger:
 
     # ------------------------------------------------------------------ receipts and fills (#94)
 
+    def worker_stats(self) -> dict[str, Any]:
+        """Read-only counts for the private worker health view (system scope, no user data):
+        queue depths, legs that need an operator's eyes, and how long the oldest one has waited."""
+        def go():
+            with self._tx("system") as c:
+                row = c.execute(sa.text("""
+                    SELECT
+                      count(*) FILTER (WHERE state = ANY(:ev))                           AS evidence_queue,
+                      count(*) FILTER (WHERE finalized_at IS NULL AND state = ANY(:rc)
+                                       AND (tx_hash IS NOT NULL OR final_tx_hash IS NOT NULL)) AS receipt_queue,
+                      count(*) FILTER (WHERE state = 'ambiguous')                        AS ambiguous,
+                      count(*) FILTER (WHERE state = 'orphaned')                         AS orphaned,
+                      min(coalesce(answered_at, prompted_at)) FILTER (
+                          WHERE state = ANY(:ev) OR (finalized_at IS NULL AND state = ANY(:rc)
+                                AND (tx_hash IS NOT NULL OR final_tx_hash IS NOT NULL))) AS oldest
+                    FROM order_legs"""),
+                    {"ev": list(_legs.EVIDENCE_LEG_STATES),
+                     "rc": list(_legs.RECEIPT_LEG_STATES)}).one()
+                return row
+        row = self._run(go)
+        now = float(self.clock())
+        oldest = row.oldest.timestamp() if row.oldest is not None else None
+        return {"evidence_queue": int(row.evidence_queue), "receipt_queue": int(row.receipt_queue),
+                "ambiguous_legs": int(row.ambiguous), "orphaned_legs": int(row.orphaned),
+                "oldest_wait_s": None if oldest is None else max(0.0, now - oldest)}
+
     def receipt_candidates(self, *, limit: int = 200) -> list[dict]:
         """Legs the receipt worker must keep checking until final (system scope). Oldest first so
         a flood of new legs cannot starve an old one; it works while trading is paused."""

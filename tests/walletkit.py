@@ -225,6 +225,13 @@ class ReceiptChain:
         self._up()
         return Head(self.head_n, block_hash(self.head_n), 0)
 
+    latest_nonce = 6
+    pending_nonce = 6
+
+    def tx_count(self, address, tag):
+        self._up()
+        return self.latest_nonce if tag == "latest" else self.pending_nonce
+
     def transaction(self, h):
         self._up()
         return self.txs.get(h)

@@ -658,6 +658,14 @@ def run_ui(cfg: Config) -> None:
         stop.set()
     signal.signal(signal.SIGINT, _stop)
     signal.signal(signal.SIGTERM, _stop)
+    worker = None
+    if cfg.trading.wallet_execution_enabled:   # default OFF; when ON a missing piece is fatal
+        from .trading.wallet.supervisor import WorkerSetupError, build_worker
+        try:
+            worker = build_worker(cfg, ledger, stop=stop)
+        except WorkerSetupError as exc:
+            raise SystemExit(f"wallet reconciliation worker misconfigured: {exc}") from exc
+        bot.worker = worker
     if cfg.collector.enabled:
         coll = Collector(store, AgoraMarket(cfg.market), cfg.collector,
                          new_launchpad_alerts=cfg.intel.new_launchpad_alerts)
@@ -666,9 +674,13 @@ def run_ui(cfg: Config) -> None:
         from . import scoring
         threading.Thread(target=scoring.loop, args=(store, cfg.scoring, stop), name="scoring",
                          daemon=True).start()
+    if worker is not None:
+        worker.start()
     try:
         bot.run(stop)
     finally:
+        if worker is not None:
+            worker.stop()
         bot.shutdown()
         engine.dispose()
 

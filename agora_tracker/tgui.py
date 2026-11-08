@@ -159,6 +159,7 @@ class Sessions:
 
 class IntelBot:
     ledger: OrderLedger | None = None     # class defaults keep partially built test bots valid
+    worker: Any = None                    # wallet reconciliation supervisor (None: off)
     _paper_broken = False
 
     def __init__(self, cfg: Config, api: TelegramApi, store: Store, reports: Reports,
@@ -349,6 +350,19 @@ class IntelBot:
                        "the owner can add it to TG_ADMIN_IDS.", None)
         return False
 
+    def _worker_health(self, chat: int, uid: int, msg: dict) -> None:
+        """Private health of the wallet reconciliation worker: ledger owners, private chat only.
+        Everyone else gets the same neutral reply as when the worker is off."""
+        owner = self.ledger is not None and uid in self.ledger.owner_ids
+        if not (owner and self.worker is not None and chat == uid
+                and msg.get("chat", {}).get("type") == "private"):
+            self._send(chat, "Not available.", None)
+            return
+        import html as _h
+
+        from .trading.wallet.supervisor import render_text
+        self._send(chat, render_text(self.worker.snapshot(), _h.escape), None)
+
     def _wallet_section(self, uid: int, *, positions: bool) -> str:
         """Wallet-managed orders / verified positions, appended to the PAPER text. Empty when the
         ledger is off or has nothing for this user; never raises into the command handler."""
@@ -385,6 +399,9 @@ class IntelBot:
         if trade_cmd == "/paper_amount":
             from .trading.telegram import custom_amount
             custom_amount(self, msg, trade_arg)
+            return
+        if trade_cmd == "/wallet_health":
+            self._worker_health(chat, uid, msg)
             return
         if trade_cmd in ("/trade", "/pause_trading", "/resume_trading", "/orders", "/positions"):
             if chat != uid or msg.get("chat", {}).get("type") != "private":

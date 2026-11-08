@@ -162,3 +162,12 @@ trading:
   # Confirmations before a receipt is treated as final (docs/TRADING_RECEIPTS.md). An assumption
   # about reorg depth, not a guarantee; fills are provisional until it is reached.
   # finality_confirmations: 12
+  # Supervised reconciliation worker (docs/TRADING_WORKER_LIFECYCLE.md). Starts ONLY when
+  # wallet_execution_enabled is true (then a missing ledger / TRADING_EXEC_RPC_URL is fatal).
+  # worker_interval_s: 10            # between cycles while there is work
+  # worker_idle_interval_s: 30       # between cycles when idle (an idle cycle makes no RPC calls)
+  # worker_max_backoff_s: 300        # ceiling for failure backoff
+  # worker_batch: 50                 # legs per pass per reconciler
+  # worker_pass_budget_s: 20         # wall-clock cap of one cycle
+  # worker_rpc_calls_per_min: 240    # hard cap on execution-RPC calls per minute
+  # worker_standby_retry_s: 15       # standby retries the one-worker lease this often
