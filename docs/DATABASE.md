@@ -102,3 +102,15 @@ Adds `public_api.wallet_scan_coverage` (public wallets only) so the website can 
 wallet's data quality without reading the private `wallet_scan_coverage` table (which also holds
 intervals for manual / Telegram wallets). One view, one grant, no table change; downgrade drops
 the view.
+
+## Migration 0011: private trading order ledger
+
+Adds schema `trading_private` (tables `orders`, `execution_attempts`, `order_events`,
+`policy_versions`, `controls`, `order_state_edges`, sequence `order_update_seq`, function
+`admission_snapshot`) and the login role `trading_rw`, which has no password until `--migrate`
+sets one from `TRADING_DB_PASSWORD`. It is purely additive: no existing table, view, role or
+grant changes, and `public_api`/`dashboard_ro` have no access to the new schema. Orders are never
+deleted, audit rows are append-only and hash-chained by trigger, and `trading_rw` is confined to
+one Telegram user at a time by row level security. `alembic downgrade 0010` drops the schema and
+the role (destructive for ledger data: back it up first). Details, backup/restore and retention:
+[TRADING_ORDER_LEDGER.md](TRADING_ORDER_LEDGER.md).

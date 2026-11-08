@@ -278,9 +278,20 @@ class TradingConfig:
     paper_order_path: str | None = None
     paper_rpc_url: str = 'https://rpc.agoradex.app'
     miniapp_url: str | None = None
+    # Private order ledger (Stage C2). OFF by default; enabling it never enables execution, which
+    # has its own durable, owner-only flag (also OFF). The URL must log in as `trading_rw`.
+    ledger_enabled: bool = False
+    ledger_db_url_env: str = 'TRADING_DB_URL'
+    ledger_owner_ids_env: str = 'TRADING_OWNER_IDS'   # extra owner ids; TG_CHAT_ID is always one
 
     def __post_init__(self) -> None:
+        import re as _re
         from urllib.parse import urlsplit
+        if type(self.ledger_enabled) is not bool:
+            raise ValueError("trading.ledger_enabled must be a boolean")
+        for name in (self.ledger_db_url_env, self.ledger_owner_ids_env):
+            if not isinstance(name, str) or not _re.fullmatch(r'[A-Z][A-Z0-9_]{2,63}', name):
+                raise ValueError("trading ledger environment variable names must be UPPER_SNAKE_CASE")
         if not isinstance(self.paper_rpc_url, str) or urlsplit(self.paper_rpc_url).scheme != 'https':
             raise ValueError('paper_rpc_url must use HTTPS')
         if self.paper_order_path is not None and (not isinstance(self.paper_order_path, str) or not self.paper_order_path.strip()):
