@@ -5,26 +5,29 @@ const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 const UINT = /^(0|[1-9][0-9]{0,77})$/;
 const allowedMethods = new Set(['eth_requestAccounts', 'eth_accounts', 'eth_chainId', 'wallet_switchEthereumChain', 'wallet_addEthereumChain']);
 const $ = id => document.getElementById(id);
+const authMode = $('app').dataset.authMode === 'telegram-siwe-v1';
+let csrf = null, authQueue = Promise.resolve(), ownership = null, authBusy = false;
+$('ownership-controls').hidden = !authMode;
 const parts = new URLSearchParams(location.hash.slice(1));
 let intent = parts.getAll('intent').length === 1 ? parts.get('intent') : null;
 if (!/^[A-Za-z0-9_-]{16}$/.test(intent || '')) intent = null;
 history.replaceState(null, '', location.pathname + location.search);
 let context = null, account = null, provider = null, quote = null;
-let generation = 0, verified = false, telegramAuthenticated = false, clockOffset = 0, ended = false;
+let generation = 0, verified = false, telegramAuthenticated = false, observedServerTime = 0, observedAt = performance.now(), ended = false;
 const states = {
   not_authenticated: ['Authentication required', 'Authenticate from your private Telegram alert before connecting a wallet.'],
   wallet_disconnected: ['Connect your wallet', 'Connecting an account does not prove ownership. Verification is a separate step.'],
   wallet_unverified: ['Wallet not verified', 'This account is connected, but ownership is not verified for this alert session.'],
-  verified_wallet: ['Wallet verified', 'Choose an amount and request a read-only quote. No signing is enabled.'],
+  verified_wallet: ['Wallet verified', 'Choose an amount and request a read-only quote. No transaction signing is enabled.'],
   quote_loading: ['Loading quote', 'Reading the supported pool and wallet snapshot. Nothing is sent to your wallet.'],
   quote_ready: ['Quote ready', 'Review the exact unsigned payload before any later signing milestone.'],
   quote_stale: ['Quote expired', 'Refresh the quote. The previous unsigned review is invalid.'],
   unsupported_route: ['Quote unavailable', 'This token or amount has no supported preview. Use the verified external DEX link.'],
-  unsigned_review: ['Unsigned review · signing disabled', 'No transaction, approval or signature request is available in this milestone.'],
+  unsigned_review: ['Unsigned review · signing disabled', 'Transaction and approval requests are disabled. Ownership authentication is separate.'],
   expired: ['Alert session expired', 'Open a fresh Mini App link from your private alert panel.'],
-  cancelled: ['Preview cancelled', 'Nothing was signed, approved or broadcast. Reopen the alert for a fresh session.'],
+  cancelled: ['Preview cancelled', 'No transaction was signed, approved or broadcast. Reopen the alert for a fresh session.'],
 };
-const now = () => Date.now() / 1000 + clockOffset;
+const now = () => observedServerTime + (performance.now() - observedAt) / 1000;
 const expired = () => ended || !context || now() >= context.expires_at;
 function status(state, message) {
   if (ended && !['cancelled', 'expired'].includes(state)) return;
@@ -33,6 +36,8 @@ function status(state, message) {
   $('app').dataset.state = state;
   $('status-title').textContent = text[0];
   $('status-message').textContent = message || text[1];
+  $('ownership-prepare').disabled = !authMode || !account || !telegramAuthenticated || expired() || verified || authBusy;
+  $('ownership-sign').disabled = !ownership || authBusy || expired();
   const enabled = verified && !expired() && state !== 'quote_loading';
   for (const id of ['amount', 'slippage', 'refresh']) $(id).disabled = !enabled;
   for (const button of $('presets').querySelectorAll('button')) button.disabled = !enabled;
@@ -40,7 +45,7 @@ function status(state, message) {
   $('connect').disabled = !telegramAuthenticated || ended || (context && now() >= context.expires_at);
 }
 function clearReview() {
-  quote = null;
+  quote = null; ownership = null; $('ownership-card').hidden = true; $('ownership-message').value = '';
   $('quote-card').hidden = true;
   $('review-card').hidden = true;
   $('review').disabled = true;
@@ -48,7 +53,7 @@ function clearReview() {
 }
 function invalidate(state, message) { generation += 1; clearReview(); status(state, message); }
 function fail(error) {
-  const state = ['not_authenticated', 'wallet_unverified', 'unsupported_route'].includes(error.code) ? error.code : 'unsupported_route';
+  const state = ['not_authenticated', 'auth_unavailable', 'rate_limited'].includes(error.code) ? 'not_authenticated' : error.code === 'wallet_unverified' ? 'wallet_unverified' : 'unsupported_route';
   if (state === 'wallet_unverified' || state === 'not_authenticated') verified = false;
   if (state === 'not_authenticated') telegramAuthenticated = false;
   invalidate(state, error.message || 'Preview unavailable. No signing action is enabled.');
@@ -60,19 +65,44 @@ function fallback(message) {
   if (message) $('copy-status').textContent = message;
 }
 async function api(action, extra = {}) {
-  const response = await fetch(`/api/${action}`, {method: 'POST', credentials: 'same-origin',
-    headers: {'Content-Type': 'application/json'}, cache: 'no-store',
-    body: JSON.stringify({intent, init_data: window.Telegram?.WebApp?.initData || '', wallet: account, ...extra})});
-  const data = await response.json();
-  if (!response.ok) { const error = new Error(data.message || 'Preview unavailable'); error.code = data.error; throw error; }
-  if (data.signing_enabled !== false) throw new Error('Invalid preview capability. Signing remains disabled.');
-  return data;
+  if (authMode && (!isSecureContext || location.protocol !== 'https:')) {
+    const error = new Error('Authentication requires HTTPS. Reopen the secure Telegram link.');
+    error.code = 'not_authenticated'; throw error;
+  }
+  const authentication = action.startsWith('auth/');
+  const perform = async () => {
+    const headers = {'Content-Type': 'application/json'};
+    if (csrf) headers['X-CSRF-Token'] = csrf;
+    const body = authentication ? {intent, ...extra} :
+      {intent, init_data: authMode ? '' : window.Telegram?.WebApp?.initData || '', wallet: account, ...extra};
+    const response = await fetch(`/api/${action}`, {method: 'POST', credentials: 'same-origin',
+      headers, cache: 'no-store', body: JSON.stringify(body)});
+    const data = await response.json();
+    if (!response.ok) { const error = new Error(data.message || 'Preview unavailable'); error.code = data.error; throw error; }
+    if (data.signing_enabled !== false) throw new Error('Invalid preview capability. Transaction signing remains disabled.');
+    if (authentication && data.csrf !== undefined) {
+      if (!/^[A-Za-z0-9_-]{43}$/.test(data.csrf)) throw new Error('Invalid authentication response');
+      csrf = data.csrf; // rotation completes before any queued account-change revocation
+    }
+    return data;
+  };
+  if (!authentication) return perform();
+  const result = authQueue.then(perform);
+  authQueue = result.catch(() => {});
+  return result;
+}
+function revokeOwnership() {
+  if (!authMode || !csrf) return Promise.resolve();
+  return api('auth/revoke').catch(() => {
+    csrf = null; verified = false; telegramAuthenticated = false;
+    invalidate('not_authenticated', 'Ownership revocation could not be confirmed. Reopen a fresh Telegram session.');
+  });
 }
 function adoptContext(data) {
   if (data.intent !== intent || data.chain_id !== CHAIN || !ADDRESS.test(data.token) || !['buy', 'sell'].includes(data.side) ||
       !Number.isFinite(data.expires_at) || !Number.isFinite(data.server_time)) throw new Error('Invalid server-issued alert context');
   context = data;
-  clockOffset = data.server_time - Date.now() / 1000;
+  observedServerTime = data.server_time; observedAt = performance.now();
   telegramAuthenticated = data.auth?.telegram_authenticated === true;
   verified = telegramAuthenticated && data.auth?.wallet_verified === true && typeof data.auth.wallet === 'string' && data.auth.wallet.toLowerCase() === account;
   $('fixture').hidden = data.auth?.fixture !== true;
@@ -100,6 +130,8 @@ async function authenticate() {
   if (!intent || ended) return invalidate('expired');
   const turn = ++generation; clearReview();
   try {
+    if (authMode && !csrf) await api('auth/bootstrap', {init_data: window.Telegram?.WebApp?.initData || ''});
+    await authQueue;
     const data = await api('session');
     if (turn !== generation) return;
     adoptContext(data);
@@ -116,9 +148,9 @@ function detach() {
   if (provider) for (const [name, listener] of [['accountsChanged', accountChanged], ['chainChanged', chainChanged], ['disconnect', disconnected]]) provider.removeListener(name, listener);
   provider = null;
 }
-function disconnected() { account = null; verified = false; $('wallet-address').textContent = 'No wallet connected'; invalidate('wallet_disconnected'); }
-function accountChanged() { verified = false; account = null; $('wallet-address').textContent = 'Account changed. Reconnect and verify.'; invalidate('wallet_disconnected'); }
-function chainChanged() { verified = false; invalidate('wallet_unverified', 'Wallet network changed. Reconnect on chain 99901 and verify again.'); }
+function disconnected() { revokeOwnership(); account = null; verified = false; $('wallet-address').textContent = 'No wallet connected'; invalidate('wallet_disconnected'); }
+function accountChanged() { revokeOwnership(); verified = false; account = null; $('wallet-address').textContent = 'Account changed. Reconnect and verify.'; invalidate('wallet_disconnected'); }
+function chainChanged() { revokeOwnership(); verified = false; invalidate('wallet_unverified', 'Wallet network changed. Reconnect on chain 99901 and verify again.'); }
 async function connect() {
   if (!isSecureContext) return fallback('Wallet connections require a secure HTTPS context.');
   if (!telegramAuthenticated || expired()) return invalidate('not_authenticated');
@@ -150,9 +182,79 @@ async function connect() {
     if (ended) return;
     account = current[0].toLowerCase(); $('wallet-address').textContent = account;
     $('fallback').hidden = true;
+    await authQueue;
     await authenticate();
   } catch (error) { verified = false; invalidate('wallet_unverified', error.code === 4001 ? 'Wallet connection or network switch was declined.' : error.message); fallback(); }
 }
+function validateOwnership(q) {
+  const iso = n => new Date(n * 1000).toISOString().replace('.000Z', 'Z');
+  const lines = typeof q.message === 'string' ? q.message.split('\n') : [];
+  if (!authMode || expired() || q.authentication_only !== true || q.chain_id !== CHAIN ||
+      q.wallet !== account || !/^[a-f0-9]{64}$/.test(q.nonce) || !/^[a-f0-9]{64}$/.test(q.request_id) ||
+      !Number.isInteger(q.issued_at) || !Number.isInteger(q.expires_at) ||
+      q.issued_at > now() + 2 || q.expires_at <= now() || q.expires_at > context.expires_at ||
+      q.expires_at > q.issued_at + 60 || !ADDRESS.test(lines[1] || '') || lines[1].toLowerCase() !== account) throw new Error('Invalid ownership challenge');
+  const expected = `${location.host} wants you to sign in with your Ethereum account:
+${lines[1]}
+
+Verify ownership for this Telegram PAPER preview. No transactions or approvals.
+
+URI: ${location.origin}/
+Version: 1
+Chain ID: 99901
+Nonce: ${q.nonce}
+Issued At: ${iso(q.issued_at)}
+Expiration Time: ${iso(q.expires_at)}
+Not Before: ${iso(q.issued_at)}
+Request ID: ${q.request_id}`;
+  if (q.message !== expected) throw new Error('Unsupported signature request');
+}
+async function prepareOwnership() {
+  if (!authMode || authBusy || !account || !telegramAuthenticated || expired()) return;
+  const turn = ++generation; clearReview(); verified = false; authBusy = true; status('wallet_unverified');
+  try {
+    const q = await api('auth/challenge', {wallet: account, chain_id: CHAIN});
+    if (turn !== generation || ended) return;
+    validateOwnership(q); ownership = q;
+    $('ownership-message').value = q.message; $('ownership-card').hidden = false;
+  } catch (error) { if (turn === generation) fail(error); }
+  finally { authBusy = false; status($('app').dataset.state, $('status-message').textContent); }
+}
+async function signOwnership() {
+  const q = ownership, turn = generation;
+  if (authBusy || !q) return;
+  authBusy = true; status('wallet_unverified');
+  try {
+    validateOwnership(q);
+    const chain = await requestWallet('eth_chainId'), accounts = await requestWallet('eth_accounts');
+    if (turn !== generation || chain !== CHAIN_HEX || accounts[0]?.toLowerCase() !== account) throw new Error('Wallet changed');
+    validateOwnership(q);
+    // The only personal_sign call: exact checked SIWE bytes, after explicit user review.
+    const hex = '0x' + Array.from(new TextEncoder().encode(q.message), b => b.toString(16).padStart(2, '0')).join('');
+    const signature = await provider.request({method: 'personal_sign', params: [hex, account]});
+    if (turn !== generation || ended) return;
+    if (!/^0x[0-9a-fA-F]{130}$/.test(signature)) throw new Error('Unsupported ownership signature');
+    const currentChain = await requestWallet('eth_chainId'), currentAccounts = await requestWallet('eth_accounts');
+    if (turn !== generation || currentChain !== CHAIN_HEX || currentAccounts[0]?.toLowerCase() !== account) throw new Error('Wallet changed');
+    validateOwnership(q);
+    await api('auth/verify', {nonce: q.nonce, signature, wallet: account, chain_id: CHAIN});
+    if (turn !== generation || ended) { await revokeOwnership(); return; }
+    ownership = null; $('ownership-card').hidden = true; await authenticate();
+  } catch (error) {
+    await revokeOwnership();
+    if (turn === generation) { verified = false; invalidate('wallet_unverified', 'Ownership proof refused or declined. Request a fresh challenge.'); }
+  } finally { authBusy = false; status($('app').dataset.state, $('status-message').textContent); }
+}
+async function logout() {
+  generation += 1; clearReview(); verified = false;
+  try { if (authMode && csrf) await api('auth/logout'); } finally {
+    csrf = null; telegramAuthenticated = false; ended = true; detach();
+    status('cancelled', 'Authentication session closed. No transaction was authorized.');
+  }
+}
+$('ownership-prepare').addEventListener('click', prepareOwnership);
+$('ownership-sign').addEventListener('click', signOwnership);
+$('logout').addEventListener('click', () => { logout().catch(() => {}); });
 function selectionChanged() { invalidate(verified ? 'verified_wallet' : 'wallet_unverified'); }
 function formatUnits(value, decimals) {
   if (typeof value !== 'string' || !UINT.test(value) || !Number.isInteger(decimals) || decimals < 0 || decimals > 36) return 'Unavailable';
@@ -213,6 +315,7 @@ async function review() {
 async function cancel() {
   generation += 1; clearReview(); verified = false; ended = true; detach(); clearInterval(timer); status('cancelled');
   try { if (intent && telegramAuthenticated) await api('cancel'); } catch (_) { /* local cancellation always succeeds */ }
+  if (authMode && csrf) { try { await api('auth/logout'); } catch (_) {} csrf = null; }
 }
 $('authenticate').addEventListener('click', authenticate);
 $('connect').addEventListener('click', connect);
@@ -227,13 +330,14 @@ const timer = setInterval(() => {
   if (!context || ended) return;
   $('intent-expiry').textContent = `Alert session: ${Math.max(0, Math.ceil(context.expires_at - now()))} seconds remaining`;
   if (now() >= context.expires_at) { ended = true; verified = false; detach(); clearInterval(timer); return invalidate('expired'); }
+  if (ownership && now() >= ownership.expires_at) { ownership = null; $('ownership-card').hidden = true; status('wallet_unverified', 'Ownership challenge expired. Request a fresh proof.'); }
   if (quote && now() >= quote.expires_at) invalidate('quote_stale');
   else if (quote) $('quote-age').textContent = `${Math.max(0, Math.floor(now() - quote.created_at))} s old`;
 }, 1000);
 function cleanup() { detach(); clearInterval(timer); generation += 1; clearReview(); verified = false; }
 window.addEventListener('pagehide', cleanup, {once: true});
 window.addEventListener('pageshow', event => { if (event.persisted) { ended = true; invalidate('expired', 'App was restored. Reopen a fresh private alert session.'); } });
-document.addEventListener('visibilitychange', () => { if (document.hidden && (quote || verified)) { verified = false; invalidate('wallet_unverified', 'App activity changed. Reconnect and verify before another review.'); } });
+document.addEventListener('visibilitychange', () => { if (document.hidden && !authBusy && (quote || verified || ownership)) { revokeOwnership(); verified = false; invalidate('wallet_unverified', 'App activity changed. Reconnect and verify before another review.'); } });
 function telegramReady() { window.Telegram?.WebApp?.ready?.(); }
 $('telegram-sdk').addEventListener('load', () => { telegramReady(); if (intent && !ended && !telegramAuthenticated) authenticate(); }, {once: true}); telegramReady();
 if (intent) authenticate(); else status('not_authenticated', 'Missing or invalid intent. Open a fresh link from your private alert panel.');
