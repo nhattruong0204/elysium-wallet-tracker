@@ -180,3 +180,24 @@ def test_contract_wallet_refuses_before_signature_request(authenticated_browser)
     expect(page.locator("#app")).to_have_attribute("data-state", "not_authenticated")
     expect(page.locator("#refresh")).to_be_disabled()
     assert "personal_sign" not in page.evaluate("window.calls")
+
+
+@pytest.mark.parametrize("auth_live", [False], indirect=True)
+def test_http_page_never_transmits_telegram_bearer_data(auth_live):
+    p = auth_live
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        context = browser.new_context()
+        context.add_init_script(MOCK.replace("'fixture-user-1'", json.dumps(signed_init())))
+        context.route("https://telegram.org/**", lambda route: route.fulfill(body=""))
+        page = context.new_page()
+        requests = []
+        page.on(
+            "request",
+            lambda request: requests.append(request.url) if "/api/" in request.url else None,
+        )
+        page.goto(p.base + "/#intent=" + p.intent.id)
+        expect(page.locator("#app")).to_have_attribute("data-state", "not_authenticated")
+        expect(page.locator("#status-message")).to_contain_text("requires HTTPS")
+        assert requests == []
+        browser.close()

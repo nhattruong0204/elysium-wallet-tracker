@@ -65,6 +65,10 @@ function fallback(message) {
   if (message) $('copy-status').textContent = message;
 }
 async function api(action, extra = {}) {
+  if (authMode && (!isSecureContext || location.protocol !== 'https:')) {
+    const error = new Error('Authentication requires HTTPS. Reopen the secure Telegram link.');
+    error.code = 'not_authenticated'; throw error;
+  }
   const authentication = action.startsWith('auth/');
   const perform = async () => {
     const headers = {'Content-Type': 'application/json'};

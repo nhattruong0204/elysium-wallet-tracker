@@ -20,11 +20,13 @@ pytestmark = pytest.mark.filterwarnings("ignore:Unverified HTTPS request")
 
 
 @pytest.fixture
-def auth_live(secured, tmp_path):
+def auth_live(secured, tmp_path, request):
     p = secured
     sock = socket.socket()
     sock.bind(("127.0.0.1", 0))
+    secure = getattr(request, "param", True)
     origin = f"https://127.0.0.1:{sock.getsockname()[1]}"
+    base = origin if secure else origin.replace("https:", "http:", 1)
     auth = AuthService(
         flow=p.flow,
         store=p.store,
@@ -63,8 +65,8 @@ def auth_live(secured, tmp_path):
             proxy_headers=False,
             timeout_keep_alive=1,
             timeout_graceful_shutdown=2,
-            ssl_keyfile=str(key),
-            ssl_certfile=str(cert),
+            ssl_keyfile=str(key) if secure else None,
+            ssl_certfile=str(cert) if secure else None,
         )
     )
     thread = threading.Thread(target=lambda: server.run(sockets=[sock]), daemon=True)
@@ -87,7 +89,7 @@ def auth_live(secured, tmp_path):
             client.headers["X-CSRF-Token"] = response.json()["csrf"]
         return response
 
-    yield SimpleNamespace(**vars(p), base=origin, service=auth, client=client, post=post)
+    yield SimpleNamespace(**vars(p), base=base, service=auth, client=client, post=post)
     client.close()
     server.should_exit = True
     thread.join(5)

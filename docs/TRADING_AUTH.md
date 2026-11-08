@@ -29,7 +29,8 @@ fields and duplicate JSON keys refuse. Existing session/quote/cancel interfaces
 remain, with intent-bound principals and post-I/O auth rechecking for private quotes.
 Changed or malformed claimed accounts revoke proof. No PAPER order is placed.
 
-The browser exchanges initData once and keeps CSRF only in module memory. It shows
+Auth-enabled pages refuse HTTP locally before sending any API request or Telegram
+bearer data. The browser exchanges initData once and keeps CSRF only in module memory. It shows
 the complete SIWE text and requires an explicit ownership-sign click. The only new
 wallet method is personal_sign for locally checked, server-issued SIWE bytes.
 Transaction signing stays disabled. Auth HTTP calls serialize cookie/CSRF rotation
