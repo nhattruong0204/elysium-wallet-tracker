@@ -12,6 +12,8 @@ select = ["E", "F", "W", "B", "UP", "I"]
 ignore = ["B904", "E501"]  # long SQL/f-strings; formatting is not a correctness issue
 
 [tool.ruff.lint.per-file-ignores]
+"tests/test_unsigned_plan_api.py" = ["F811"]  # shared secure auth fixture
+"tests/test_unsigned_plan_browser.py" = ["F811"]  # shared secure plan fixture
 "tests/test_trading_auth_http.py" = ["F811"]  # auth fixture import
 "tests/test_trading_auth_browser.py" = ["F811"]  # HTTPS fixture import
 "tests/test_miniapp_browser.py" = ["F811"]  # fixture imported from test_miniapp

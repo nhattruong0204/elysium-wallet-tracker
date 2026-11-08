@@ -225,7 +225,7 @@ class AuthService:
         self._intent(
             s,
             getattr(request.state, "miniapp_intent", None),
-            allow_paused=request.url.path == "/api/cancel",
+            allow_paused=request.url.path in ("/api/cancel", "/api/revoke-plan"),
         )
         self._rate("preview", str(s.uid) + ":" + s.intent, 60)
         try:
@@ -235,7 +235,13 @@ class AuthService:
             raise AuthRefused("Ownership proof refused") from None
         if s.wallet and wallet != s.wallet:
             s = self.store.revoke(s.token, int(self.now()))
-        return Principal(s.uid, s.wallet, intent_id=s.intent)
+        return Principal(
+            s.uid,
+            s.wallet,
+            intent_id=s.intent,
+            session_binding=digest(f"{s.token}:{s.generation}:{s.realm}"),
+            session_expires_at=s.expires,
+        )
 
     def routes(self):
         async def endpoint(request):

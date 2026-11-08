@@ -13,6 +13,15 @@ cookie/CSRF, revocation and trust assumptions. The factory still defaults to den
 no production startup or spending authorization was added. Ownership proof is
 separate from transaction signing. Independent approval is still required.
 
+## Exact C1 unsigned plans — review is not execution
+
+Issue #90 adds immutable, ownership-session-bound V2 plans and fresh pinned-state/
+exact-payload simulation. See [TRADING_UNSIGNED_PLANS.md](TRADING_UNSIGNED_PLANS.md)
+for API restrictions, runtime evidence, gas/allowance/expiry bounds, race protection
+and remaining trust assumptions. No transaction signing or approval/broadcast API
+exists. Conditional SELL is not a successful simulation or fill. Independent
+security review and separate owner authorization remain required before spending.
+
 ## Implemented PAPER boundaries
 
 - Existing IntelBot allowlist and a matching private user/chat govern wallet associations,
