@@ -128,3 +128,14 @@ def test_migration_0012_widens_kinds_and_round_trips(pg_engine):
     kinds = raw(pg_engine, "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
                            "WHERE conname = 'order_events_kind_check'")[0][0]
     assert "WALLET_REQUEST" in kinds and "WALLET_RESULT" in kinds
+
+
+def test_migration_0013_round_trips_and_keeps_the_guards(pg_engine):
+    downgrade(pg_engine, "0012")
+    assert raw(pg_engine, "SELECT count(*) FROM information_schema.tables WHERE table_schema = "
+                          "'trading_private' AND table_name = 'order_legs'")[0][0] == 0
+    upgrade(pg_engine)
+    names = {r[0] for r in raw(pg_engine, "SELECT indexname FROM pg_indexes WHERE tablename = "
+                                          "'order_legs'")}
+    assert {"ux_legs_one_swap", "ux_legs_wallet_active", "uq_leg_key", "uq_leg_tx"} <= names
+    assert raw(pg_engine, "SELECT relrowsecurity FROM pg_class WHERE relname = 'order_legs'")[0][0]

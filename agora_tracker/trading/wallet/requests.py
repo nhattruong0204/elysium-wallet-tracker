@@ -11,6 +11,7 @@ from __future__ import annotations
 import re
 import secrets
 from dataclasses import asdict, dataclass
+from typing import Protocol
 
 from ..paper import CHAIN, TradeRefused
 from ..plans import UnsignedTradePlan, fingerprint
@@ -231,7 +232,25 @@ def _qty(value: object) -> int:
     return int(value, 16)
 
 
-def tx_mismatches(r: WalletRequest, tx: object, reported_hash: str) -> list[str]:
+class ExpectedTx(Protocol):
+    """What a transaction is compared against: a WalletRequest, or a durable leg's payload."""
+    @property
+    def sender(self) -> str: ...
+    @property
+    def to(self) -> str: ...
+    @property
+    def value_wei(self) -> int: ...
+    @property
+    def data(self) -> str: ...
+    @property
+    def chain_id(self) -> int: ...
+    @property
+    def gas_limit(self) -> int | None: ...
+    @property
+    def gas_price_wei(self) -> int | None: ...
+
+
+def tx_mismatches(r: ExpectedTx, tx: object, reported_hash: str | None) -> list[str]:
     """Compare what a node says the wallet actually sent with what was requested. An empty list
     means identical; anything else is an anomaly and must not be treated as the reviewed trade."""
     if not isinstance(tx, dict):
@@ -243,7 +262,8 @@ def tx_mismatches(r: WalletRequest, tx: object, reported_hash: str) -> list[str]
             out.append(name)
 
     try:
-        eq("hash", str(tx.get("hash", "")).lower(), reported_hash)
+        if reported_hash is not None:
+            eq("hash", str(tx.get("hash", "")).lower(), reported_hash)
         eq("from", str(tx.get("from", "")).lower(), r.sender)
         eq("to", str(tx.get("to", "")).lower(), r.to)
         eq("value", _qty(tx.get("value", "0x0")), r.value_wei)

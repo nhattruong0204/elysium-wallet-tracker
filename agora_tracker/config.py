@@ -285,6 +285,9 @@ class TradingConfig:
     # and the (also OFF, owner-only) durable execution flag. The server never signs or broadcasts.
     wallet_execution_enabled: bool = False
     ledger_db_url_env: str = 'TRADING_DB_URL'
+    # Dedicated execution RPC (Stage C2 #93): a SECRET url (may embed an API key), read from this
+    # environment variable only, never from config files. Separate from the scanner's RPC.
+    execution_rpc_url_env: str = 'TRADING_EXEC_RPC_URL'
     ledger_owner_ids_env: str = 'TRADING_OWNER_IDS'   # extra owner ids; TG_CHAT_ID is always one
 
     def __post_init__(self) -> None:
@@ -296,7 +299,7 @@ class TradingConfig:
             raise ValueError("trading.wallet_execution_enabled must be a boolean")
         if self.wallet_execution_enabled and not self.ledger_enabled:
             raise ValueError("trading.wallet_execution_enabled requires trading.ledger_enabled")
-        for name in (self.ledger_db_url_env, self.ledger_owner_ids_env):
+        for name in (self.ledger_db_url_env, self.ledger_owner_ids_env, self.execution_rpc_url_env):
             if not isinstance(name, str) or not _re.fullmatch(r'[A-Z][A-Z0-9_]{2,63}', name):
                 raise ValueError("trading ledger environment variable names must be UPPER_SNAKE_CASE")
         if not isinstance(self.paper_rpc_url, str) or urlsplit(self.paper_rpc_url).scheme != 'https':
