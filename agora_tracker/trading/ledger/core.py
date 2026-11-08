@@ -842,6 +842,14 @@ class OrderLedger:
                                                and now >= row.expires_at.timestamp()):
                         raise LedgerRefused("expired", "the order has expired")
                     self._recheck_policy(row, self._policy(c, ctl.policy_version))
+                    if kind == "swap" and c.execute(sa.text(
+                            "SELECT 1 FROM order_events WHERE order_id = :i AND "
+                            "kind = 'WALLET_REQUEST' AND detail->>'leg' = 'swap' LIMIT 1"),
+                            {"i": oid}).first() is not None:
+                        # one swap prompt per order, ever: a lost answer is resolved by chain
+                        # reconciliation, never by asking the wallet to send the trade again
+                        raise LedgerRefused("already_requested",
+                                            "a swap prompt was already issued for this order")
                     fresh = self._event(c, kind="WALLET_REQUEST", actor=Actor.user(user_id),
                                         order_id=oid, user_id=user_id, request_key=request_key,
                                         detail={"leg": kind, "digest": digest})
