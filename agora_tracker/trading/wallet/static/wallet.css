@@ -1,0 +1,8 @@
+body{font:15px/1.4 system-ui,sans-serif;margin:0;padding:1rem;background:#0f1115;color:#e8eaed}
+main{max-width:34rem;margin:auto}
+.notice{border:1px solid #3a4150;padding:.6rem;border-radius:6px}
+.warn{color:#ffb454}
+dl{display:grid;grid-template-columns:max-content 1fr;gap:.2rem .8rem;word-break:break-all}
+dt{color:#9aa0a6}
+button{padding:.6rem 1rem;margin:.3rem .3rem .3rem 0;border-radius:6px;border:0;background:#3b82f6;color:#fff}
+button:disabled{opacity:.4}

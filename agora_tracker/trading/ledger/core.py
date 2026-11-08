@@ -57,6 +57,7 @@ log = logging.getLogger(__name__)
 
 KEY = re.compile(r"^[A-Za-z0-9:_.-]{8,128}$")
 TXHASH = re.compile(r"^0x[0-9a-f]{64}$")
+HEX_DIGEST = re.compile(r"^[0-9a-f]{64}$")
 MAX_REASON = 200
 DAY_S = 86400
 # An authenticated user could otherwise grow the audit log by sending refused requests under
@@ -768,15 +769,7 @@ class OrderLedger:
             if now >= row.deadline:
                 raise LedgerRefused("expired", "the transaction deadline has passed")
             # re-check against the *current* policy: tightening it must stop open orders too
-            policy = self._policy(c, ctl.policy_version)
-            if row.token not in policy.allowed_tokens:
-                raise LedgerRefused("token_not_allowed", "token is no longer allowed")
-            if _wei(row.notional_wei) > policy.per_trade_cap_wei:
-                raise LedgerRefused("per_trade_cap", "above the current per-trade cap")
-            if row.slippage_bps > policy.max_slippage_bps:
-                raise LedgerRefused("slippage", "slippage above the current maximum")
-            if row.price_impact_bps > policy.max_price_impact_bps:
-                raise LedgerRefused("impact", "price impact above the current maximum")
+            self._recheck_policy(row, self._policy(c, ctl.policy_version))
         if target in (OrderState.SUBMITTED, OrderState.INCLUDED, OrderState.REVERTED):
             need_hash = target != OrderState.SUBMITTED
             n = c.execute(sa.text(
@@ -797,6 +790,107 @@ class OrderLedger:
         fresh = c.execute(sa.text(f"SELECT {self._COLS} FROM orders WHERE id = :i"),
                           {"i": oid}).one()
         return TransitionResult(self._view(fresh, self._attempts(c, oid)), True)
+
+    @staticmethod
+    def _recheck_policy(row, policy: RiskPolicy) -> None:
+        if row.token not in policy.allowed_tokens:
+            raise LedgerRefused("token_not_allowed", "token is no longer allowed")
+        if _wei(row.notional_wei) > policy.per_trade_cap_wei:
+            raise LedgerRefused("per_trade_cap", "above the current per-trade cap")
+        if row.slippage_bps > policy.max_slippage_bps:
+            raise LedgerRefused("slippage", "slippage above the current maximum")
+        if row.price_impact_bps > policy.max_price_impact_bps:
+            raise LedgerRefused("impact", "price impact above the current maximum")
+
+    # ------------------------------------------------------------------ wallet requests
+
+    def authorize_wallet_request(self, user_id: int, order_id: str | UUID, *, kind: str,
+                                 request_key: str, digest: str) -> bool:
+        """The gate in front of EVERY wallet prompt (approval or swap), and its audit record.
+
+        Refuses while paused or while the execution flag is off, re-applies the current policy,
+        and requires the order to be in the state that matches the prompt: `awaiting_wallet` for
+        a swap, `requires_approval` for an approval (before any wallet exists nothing is signed).
+        Returns False when this request key was already authorized (duplicate click/callback)."""
+        _check_key(request_key, "request_key")
+        if kind not in ("approval", "swap") or not HEX_DIGEST.fullmatch(digest or ""):
+            raise LedgerRefused("invalid_request", "malformed wallet request")
+        oid = self._uuid(order_id)
+        want = OrderState.AWAITING_WALLET if kind == "swap" else OrderState.REQUIRES_APPROVAL
+        now = float(self.clock())
+        refusal: LedgerRefused | None = None
+        fresh = False
+
+        def go():
+            nonlocal refusal, fresh
+            refusal, fresh = None, False
+            with self._tx(user_id) as c:
+                try:
+                    ctl = self._controls(c, lock=True)
+                    row = c.execute(sa.text(f"SELECT {self._COLS} FROM orders WHERE id = :i "
+                                            "FOR UPDATE"), {"i": oid}).first()
+                    if row is None:
+                        raise LedgerRefused("not_found", "order not found")
+                    if ctl.paused:
+                        raise LedgerRefused("paused", "trading is paused")
+                    if not ctl.execution_enabled:
+                        raise LedgerRefused("execution_disabled", "wallet requests are disabled")
+                    if OrderState(row.state) != want:
+                        raise LedgerRefused("invalid_transition",
+                                            f"a {kind} prompt needs state {want.value}, not {row.state}")
+                    if now >= row.deadline or (kind == "approval"
+                                               and now >= row.expires_at.timestamp()):
+                        raise LedgerRefused("expired", "the order has expired")
+                    self._recheck_policy(row, self._policy(c, ctl.policy_version))
+                    if kind == "swap" and c.execute(sa.text(
+                            "SELECT 1 FROM order_events WHERE order_id = :i AND "
+                            "kind = 'WALLET_REQUEST' AND detail->>'leg' = 'swap' AND "
+                            "request_key IS DISTINCT FROM :k LIMIT 1"),
+                            {"i": oid, "k": request_key}).first() is not None:
+                        # one swap prompt per order, ever: a lost answer is resolved by chain
+                        # reconciliation, never by asking the wallet to send the trade again
+                        raise LedgerRefused("already_requested",
+                                            "a swap prompt was already issued for this order")
+                    fresh = self._event(c, kind="WALLET_REQUEST", actor=Actor.user(user_id),
+                                        order_id=oid, user_id=user_id, request_key=request_key,
+                                        detail={"leg": kind, "digest": digest})
+                except LedgerRefused as r:
+                    refusal = r
+                    if r.code not in ("busy", "not_found", "invalid_request"):
+                        row2 = c.execute(sa.text("SELECT state FROM orders WHERE id = :i"),
+                                         {"i": oid}).first()
+                        if row2 is not None and self._refusal_budget(c, order_id=oid):
+                            self._event(c, kind="TRANSITION_REFUSED", actor=Actor.user(user_id),
+                                        order_id=oid, user_id=user_id, from_state=row2.state,
+                                        request_key=f"{request_key}:{r.code}"[:200],
+                                        detail={"code": r.code, "leg": kind})
+        self._run(go)
+        if refusal is not None:
+            raise refusal
+        return fresh
+
+    def record_wallet_result(self, user_id: int, order_id: str | UUID, *, request_key: str,
+                             outcome: str, tx_hash: str | None = None,
+                             reason: str | None = None) -> bool:
+        """Audit what the wallet answered (hash, rejection, error). Once per request key; it
+        changes no order state — transitions and attempts are separate, explicit calls."""
+        _check_key(request_key, "request_key")
+        if outcome not in ("sent", "rejected", "error", "mismatch", "confirmed", "reverted"):
+            raise LedgerRefused("invalid_request", "unknown wallet outcome")
+        if tx_hash is not None and not TXHASH.fullmatch(tx_hash):
+            raise LedgerRefused("invalid_request", "malformed transaction hash")
+        why = _check_reason(reason)
+        oid = self._uuid(order_id)
+
+        def go():
+            with self._tx(user_id) as c:
+                row = c.execute(sa.text("SELECT 1 FROM orders WHERE id = :i"), {"i": oid}).first()
+                if row is None:
+                    raise LedgerRefused("not_found", "order not found")
+                return self._event(c, kind="WALLET_RESULT", actor=Actor.user(user_id),
+                                   order_id=oid, user_id=user_id, request_key=request_key,
+                                   detail={"outcome": outcome, "tx_hash": tx_hash, "reason": why})
+        return bool(self._run(go))
 
     # ------------------------------------------------------------------ execution attempts
 
@@ -824,9 +918,10 @@ class OrderLedger:
                                         "FOR UPDATE"), {"i": oid}).first()
                 if row is None:
                     raise LedgerRefused("not_found", "order not found")
-                if OrderState(row.state) not in RECONCILING:
+                allowed = {OrderState.REQUIRES_APPROVAL} if kind == "approval" else RECONCILING
+                if OrderState(row.state) not in allowed:
                     raise LedgerRefused("invalid_transition",
-                                        f"cannot record an attempt in state {row.state}")
+                                        f"cannot record a {kind} attempt in state {row.state}")
                 if tx_hash is not None:
                     dup = c.execute(sa.text(
                         "SELECT order_id, attempt_no FROM execution_attempts WHERE tx_hash = :h"),
