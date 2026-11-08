@@ -161,6 +161,7 @@ class IntelBot:
     ledger: OrderLedger | None = None     # class defaults keep partially built test bots valid
     worker: Any = None                    # wallet reconciliation supervisor (None: off)
     ingress: Any = None                   # private Mini App listener (None: off, the default)
+    recovery: Any = None                  # owner leg recovery service (None: off, the default)
     _paper_broken = False
 
     def __init__(self, cfg: Config, api: TelegramApi, store: Store, reports: Reports,
@@ -371,6 +372,56 @@ class IntelBot:
             parts.append(render_ingress(ingress.snapshot(), _h.escape))
         self._send(chat, "\n\n".join(parts), None)
 
+    def _leg_recovery(self, chat: int, uid: int, msg: dict, cmd: str, arg: str) -> None:
+        """Owner leg recovery (#95 F-02). Owners only, private chat only; everyone else gets the
+        same neutral reply as when the feature is off. Nothing here can sign, broadcast, prompt a
+        wallet or create an order: /wallet_recover is read-only; /wallet_resolve needs the one-time
+        code from /wallet_recover AND a reason, and only records an audited ledger correction."""
+        import html as _h
+
+        from .trading.ledger import LedgerRefused
+        from .trading.ledger.core import Actor
+        from .trading.ledger.runtime import owner_ids
+        from .trading.wallet.recovery import (
+            RecoveryRefused,
+            render_diagnosis,
+            render_stuck,
+        )
+        rec = getattr(self, "recovery", None)
+        owners = self.ledger.owner_ids if self.ledger is not None else owner_ids(self.cfg)
+        if not (rec is not None and uid in owners and chat == uid
+                and msg.get("chat", {}).get("type") == "private"):
+            self._send(chat, "Not available.", None)
+            return
+        actor = Actor.owner(uid)
+        try:
+            parts = arg.split()
+            if cmd == "/wallet_recover" and not parts:
+                self._send(chat, render_stuck(rec.stuck(actor), _h.escape), None)
+            elif cmd == "/wallet_recover" and len(parts) == 1 and parts[0].isdigit():
+                prepared = rec.prepare(actor, int(parts[0]))
+                self._send(chat, render_diagnosis(prepared.diagnosis, _h.escape, prepared), None)
+            elif cmd == "/wallet_resolve" and len(parts) >= 3 and parts[0].isdigit():
+                reason = arg.split(None, 2)[2]
+                res = rec.confirm(actor, int(parts[0]), parts[1], reason)
+                self._send(chat, f"Recorded: leg #{res.leg_id} {_h.escape(res.leg_state)}, order "
+                           f"{_h.escape(res.order_state)}. Evidence digest "
+                           f"{_h.escape(res.evidence_digest[:16])}… No transaction was sent.", None)
+            elif cmd == "/wallet_recover":
+                self._send(chat, "Use /wallet_recover [leg id]", None)
+            else:
+                self._send(chat, "Use /wallet_resolve &lt;leg id&gt; &lt;code&gt; &lt;reason&gt;", None)
+        except RecoveryRefused as exc:
+            text = f"Refused ({_h.escape(exc.code)}): {_h.escape(exc.message)}"
+            if exc.diagnosis is not None:
+                text += "\n\n" + render_diagnosis(exc.diagnosis, _h.escape)
+            self._send(chat, text, None)
+        except LedgerRefused as exc:
+            self._send(chat, f"Refused ({_h.escape(exc.code)}).", None)
+        except Exception:                                           # noqa: BLE001
+            log.exception("wallet leg recovery command failed")
+            self._send(chat, "Recovery is unavailable right now; the leg stays as it is.", None)
+
     def _wallet_section(self, uid: int, *, positions: bool) -> str:
         """Wallet-managed orders / verified positions, appended to the PAPER text. Empty when the
         ledger is off or has nothing for this user; never raises into the command handler."""
@@ -410,6 +461,9 @@ class IntelBot:
             return
         if trade_cmd == "/wallet_health":
             self._worker_health(chat, uid, msg)
+            return
+        if trade_cmd in ("/wallet_recover", "/wallet_resolve"):
+            self._leg_recovery(chat, uid, msg, trade_cmd, trade_arg)
             return
         if trade_cmd in ("/trade", "/pause_trading", "/resume_trading", "/orders", "/positions"):
             if chat != uid or msg.get("chat", {}).get("type") != "private":

@@ -49,6 +49,7 @@ LATENCY_BUCKETS_MS = (25, 50, 100, 250, 500, 1000, 2500, 5000)
 HEX = re.compile(r"^0x[0-9a-fA-F]*$")
 HASH = re.compile(r"^0x[0-9a-f]{64}$")
 ADDR = re.compile(r"^0x[0-9a-f]{40}$")
+BLOCK_TAG = re.compile(r"^0x(?:0|[1-9a-f][0-9a-f]{0,15})$")
 
 
 class RpcUnavailable(TradeRefused):
@@ -308,7 +309,10 @@ class ExecutionRpc:
         return "0x" + keccak(bytes.fromhex(code[2:])).hex()
 
     def tx_count(self, address: str, tag: str) -> int:
-        if tag not in ("latest", "pending") or not ADDR.fullmatch(address):
+        """Nonce of `address`: at "latest"/"pending" or (owner recovery, F-02) at a specific block
+        given as a lower-case hex quantity, so evidence can be anchored to one block."""
+        if (tag not in ("latest", "pending") and not BLOCK_TAG.fullmatch(tag)) \
+                or not ADDR.fullmatch(address):
             raise TradeRefused("invalid nonce query")
         return _qty(self.rpc("eth_getTransactionCount", [address, tag]))
 

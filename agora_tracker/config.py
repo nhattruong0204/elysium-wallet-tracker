@@ -289,6 +289,10 @@ class TradingConfig:
     # environment variable only, never from config files. Separate from the scanner's RPC.
     execution_rpc_url_env: str = 'TRADING_EXEC_RPC_URL'
     ledger_owner_ids_env: str = 'TRADING_OWNER_IDS'   # extra owner ids; TG_CHAT_ID is always one
+    # Owner leg recovery (Stage C2 #95 F-02): comma-separated SECRET URLs of further, independent
+    # chain endpoints (read-only). A stuck leg can be corrected only with evidence from at least two
+    # endpoints with distinct hosts: the execution RPC plus these. Unset => diagnosis only.
+    recovery_rpc_urls_env: str = 'TRADING_RECOVERY_RPC_URLS'
     # Receipt finality (Stage C2 #94): confirmations after which an inclusion is treated as final.
     # An ASSUMPTION about this chain's reorg depth, not a protocol guarantee: until it is reached a
     # fill is provisional and a reorg can roll it back. Raise it if reorgs deeper than this occur.
@@ -342,7 +346,7 @@ class TradingConfig:
             if type(v) is not int or not lo <= v <= hi:
                 raise ValueError(f"trading.{fname} must be an integer in {lo}..{hi}")
         for name in (self.ledger_db_url_env, self.ledger_owner_ids_env, self.execution_rpc_url_env,
-                     self.ingress_secret_env):
+                     self.recovery_rpc_urls_env, self.ingress_secret_env):
             if not isinstance(name, str) or not _re.fullmatch(r'[A-Z][A-Z0-9_]{2,63}', name):
                 raise ValueError("trading ledger environment variable names must be UPPER_SNAKE_CASE")
         self._check_ingress()
