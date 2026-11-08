@@ -30,8 +30,11 @@ existing provider's exact unsigned payload. The final button is permanently disa
   address alone never prove ownership. See [TRADING_AUTH.md](TRADING_AUTH.md) for
   the exact session/CSRF, replay, EOA proof, private-store and review policies.
   The proven address must equal the intent's existing watch wallet.
-- #90 owns subsequent executable-state validation. This UI's identity/route/expiry
-  checks and existing PAPER validations do not replace it. The auth adapter does not implement #90. Do not connect a signer to this UI.
+- #90 adds a session-bound exact V2 plan adapter and fresh state revalidation,
+  documented in [TRADING_UNSIGNED_PLANS.md](TRADING_UNSIGNED_PLANS.md).
+  The final review now revalidates the unchanged server-stored payload. It grants
+  no signing or execution authorization; dependent execution work is absent.
+
 
 ## Behavior and supported routes
 

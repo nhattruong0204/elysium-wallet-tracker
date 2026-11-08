@@ -6,6 +6,8 @@ const UINT = /^(0|[1-9][0-9]{0,77})$/;
 const allowedMethods = new Set(['eth_requestAccounts', 'eth_accounts', 'eth_chainId', 'wallet_switchEthereumChain', 'wallet_addEthereumChain']);
 const $ = id => document.getElementById(id);
 const authMode = $('app').dataset.authMode === 'telegram-siwe-v1';
+const exactPlans = $('app').dataset.planMode === 'v2-exact';
+let unsignedPlan = null;
 let csrf = null, authQueue = Promise.resolve(), ownership = null, authBusy = false;
 $('ownership-controls').hidden = !authMode;
 const parts = new URLSearchParams(location.hash.slice(1));
@@ -45,6 +47,8 @@ function status(state, message) {
   $('connect').disabled = !telegramAuthenticated || ended || (context && now() >= context.expires_at);
 }
 function clearReview() {
+  const previous = unsignedPlan; unsignedPlan = null;
+  if (previous) api('revoke-plan', {plan_id: previous.id}).catch(() => {});
   quote = null; ownership = null; $('ownership-card').hidden = true; $('ownership-message').value = '';
   $('quote-card').hidden = true;
   $('review-card').hidden = true;
@@ -275,13 +279,40 @@ function validateQuote(q) {
   for (const field of ['amount_in_wei', 'amount_out_wei', 'min_out_wei', 'balance_wei', 'native_balance_wei']) if (typeof q[field] !== 'string' || !UINT.test(q[field])) throw new Error('Invalid financial amount');
   if (!q.transaction || q.transaction.from !== account || q.transaction.to !== ROUTER || typeof q.transaction.data !== 'string' || !/^0x[0-9a-fA-F]+$/.test(q.transaction.data)) throw new Error('Invalid unsigned transaction details');
 }
+function freeze(value) {
+  if (value && typeof value === 'object') { Object.values(value).forEach(freeze); Object.freeze(value); }
+  return value;
+}
+function validateUnsignedPlan(p) {
+  if (!p || !/^[A-Za-z0-9_-]{24}$/.test(p.id) || !/^[a-f0-9]{64}$/.test(p.digest) ||
+      p.signing_enabled !== false || p.chain_id !== CHAIN || p.intent_id !== intent ||
+      p.wallet !== account || p.recipient !== account || p.token !== context.token || p.side !== context.side ||
+      p.transaction?.sender !== account || p.transaction?.target !== ROUTER ||
+      p.transaction_payload?.from !== account || p.transaction_payload?.to !== ROUTER ||
+      p.transaction_payload?.data !== p.transaction.calldata ||
+      !/^0x(?:[a-fA-F0-9]{2})+$/.test(p.transaction.calldata) ||
+      !Number.isFinite(p.expires_at) || now() >= p.expires_at ||
+      !Number.isInteger(p.deadline) || now() >= p.deadline ||
+      p.max_price_impact_bps !== 100 || p.price_impact_bps > 100 ||
+      !['success', 'approval_required'].includes(p.simulation_status)) throw new Error('Invalid exact unsigned plan');
+  for (const key of ['amount_in_wei', 'amount_out_wei', 'min_out_wei', 'finite_approval_wei']) {
+    if (typeof p[key] !== 'string' || !UINT.test(p[key])) throw new Error('Invalid exact plan amount');
+  }
+  if (p.transaction_payload.value !== '0x' + BigInt(p.transaction.value_wei).toString(16) ||
+      p.spender !== (p.side === 'sell' ? ROUTER : null)) throw new Error('Invalid plan value/spender');
+}
 async function refresh() {
   if (!verified || expired()) return invalidate('wallet_unverified');
   const turn = ++generation; clearReview(); status('quote_loading');
   try {
-    const data = await api('quote', {amount: $('amount').value.trim(), slippage_bps: Number($('slippage').value)});
-    if (turn !== generation || ended) return;
-    adoptContext(data.context); if (!verified) throw new Error('Wallet verification changed'); validateQuote(data.quote); quote = data.quote;
+    const data = await api(exactPlans ? 'plan' : 'quote', {amount: $('amount').value.trim(), slippage_bps: Number($('slippage').value)});
+    if (turn !== generation || ended) {
+      if (exactPlans && data.plan?.id) api('revoke-plan', {plan_id: data.plan.id}).catch(() => {});
+      return;
+    }
+    adoptContext(data.context); if (!verified) throw new Error('Wallet verification changed'); validateQuote(data.quote);
+    if (exactPlans) { validateUnsignedPlan(data.plan); unsignedPlan = freeze(data.plan); }
+    quote = data.quote;
     const inputDecimals = context.side === 'buy' ? 18 : quote.token_decimals;
     const outputDecimals = context.side === 'buy' ? quote.token_decimals : 18;
     details($('quote-details'), [
@@ -299,18 +330,48 @@ async function refresh() {
   } catch (error) { if (turn === generation) fail(error); }
 }
 async function review() {
-  const turn = generation;
+  const turn = generation, priorPlan = unsignedPlan;
   try {
     validateQuote(quote);
     const chain = await requestWallet('eth_chainId'), accounts = await requestWallet('eth_accounts');
     if (turn !== generation) return;
     if (chain !== CHAIN_HEX || accounts[0]?.toLowerCase() !== account) return accountChanged();
     validateQuote(quote);
-    details($('review-details'), [['Chain', CHAIN], ['Token', context.token], ['From', quote.transaction.from], ['To', quote.transaction.to],
-      ['Native value (hex)', quote.transaction.value], ['Minimum output (raw)', quote.min_out_wei], ['Deadline', new Date(quote.deadline * 1000).toISOString()]]);
-    $('calldata').value = quote.transaction.data; $('review-card').hidden = false; status('unsigned_review');
+    let entries;
+    if (exactPlans) {
+      validateUnsignedPlan(priorPlan);
+      const data = await api('revalidate', {plan_id: priorPlan.id});
+      if (turn !== generation || ended) return;
+      validateUnsignedPlan(data.plan);
+      if (JSON.stringify(priorPlan) !== JSON.stringify(data.plan)) throw new Error('Immutable plan changed');
+      validateQuote(quote);
+      entries = [['Chain', CHAIN], ['Token', priorPlan.token], ['Path', priorPlan.path.join(' → ')],
+        ['From / recipient', priorPlan.recipient], ['Exact router target', priorPlan.transaction.target],
+        ['Factory / pair', priorPlan.snapshot.route.factory + ' / ' + priorPlan.snapshot.route.pair],
+        ['Native value (hex)', priorPlan.transaction_payload.value], ['Exact input (raw)', priorPlan.amount_in_wei],
+        ['Token decimals', priorPlan.snapshot.token_decimals], ['Minimum output (raw)', priorPlan.min_out_wei],
+        ['Slippage cap', priorPlan.slippage_bps + ' bps'], ['Price impact / cap', priorPlan.price_impact_bps + ' / ' + priorPlan.max_price_impact_bps + ' bps'],
+        ['Pool fee (included)', priorPlan.pool_fee_bps + ' bps'], ['Observed allowance (raw)', priorPlan.snapshot.allowance_wei ?? 'Native input'],
+        ['Maximum gas units', priorPlan.transaction.gas_limit ?? 'Unavailable — conditional only'],
+        ['Gas price cap (wei)', priorPlan.transaction.gas_price_wei ?? 'Unavailable'],
+        ['Maximum gas fee (wei)', priorPlan.max_gas_fee_wei ?? 'Unavailable'],
+        ['Finite approval required (raw)', priorPlan.finite_approval_wei], ['Approval spender', priorPlan.spender || 'None'],
+        ['Simulation', data.validation.simulation_status === 'success' ? 'Exact payload minimum enforced at validation block; no execution guarantee' : 'CONDITIONAL: insufficient allowance; sell reverted, gas unavailable, cause uncertain'],
+        ['Original snapshot', priorPlan.snapshot.number + ' / ' + priorPlan.snapshot.block_hash],
+        ['Revalidated block', data.validation.block_number + ' / ' + data.validation.block_hash],
+        ['Plan digest', priorPlan.digest], ['Deadline', new Date(priorPlan.deadline * 1000).toISOString()],
+        ['Delivered output / taxes', 'Unknown; pool output assumes normal transfers']];
+      $('calldata').value = priorPlan.transaction.calldata;
+    } else {
+      entries = [['Chain', CHAIN], ['Token', context.token], ['From', quote.transaction.from], ['To', quote.transaction.to],
+        ['Native value (hex)', quote.transaction.value], ['Minimum output (raw)', quote.min_out_wei],
+        ['Deadline', new Date(quote.deadline * 1000).toISOString()]];
+      $('calldata').value = quote.transaction.data;
+    }
+    details($('review-details'), entries);
+    $('review-card').hidden = false; status('unsigned_review');
     $('review-card').scrollIntoView({block: 'nearest'});
-  } catch (error) { invalidate('quote_stale', 'The unsigned review is stale or invalid. Refresh and verify again.'); }
+  } catch (_) { invalidate('quote_stale', 'The exact plan is stale, changed or unavailable. Refresh and verify again.'); }
 }
 async function cancel() {
   generation += 1; clearReview(); verified = false; ended = true; detach(); clearInterval(timer); status('cancelled');

@@ -6,7 +6,9 @@ input or broadcaster exists. DenyAuth remains the default. No production startup
 deployment or restart is added. Independent review has **not** been completed.
 
 This branch depends on PR #100 at 8a46e53; review against that branch and retarget
-after #100 merges. #90 and all execution work remain out of scope.
+after #100 merges. Execution work remains out of scope. The #90 read-only plan
+adapter consumes the session-generation binding and expiry from Principal; see
+[TRADING_UNSIGNED_PLANS.md](TRADING_UNSIGNED_PLANS.md). It grants no spending permission.
 
 ## Integration and protocol
 
