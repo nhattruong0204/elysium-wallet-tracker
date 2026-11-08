@@ -614,6 +614,11 @@ def migrate() -> int:
         from .migrate import set_dashboard_password
         set_dashboard_password(engine, pw)
         log.info("dashboard_ro password set from DASHBOARD_DB_PASSWORD")
+    pw = os.environ.get("TRADING_DB_PASSWORD")
+    if pw:
+        from .migrate import set_trading_password
+        set_trading_password(engine, pw)
+        log.info("trading_rw password set from TRADING_DB_PASSWORD")
     return 0
 
 
@@ -637,8 +642,15 @@ def run_ui(cfg: Config) -> None:
     market = AgoraMarket(cfg.market)
     reports = Reports(engine, cfg.chain.chain_id, cfg.ui, value_unit=cfg.leaderboard.value_unit,
                       market=market, collector_interval_s=cfg.collector.interval_s)
+    ledger = None
+    if cfg.trading.ledger_enabled:       # default OFF; a misconfigured ledger is fatal, not "no limits"
+        from .trading.ledger.runtime import LedgerConfigError, open_ledger
+        try:
+            ledger = open_ledger(cfg)
+        except LedgerConfigError as exc:
+            raise SystemExit(f"trading ledger misconfigured: {exc}") from exc
     bot = IntelBot(cfg, TelegramApi(cfg.telegram.bot_token, cfg.telegram.timeout_s), store,
-                   reports, market)
+                   reports, market, ledger=ledger)
     stop = threading.Event()
 
     def _stop(*_: object) -> None:

@@ -151,3 +151,7 @@ trading:
   # paper_order_path: /data/private-trading/paper.sqlite
   # miniapp_url: https://preview.example.com/  # optional private-chat launcher; C1 API denies until #89
   # paper_rpc_url: https://rpc.agoradex.app  # dedicated read transport, independent of scanner
+  # Private order ledger (docs/TRADING_ORDER_LEDGER.md). Needs migration 0011, TRADING_DB_PASSWORD
+  # at --migrate time and TRADING_DB_URL (user trading_rw) in the ui service. Enabling it makes
+  # /pause_trading durable; wallet requests stay disabled until an owner sets the execution flag.
+  # ledger_enabled: false

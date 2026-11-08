@@ -22,6 +22,17 @@ and remaining trust assumptions. No transaction signing or approval/broadcast AP
 exists. Conditional SELL is not a successful simulation or fill. Independent
 security review and separate owner authorization remain required before spending.
 
+## Private order ledger, budgets and durable pause — review is not execution
+
+Issue #91 adds a private PostgreSQL ledger (schema `trading_private`, role `trading_rw`) with a
+database-enforced state machine, immutable reviewed-intent columns, a hash-chained append-only
+audit log, row-level owner isolation, per-trade/daily budgets and a **durable** emergency pause.
+Both its switches (`trading.ledger_enabled`, `controls.execution_enabled`) default OFF. It stores
+references (nonces, hashes) only: no key, signature, raw transaction or credential, and no fill or
+PnL field. See [TRADING_ORDER_LEDGER.md](TRADING_ORDER_LEDGER.md) for authorization boundaries,
+recovery, backup/restore/rollback and the assumptions a reviewer must confirm. No signing,
+approval, broadcast, funds, deployment or public exposure were added.
+
 ## Implemented PAPER boundaries
 
 - Existing IntelBot allowlist and a matching private user/chat govern wallet associations,
