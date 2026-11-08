@@ -28,7 +28,7 @@ from .activity import (
     filter_sql,
     order_and_cursor,
 )
-from .consensus import MAX_CARDS, RANGE_CHOICES, ConsensusParams, build_cards
+from .consensus import MAX_CARDS, RANGE_ALL, ConsensusParams, build_cards
 from .usd import FX_LATERAL, FxPolicy, format_usd, to_usd
 
 UTC = timezone.utc
@@ -403,14 +403,15 @@ class PublicReports(_BasePublicReports):
             return {r["wallet"] for r in self._all(c, self._CONS_BUNDLES,
                                                    lo=now - timedelta(days=14))}
 
-    def consensus(self, p: ConsensusParams, now: datetime, bundles: set[str]) -> dict[str, Any]:
-        since = now - RANGE_CHOICES[p.range]
+    def consensus(self, p: ConsensusParams, now: datetime, bundles: set[str],
+                  actors: Any = None) -> dict[str, Any]:
+        since = now - RANGE_ALL[p.range]
         lo = since - timedelta(minutes=p.window_min)
         n_pre = 2 if p.independent else p.min_traders     # a cheap pre-filter, never stricter
         with self.ro() as c:
             rows = self._all(c, self._CONS_LEGS, lo=lo, hi=now, n=min(n_pre, p.min_traders),
                              hidden=list(self.hidden_tokens))
-            cards = build_cards(rows, p, since, bundles)
+            cards = build_cards(rows, p, since, bundles, actors)
             names = self._activity_names(c, sorted({k["token"] for k in cards}))
             for k in cards:
                 m = names.get(k["token"], {})

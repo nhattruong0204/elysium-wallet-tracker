@@ -18,6 +18,7 @@ only public (leaderboard) wallets, because the site reads through `public_api`.
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
@@ -32,6 +33,7 @@ NET_CHOICES = (0.0, 0.5, 1.0, 2.0, 5.0, 10.0, 25.0)
 RANGE_CHOICES = {"6h": timedelta(hours=6), "24h": timedelta(hours=24), "3d": timedelta(days=3),
                  "7d": timedelta(days=7)}
 RANGE_LABELS = {"6h": "6 hours", "24h": "24 hours", "3d": "3 days", "7d": "7 days"}
+RANGE_ALL = {**RANGE_CHOICES, "30d": timedelta(days=30)}      # v2 historical view only
 MAX_CARDS = 60
 
 
@@ -97,9 +99,14 @@ class Event:
                       key=lambda w: self.first[w])
 
 
+Actors = Callable[[list[tuple[str, datetime, int]]], int]     # [(wallet, first buy time, block)] -> n
+
+
 def sweep(token: str, legs: list[Leg], *, window: timedelta, min_traders: int, min_wei: int,
-          bundles: set[str], independent: bool) -> list[Event]:
-    """Consensus events for one token. `legs` must be in time order."""
+          bundles: set[str], independent: bool, actors: Actors | None = None) -> list[Event]:
+    """Consensus events for one token. `legs` must be in time order. With `independent`, the
+    threshold counts independent buyers: by the v1 same-block / bundle rule, or by `actors`
+    (the cluster-aware counter of Consensus v2) when one is given."""
     out: list[Event] = []
     trail: list[Leg] = []           # legs inside the trailing window
     ev: Event | None = None
@@ -116,6 +123,8 @@ def sweep(token: str, legs: list[Leg], *, window: timedelta, min_traders: int, m
     def size(members: list[str], first: dict[str, tuple[datetime, int]]) -> int:
         if not independent:
             return len(members)
+        if actors is not None:
+            return actors([(w, first[w][0], first[w][1]) for w in members])
         return count_independent([(w, first[w][1]) for w in members], bundles)
 
     for leg in legs:
@@ -151,7 +160,7 @@ def sweep(token: str, legs: list[Leg], *, window: timedelta, min_traders: int, m
 
 
 def build_cards(rows: list[dict[str, Any]], p: ConsensusParams, since: datetime,
-                bundles: set[str]) -> list[dict[str, Any]]:
+                bundles: set[str], actors: Actors | None = None) -> list[dict[str, Any]]:
     """rows: verified BUY/SELL legs (token, wallet, kind, hype_wei, block_time, block_number,
     tx_hash) ordered by token then time. Returns cards newest first (trigger inside range)."""
     window = timedelta(minutes=p.window_min)
@@ -164,7 +173,7 @@ def build_cards(rows: list[dict[str, Any]], p: ConsensusParams, since: datetime,
     cards: list[dict[str, Any]] = []
     for token, legs in by_token.items():
         for ev in sweep(token, legs, window=window, min_traders=p.min_traders, min_wei=min_wei,
-                        bundles=bundles, independent=p.independent):
+                        bundles=bundles, independent=p.independent, actors=actors):
             if ev.trigger_at < since:
                 continue
             members = ev.members(min_wei)
@@ -179,7 +188,7 @@ def build_cards(rows: list[dict[str, Any]], p: ConsensusParams, since: datetime,
                 "bundled": any(w in bundles for w in members),
                 "net_hype": sum(ev.net[w] for w in members) / WEI,
                 "members": [{"wallet": w, "net_hype": ev.net[w] / WEI,
-                             "first_at": ev.first[w][0],
+                             "first_at": ev.first[w][0], "block": ev.first[w][1],
                              "bundle": w in bundles,
                              "same_block": sum(1 for o in members
                                                if ev.first[o][1] == ev.first[w][1]) > 1}

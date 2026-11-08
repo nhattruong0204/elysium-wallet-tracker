@@ -375,6 +375,16 @@ class ClusterViews:
         return {"sample": n, "near": near, "share": (near / n) if n >= MIN_SAMPLE else None,
                 "population": "every public wallet's first buys with a known launch time"}
 
+    # -- membership over time (Consensus v2) -----------------------------------------------------
+    def intervals(self) -> list[dict[str, Any]]:
+        """Every membership interval of the model version (cluster members are few)."""
+        with self.rep.ro() as c:
+            return self.rep._all(c, """
+                SELECT m.cluster_id, m.address, m.valid_from, m.valid_to
+                FROM wallet_cluster_members m JOIN wallet_clusters k ON k.id = m.cluster_id
+                WHERE m.chain_id = :c AND k.version = :ver
+                ORDER BY m.address, m.valid_from LIMIT 50000""", ver=self.version)
+
     # -- per wallet ------------------------------------------------------------------------
     def for_wallet(self, wallet: str) -> list[dict[str, Any]]:
         if not ADDR_RE.match(wallet):
