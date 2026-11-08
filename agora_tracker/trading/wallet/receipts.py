@@ -223,10 +223,15 @@ class ReceiptReconciler:
         return self._record(leg, tx_hash, tx, receipt, head, src)
 
     # ------------------------------------------------------------------ the pass
-    def run_once(self, limit: int = 100) -> PassReport:
+    def run_once(self, limit: int = 100,
+                 should_continue: Callable[[], bool] | None = None) -> PassReport:
+        """One pass. `should_continue` (optional) lets a supervisor bound the pass by wall time or
+        a shutdown request; legs not reached wait for the next pass."""
         rep = PassReport()
         src = _Metered(self.source, self.rpc_budget)
         for leg in self.ledger.receipt_candidates(limit=limit):
+            if should_continue is not None and not should_continue():
+                break
             rep.checked += 1
             try:
                 rep.add(self.process(leg, src))

@@ -267,9 +267,15 @@ class LegReconciler:
                     order_path=(S.AMBIGUOUS,) if swap else (), order_reason="wallet answer lost")
         return False
 
-    def run_once(self, limit: int = 100) -> Report:
+    def run_once(self, limit: int = 100,
+                 should_continue: Callable[[], bool] | None = None) -> Report:
+        """One pass. `should_continue` (optional) lets a supervisor bound the pass by wall time or
+        a shutdown request; legs not reached wait for the next pass (nothing is half-applied:
+        each leg is its own atomic ledger transaction)."""
         rep = Report()
         for leg in self.ledger.active_legs(limit=limit):
+            if should_continue is not None and not should_continue():
+                break
             try:
                 v = self.classify(leg)
                 rep.add(v.kind)

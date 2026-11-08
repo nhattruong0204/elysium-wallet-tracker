@@ -75,7 +75,8 @@ documented trade-off; **unverified** = could not be tested in this environment.
 
 | ID | Sev | Finding | Status | Recommendation |
 |---|---|---|---|---|
-| F-01 | Med | Nothing starts the reconciler / receipt worker or builds the execution RPC at process start (all dormant). With the flag ON the system would prompt but never record outcomes automatically. | open | Wire one supervised worker (`receipts.serve`, `LegReconciler.run_once`) behind the same flag, with health/metrics, in a reviewed change before #96. Fail startup if the flag is on and the RPC is not configured (the helper exists). |
+| F-01 | Med | Nothing started the reconciler / receipt worker or built the execution RPC at process start. | **mitigated in code (worker-lifecycle PR); awaiting human verification** | `docs/TRADING_WORKER_LIFECYCLE.md`: flag-gated, fail-closed startup, one active worker (advisory lock) + ledger-level exactly-once, bounded retries/budgets, pause-independent, private health. Evidence: `tests/test_wallet_worker.py` (47 tests incl. real PostgreSQL and the real `run_ui` wiring). Residual: see F-16 and the lifecycle doc's *Unresolved*. |
+| F-16 | Med | No process entrypoint mounts the wallet/Mini App routes (`miniapp.create_app(wallet=…)` has no caller), so the user-facing flow cannot run end to end; found while wiring F-01. | open | Own reviewed change to serve the routes behind the same flag before #96. |
 | F-02 | Med | No owner force-resolve tool for a leg stuck `ambiguous`/`orphaned`; the (wallet, chain) pair stays blocked until chain evidence appears. | open | Owner-only, audited resolve command (requires entering evidence), never a re-prompt. |
 | F-03 | Low | An approval/swap the wallet holds but did not broadcast could be sent after we abandoned the leg (approval: 1 h; swap: after deadline+margin). Swaps expire by their on-chain deadline; approvals are finite and bound to the router. | accepted | Keep amounts finite; consider revoking via a new reviewed zero-approval prompt. |
 | F-04 | Med | Finality (12 confirmations) is an assumption; no finality gadget queried; reorg depth on chain 99901 unmeasured. | open | Measure on the production RPC; set `finality_confirmations` from data. |
@@ -91,7 +92,7 @@ documented trade-off; **unverified** = could not be tested in this environment.
 | F-14 | Low | Migration 0014 downgrade drops `order_fills`. | accepted | Backup before downgrade (documented). |
 | F-15 | Med | Facts about a transaction come from one execution RPC (reconciliation can use several, receipts use one). A dishonest endpoint could fabricate a receipt, a balance or a block. | open | Corroborate receipts/balances from a second independent endpoint before real funds; treat disagreement as `unknown`. |
 
-No critical or high finding was identified *in the code*, but F-01, F-02, F-04 and F-15 are open and
+No critical or high finding was identified *in the code*, but F-02, F-04, F-15 and F-16 are open (F-01 is mitigated in code, unverified by a human) and
 F-06/F-07/F-08 are unverifiable here. **These are the reasons the sign-off is blocked.**
 
 ## 6. What this review did NOT do
@@ -130,11 +131,11 @@ and `eth_getBalance`/`eth_call` at a block 1000 back succeed (historical state);
 
 ## 9. Preconditions for #96 (NOT started; each needs explicit owner authorization)
 
-1. A human reviewer signs §10 after closing or consciously accepting F-01, F-02, F-04, F-15 and
+1. A human reviewer signs §10 after verifying F-01 and closing or consciously accepting F-02, F-04, F-15, F-16 and
    resolving F-06/F-07/F-08 by evidence.
 2. Owner provisions the dedicated execution RPC (and ideally a second source) and approves a funded
    test wallet with a hard cap far below the policy ceilings.
-3. Worker wiring merged and reviewed (F-01); monitoring/alerts for ambiguous legs and breaker state.
+3. Worker wiring (F-01, implemented in the worker-lifecycle PR) reviewed and merged; operator alerting on ambiguous legs / breaker state / `failed` worker defined (health is pull-only today).
 4. Owner turns the flags on themselves (config flag + durable owner-only execution flag), with a
    written rollback (pause + flag off) and an observer present.
 5. Written test plan: one buy, one finite approval, one sell; expected receipts; stop conditions.
