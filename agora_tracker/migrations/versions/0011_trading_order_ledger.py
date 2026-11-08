@@ -254,6 +254,9 @@ def upgrade() -> None:
     op.execute(f"""CREATE UNIQUE INDEX ux_events_refused_admission ON {S}.order_events
                    (user_id, request_key) WHERE kind = 'ADMISSION_REFUSED'""")
     op.execute(f"CREATE INDEX ix_events_order ON {S}.order_events (order_id, chain_no)")
+    # lets the application cap how many refusals one user can write per day (audit flooding)
+    op.execute(f"""CREATE INDEX ix_events_refused ON {S}.order_events (user_id, at)
+                   WHERE kind = 'ADMISSION_REFUSED'""")
     op.execute(f"""
         CREATE FUNCTION {S}.event_digest(e {S}.order_events) RETURNS text
         LANGUAGE sql STABLE AS $$

@@ -324,6 +324,22 @@ def test_repeated_refusal_does_not_spam_the_audit_log(ledger, owner_engine):
                "WHERE kind='ADMISSION_REFUSED'")[0][0] == 1
 
 
+def test_refusal_audit_cannot_be_used_to_flood_the_log(ledger, owner_engine):
+    from agora_tracker.trading.ledger import core
+    for i in range(core.MAX_ADMISSION_REFUSALS_PER_DAY + 20):
+        with refused("per_trade_cap"):
+            create(ledger, f"f{i:04d}", amount_in=HYPE + 1)
+    assert raw(owner_engine, "SELECT count(*) FROM trading_private.order_events "
+               "WHERE kind='ADMISSION_REFUSED'")[0][0] == core.MAX_ADMISSION_REFUSALS_PER_DAY
+    oid = create(ledger, "okay")[0].order.id
+    for i in range(core.MAX_TRANSITION_REFUSALS_PER_ORDER + 10):
+        with refused("invalid_transition"):
+            step(ledger, oid, S.FINALIZED, f"x{i:04d}", actor=Actor.system())
+    assert raw(owner_engine, "SELECT count(*) FROM trading_private.order_events "
+               "WHERE kind='TRANSITION_REFUSED'")[0][0] == core.MAX_TRANSITION_REFUSALS_PER_ORDER
+    assert ledger.verify_chain().ok
+
+
 def test_identity_binding(ledger):
     plan = make_plan(user=U2, nonce="m", now=ledger.clock())
     with refused("unauthorized_user"):

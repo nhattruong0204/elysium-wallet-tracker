@@ -59,6 +59,10 @@ KEY = re.compile(r"^[A-Za-z0-9:_.-]{8,128}$")
 TXHASH = re.compile(r"^0x[0-9a-f]{64}$")
 MAX_REASON = 200
 DAY_S = 86400
+# An authenticated user could otherwise grow the audit log by sending refused requests under
+# endless fresh keys. Beyond these caps a refusal is still returned and logged, just not stored.
+MAX_ADMISSION_REFUSALS_PER_DAY = 100
+MAX_TRANSITION_REFUSALS_PER_ORDER = 50
 
 
 # `trading_rw` is capped at 5 connections in the database (migration 0011); the pool never asks
@@ -290,6 +294,22 @@ class OrderLedger:
              "fs": from_state, "ts": to_state, "rk": request_key,
              "detail": json.dumps(detail or {}, sort_keys=True, separators=(",", ":"))}).first()
         return row is not None
+
+    @staticmethod
+    def _refusal_budget(c: Connection, *, user_id: int | None = None,
+                        order_id: UUID | None = None) -> bool:
+        if order_id is not None:
+            n = c.execute(sa.text("SELECT count(*) FROM order_events WHERE order_id = :o "
+                                  "AND kind = 'TRANSITION_REFUSED'"), {"o": order_id}).scalar_one()
+            ok = n < MAX_TRANSITION_REFUSALS_PER_ORDER
+        else:
+            n = c.execute(sa.text("SELECT count(*) FROM order_events WHERE user_id = :u "
+                                  "AND kind = 'ADMISSION_REFUSED' AND at > now() - interval '1 day'"),
+                          {"u": user_id}).scalar_one()
+            ok = n < MAX_ADMISSION_REFUSALS_PER_DAY
+        if not ok:
+            log.warning("refusal audit cap reached (user=%s order=%s); not storing more", user_id, order_id)
+        return ok
 
     # ------------------------------------------------------------------ controls / policy
 
@@ -544,7 +564,8 @@ class OrderLedger:
                                                 session_expires_at, now)
                 except LedgerRefused as r:
                     refusal = r
-                    if r.code not in ("busy", "invalid_request", "not_found"):
+                    if r.code not in ("busy", "invalid_request", "not_found") \
+                            and self._refusal_budget(c, user_id=user_id):
                         self._event(c, kind="ADMISSION_REFUSED", actor=Actor.user(user_id),
                                     user_id=user_id, request_key=f"{idempotency_key}:{r.code}",
                                     detail={"code": r.code,
@@ -695,7 +716,7 @@ class OrderLedger:
                     if r.code not in ("busy", "not_found", "invalid_request"):
                         row = c.execute(sa.text("SELECT user_id, state FROM orders WHERE id = :i"),
                                         {"i": oid}).first()
-                        if row is not None:
+                        if row is not None and self._refusal_budget(c, order_id=oid):
                             self._event(c, kind="TRANSITION_REFUSED", actor=actor, order_id=oid,
                                         user_id=row.user_id, from_state=row.state,
                                         to_state=target.value, request_key=request_key,
