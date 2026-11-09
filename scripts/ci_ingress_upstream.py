@@ -11,8 +11,12 @@ from __future__ import annotations
 import argparse
 import os
 import signal
+import sys
 import threading
+from pathlib import Path
 from types import SimpleNamespace
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))   # run from a checkout
 
 from starlette.applications import Starlette
 from starlette.responses import JSONResponse, PlainTextResponse

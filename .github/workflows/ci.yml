@@ -106,7 +106,8 @@ jobs:
       - name: Start the real guard behind it
         run: |
           nohup python scripts/ci_ingress_upstream.py --origin https://app.example.test > /tmp/upstream.log 2>&1 &
-          for i in $(seq 1 50); do ss -ltn | grep -q '127.0.0.1:8765' && break; sleep 0.2; done
+          for i in $(seq 1 100); do ss -ltn | grep -q '127.0.0.1:8765' && exit 0; sleep 0.2; done
+          echo "upstream did not start"; cat /tmp/upstream.log; exit 1
       - name: Verify the proxy (remote + local checks)
         run: |
           sudo -E env "PATH=$PATH" REQUESTS_CA_BUNDLE=/tmp/cert.pem \
