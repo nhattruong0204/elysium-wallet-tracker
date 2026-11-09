@@ -338,6 +338,15 @@ class TradingConfig:
     ingress_max_body_bytes: int = 16384
     ingress_request_timeout_s: float = 30.0
     ingress_keepalive_s: float = 5.0
+    # Liveness push alerts (Stage C2 #95 F-18). Active only when the worker or the ingress runs:
+    # private Telegram messages to the trading owners when the listener dies (bounded restarts,
+    # then a fail-closed degraded mode), the worker stalls/crash-loops, the execution RPC breaker
+    # stays open, or ambiguous/orphaned legs and evidence queues build up. Deduplicated, cooled
+    # down and capped per hour; never contains addresses, ids, URLs or secrets.
+    liveness_alerts_enabled: bool = True
+    liveness_interval_s: float = 30.0
+    liveness_cooldown_s: float = 3600.0
+    liveness_ingress_max_restarts: int = 3
 
     def __post_init__(self) -> None:
         import re as _re
@@ -351,6 +360,15 @@ class TradingConfig:
         if (type(self.finality_confirmations) is not int
                 or not 1 <= self.finality_confirmations <= 256):
             raise ValueError("trading.finality_confirmations must be an integer in 1..256")
+        if type(self.liveness_alerts_enabled) is not bool:
+            raise ValueError("trading.liveness_alerts_enabled must be a boolean")
+        for fname, lo, hi in (("liveness_interval_s", 5, 3600), ("liveness_cooldown_s", 60, 86400)):
+            v = getattr(self, fname)
+            if type(v) not in (int, float) or not lo <= v <= hi:
+                raise ValueError(f"trading.{fname} must be a number in {lo}..{hi}")
+        if (type(self.liveness_ingress_max_restarts) is not int
+                or not 0 <= self.liveness_ingress_max_restarts <= 10):
+            raise ValueError("trading.liveness_ingress_max_restarts must be an integer in 0..10")
         if type(self.finality_require_finalized_tag) is not bool:
             raise ValueError("trading.finality_require_finalized_tag must be a boolean")
         if (type(self.corroboration_max_head_skew_blocks) is not int

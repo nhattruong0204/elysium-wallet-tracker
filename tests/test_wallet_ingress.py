@@ -606,3 +606,19 @@ def test_wallet_health_is_owner_only_and_private():
     tgui.IntelBot._worker_health(b, -5, 7, {"chat": {"type": "group"}})   # owner, but in a group
     assert "Mini App ingress" in sent[0][1] and "running" in sent[0][1]
     assert sent[1][1] == "Not available." and sent[2][1] == "Not available."
+
+
+def test_run_ui_runs_the_liveness_monitor_beside_the_listener_and_stops_it_first(monkeypatch, tmp_path):
+    main, c, seen, port = _ui(monkeypatch, tmp_path)
+    main.run_ui(c)
+    mon = seen["bot"].liveness
+    assert mon is not None and mon.ingress is seen["bot"].ingress
+    assert mon.snapshot()["thread_alive"] is False and mon._stop.is_set()
+    assert not [t for t in threading.enumerate() if t.name in ("liveness", "ingress")]
+    assert seen["runs"] == 1                        # still exactly one getUpdates consumer
+
+
+def test_run_ui_without_liveness_alerts_builds_no_monitor(monkeypatch, tmp_path):
+    main, c, seen, port = _ui(monkeypatch, tmp_path, trading={"liveness_alerts_enabled": False})
+    main.run_ui(c)
+    assert getattr(seen["bot"], "liveness", None) is None

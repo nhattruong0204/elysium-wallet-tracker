@@ -127,8 +127,8 @@ concurrency cap (4), breaker and timeouts bound the combined load.
 `/wallet_health` (owner only, private chat, same neutral "Not available." otherwise) now reports the
 worker **and** the listener: state, bind address, requests/in-flight/peak, 2xx/4xx/5xx, timeouts, and
 refusals at the boundary by reason (`secret`, `host`, `scheme`, `method`, `body_size`, `length`).
-No public health route exists and no secret, cookie or user data is in the report. Health is
-**pull-only** (no alert push yet).
+No public health route exists and no secret, cookie or user data is in the report. Push alerts,
+bounded listener restarts and the degraded mode are in `docs/TRADING_LIVENESS.md` (F-18).
 
 ## 7. Rollback
 
