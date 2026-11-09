@@ -124,7 +124,7 @@ rename:** `recovery_rpc_urls_env` / `TRADING_RECOVERY_RPC_URLS` (F-02) -> `corro
 
 * Distinct host and distinct operator are *configuration-level* checks. Two differently named
   operators can run on the same cloud, front the same upstream node, or buy from the same
-  aggregator. **Colluding or shared-upstream providers cannot be detected** by this code; if both
+  aggregator. **Providers that are colluding, or that share an upstream, cannot be detected** by this code; if both
   return the same fabricated chain, the evidence is accepted. A label (`label=url`) is the
   deployer's attestation that the operator is independent and is not verified.
 * Operator identity uses the registrable-domain heuristic (last two labels); multi-part public
