@@ -1,2 +1,2 @@
 action=tracker
-requested=2026-11-09 P0 USDC Telegram mute hotfix: PR #118, main f723b77; tracker container only (no config install, no migration, no postgres/ui/web restart)
+requested=2026-11-09 P0 USDC Telegram mute hotfix retry: main f723b77 + rollback-tag fix b2943fa; tracker container only

@@ -238,7 +238,21 @@ case "$ACTION" in
     log "before"
     prev=$(docker inspect -f '{{.Image}}' elysium-wallet-tracker 2>/dev/null || true)
     echo "  running tracker image: ${prev:-none}"
-    [ -n "$prev" ] && docker tag "$prev" elysium-wallet-tracker:pre-tracker-hotfix
+    for c in elysium-ui elysium-web; do
+      echo "  $c image: $(docker inspect -f '{{.Image}}' "$c" 2>/dev/null || echo none)"
+    done
+    echo "  current :latest: $(docker image inspect -f '{{.Id}}' elysium-wallet-tracker:latest 2>/dev/null || echo none)"
+    # Keep a rollback image. The running container's image id is not always taggable (e.g. an
+    # image record pruned while the container keeps running); then fall back to the current
+    # :latest, which is what any recreate would have used before this hotfix.
+    if [ -n "$prev" ] && docker tag "$prev" elysium-wallet-tracker:pre-tracker-hotfix 2>/dev/null; then
+      echo "  rollback image: the running tracker image"
+    elif docker tag elysium-wallet-tracker:latest elysium-wallet-tracker:pre-tracker-hotfix 2>/dev/null; then
+      echo "  WARNING: running tracker image not taggable; rollback image = previous :latest"
+    else
+      echo "no rollback image could be tagged: refusing to continue" >&2
+      exit 1
+    fi
     muted_queue
     tracker_alive
     log "build the image (retags :latest; ui/web keep running their current image)"
