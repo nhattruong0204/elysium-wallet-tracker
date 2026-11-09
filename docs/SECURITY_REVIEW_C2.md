@@ -28,7 +28,8 @@ the reviewer records the exact SHA in §10).
 | F-04 / F-07 / F-22 finality + RPC diagnostics | #113 | `feat/trading-c2-finality-rpc` | `013e861` (CI green) |
 | F-18 liveness | #114 | `feat/trading-c2-liveness` | `a66a9d0` (CI green) |
 | F-21 lock order, F-17 proxy, preflight | #115 | `feat/trading-c2-release-hardening` | `7e5f95e` |
-| release package (this document, runbook, matrices, `/trading_status`) | see `docs/RELEASE_READINESS.md` | `feat/trading-c2-release-package` | see `RELEASE_READINESS.md` |
+| release package (this document, runbook, matrices, `/trading_status`) | #116 | `feat/trading-c2-release-package` | `e1e561e` + docs-only follow-up |
+| **integration candidate → `main`** | **#117** (supersedes #109) | `release/trading-c2-rc1` | same as #116 (record the exact SHA in §10 when reviewing) |
 
 Ancestry (verified with `git merge-base --is-ancestor`): every branch above is contained in the next
 one; the merge commits of #101–#106 only exist on their stack bases and carry no extra content

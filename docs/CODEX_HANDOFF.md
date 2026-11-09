@@ -7,7 +7,8 @@ Start of a session: compare the PR/branch table below with `gh api repos/:owner/
 
 * `main` = #100 only. Everything else is a stacked draft chain:
   #107 → #108 (F-01) → #110 (F-16) → #111 (F-02) → #112 (F-15) → #113 (F-04/F-07) → #114 (F-18)
-  → #115 (F-21/F-17/preflight) → release package → integration PR to `main` (draft).
+  → #115 (F-21/F-17/preflight) → #116 (release package) → **#117** integration PR to `main`
+  (draft, branch `release/trading-c2-rc1`).
   #101–#106 were merged into their stack bases, not into `main`. #109 is stale (`8985c1f`).
 * Production flags: all trading switches OFF; nothing deployed from this work; no funded test.
 * Migrations: `0001…0016` linear (`python -m agora_tracker.preflight --graph-only`). Clustering
@@ -41,7 +42,7 @@ TEST_DATABASE_URL=postgresql+psycopg://…/tracker_test pytest -q   # full suite
 
 ## Exact next step
 
-Owner: hand `SECURITY_REVIEW_C2.md` + the integration PR SHA to an independent reviewer, and run
+Owner: hand `SECURITY_REVIEW_C2.md` + the #117 head SHA to an independent reviewer, and run
 `rpcdiag` on the VPS (24 h). Engineering: none required before that evidence exists; do not start
 #96, #97 optimizations or #98.
 

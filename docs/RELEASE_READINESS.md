@@ -68,7 +68,7 @@ flag or spend.
   contains every commit of #100–#115 (verified ancestry; #101–#106 merge commits are
   tree-identical and need not be replayed). It merges into `main` without conflicts
   (`git merge-tree`).
-* The integration PR targets `main` as a **draft**; it must not be merged without the owner's
+* The integration PR is **#117** (`release/trading-c2-rc1` → `main`), a **draft**; it must not be merged without the owner's
   explicit approval and review. #109 (head `8985c1f`) is superseded and should be closed by the owner.
 * Merging code alone changes nothing at runtime: every trading switch defaults OFF
   (`ledger_enabled`, `wallet_execution_enabled`, `ingress_enabled`; ledger execution flag off), no
@@ -106,15 +106,21 @@ flag or spend.
 
 ## 7. CI evidence
 
-| Head | PR | lint | test | docker | ingress-proxy |
+| Head | PR | lint (ruff, mypy, preflight, pip-audit) | test (full, PostgreSQL, Chromium + WebKit) | docker | ingress-proxy (F-17 rehearsal) |
 |---|---|---|---|---|---|
 | `bd6d32c` | #112 | ✅ | ✅ | ✅ | – |
 | `013e861` | #113 | ✅ | ✅ | ✅ | – |
 | `a66a9d0` | #114 | ✅ | ✅ | ✅ | – |
-| `7e5f95e` | #115 | pending | pending | pending | pending |
+| `7e5f95e` | #115 | ✅ | ✅ | ✅ | ✅ 23 PASS / 1 SKIP |
+| `e1e561e` | #116 / #117 (integration) | ✅ ✅ | ✅ run 42577869634 · ❌ run 42577833241 | ✅ / skipped | ✅ ✅ |
 
-(The release-package and integration heads are recorded in their PR descriptions; a final
-docs-only commit updates this table.)
+The one red run on `e1e561e` is
+`test_miniapp_browser.py::test_mocked_quote_exact_review_and_mobile_layout[webkit-iphone-buy]`
+(a WebKit timing flake in the #100/#101 Mini App browser test). The second run of the **same
+SHA** passed. The failing code and test are untouched by #113–#116 (`git diff bd6d32c..e1e561e
+-- agora_tracker/trading/miniapp agora_tracker/trading/auth tests/test_miniapp_browser.py` is
+empty). The job could not be re-run from this environment (403). The reviewer should re-run CI on
+the frozen SHA and treat a repeat as a defect.
 
 Local environment note: `tests/test_trading_auth_http.py`, `test_trading_auth_browser.py`,
 `test_verified_paper.py`, `test_miniapp*.py`, `test_unsigned_plan*.py`, `test_paper_hardening.py`,
