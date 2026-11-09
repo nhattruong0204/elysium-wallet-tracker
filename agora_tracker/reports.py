@@ -694,7 +694,9 @@ class Reports:
         """Alert queue size per status. The public dashboard overrides this to read the
         message-free `outbox_status` view instead of the raw table."""
         return {x["status"]: x["n"] for x in self._all(c, """
-            SELECT status, count(*) AS n FROM notification_outbox GROUP BY status""")}
+            SELECT CASE WHEN status = 'dead' AND last_error LIKE 'suppressed:%'
+                        THEN 'suppressed' ELSE status END AS status, count(*) AS n
+            FROM notification_outbox GROUP BY 1""")}
 
     def health(self, now: datetime | None = None) -> dict[str, Any]:
         now = now or datetime.now(UTC)

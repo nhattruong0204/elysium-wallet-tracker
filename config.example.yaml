@@ -62,6 +62,9 @@ alerts:
   hype_dust: 0.0005
   ignore_tokens: []            # e.g. stablecoins or $AGORA if you don't care about them
   mute_tokens: []              # indexed, but no Telegram alert and hidden on the Activity tab
+  telegram_mute_tokens: []     # exact contracts: no Telegram alert (trade/transfer/cluster) only;
+                               # still indexed, in PnL, signals and on the website. Also read from
+                               # ALERTS_TELEGRAM_MUTE_TOKENS (comma-separated) in the environment.
 
 
 links:                         # every alert detail links here (formats verified 2026-11-02)

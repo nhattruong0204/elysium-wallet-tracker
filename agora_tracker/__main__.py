@@ -64,7 +64,8 @@ class Tracker:
             min_liquidity_hype=ic.launch_min_liquidity_hype, delay_s=ic.launch_delay_s,
         ) if ic.launch_watch else None
         self._next_launch = 0.0
-        self.notifier = Notifier(self.store, cfg.telegram, dry_run, renderer=self.render_alert)
+        self.notifier = Notifier(self.store, cfg.telegram, dry_run, renderer=self.render_alert,
+                                 suppress_tokens=cfg.alerts.telegram_mute_tokens)
         lb = cfg.leaderboard
         self.leaderboard = HttpLeaderboard(lb) if lb.enabled and lb.url else None
         self.tracked: set[str] = set()

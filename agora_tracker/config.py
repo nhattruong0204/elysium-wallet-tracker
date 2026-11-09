@@ -82,6 +82,12 @@ class AlertConfig:
     # still indexed (positions stay right) but never alerted, never part of a cluster, and
     # hidden from the website's Activity tab unless that exact token is filtered
     mute_tokens: list[str] = field(default_factory=list)
+    # Telegram-only mute (by exact contract address, never by symbol): the token is still indexed,
+    # still in positions/PnL, still part of cluster/smart-money SIGNALS and still shown on the
+    # website; only its Telegram alerts (trade, transfer, cluster) are not sent. Alerts already
+    # queued for it are closed as 'dead' with last_error "suppressed: ..." (never marked sent).
+    # A trade of another token that merely used one of these as the quote asset still alerts.
+    telegram_mute_tokens: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -341,6 +347,11 @@ def load_config(path: str | Path) -> Config:
     alerts = AlertConfig(**alerts_raw)
     alerts.ignore_tokens = [_norm_addr(t) for t in alerts.ignore_tokens]
     alerts.mute_tokens = [_norm_addr(t) for t in alerts.mute_tokens]
+    # Also from the environment (comma/space separated), so the tracker alone can be given the
+    # mute without editing the config.yaml that older containers sharing the bind mount parse.
+    env_mute = [x for x in os.environ.get("ALERTS_TELEGRAM_MUTE_TOKENS", "").replace(",", " ").split()]
+    alerts.telegram_mute_tokens = sorted({_norm_addr(t) for t in [*alerts.telegram_mute_tokens,
+                                                                   *env_mute]})
 
     tg_raw = raw.get("telegram") or {}
     tg = TelegramConfig(
