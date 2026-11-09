@@ -1,2 +1,2 @@
-action=tracker
-requested=2026-11-09 P0 USDC Telegram mute hotfix retry: main f723b77 + rollback-tag fix b2943fa; tracker container only
+action=status
+requested=2026-11-09 read-only verification after the tracker-only USDC mute deploy (run 42639770457)
