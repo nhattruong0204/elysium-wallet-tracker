@@ -196,7 +196,7 @@ class LegReconciler:
                                                        {"final_tx_hash": h, "consuming_tx": ctx}))
             if not certain:
                 return Verdict("unresolved", "nonce_hint_used_by_other_transaction")
-            if cons.confirmations < self.corro.finality:
+            if not sess.is_final(cons.block_number, cons.confirmations):   # depth AND finalized tag
                 return Verdict("unresolved", "replacement_not_final_yet")
             return Verdict("superseded", "nonce_used_by_other_transaction", nonce=nonce,
                            final_tx_hash=h, seen=True,

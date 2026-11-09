@@ -14,6 +14,7 @@ What a `Session` guarantees (each point has an adversarial test):
   check; whether two brands share an upstream node cannot be proven here (see the docs).
 * **One anchor.** Every source's head is read; the anchor is the LOWEST head. Heads must be fresh
   (<= MAX_HEAD_AGE_S on the sources' own block clock), within MAX_HEAD_SKEW blocks of each other,
+  (sized for Elysium's ~100-200 ms blocks; the lowest head is the anchor, so skew never changes a fact),
   and every source must return the identical header hash at the anchor. All later facts are read
   at blocks <= the anchor. A provider that is a block or two behind therefore changes the anchor,
   never the facts: it is *not* "disagreement". A transaction reported mined above the anchor is
@@ -31,6 +32,10 @@ What a `Session` guarantees (each point has an adversarial test):
 * **Provenance.** `Session.provenance()` is the record attached to every ledger write: chain id,
   anchor, the sources (name, operator, head), when it was taken, the calls spent and every
   corroborated read (what, at which block, which value, agreed by whom).
+
+* **Finality (F-04).** `Session.finality()` needs `finality` confirmations at the anchor AND, by
+  default, the block at or below the LOWEST `finalized` tag reported by every source (Orbit chains
+  derive it from the parent chain). A node without the tag => not final (fail closed).
 
 What this does NOT prove: that the agreeing operators are truly independent of each other (same
 upstream node, same cloud, a shared eclipse), or any cryptographic inclusion (no Merkle proof is
@@ -53,9 +58,16 @@ from .rpc import RpcBusy, RpcError
 
 SCHEMA = 1
 MIN_SOURCES = 2
-MAX_HEAD_SKEW = 3
+# Elysium (chain 99901) is an Arbitrum Orbit chain with ~100-200 ms blocks (5-10 blocks/s), so
+# two honest providers polled a fraction of a second apart routinely differ by several blocks. The
+# anchor is the LOWEST head, so a larger skew never changes a fact, only how fresh it is; freshness
+# is bounded separately by MAX_HEAD_AGE_S on every source. 64 blocks ~ 6-13 s. (#95 F-04/F-07)
+MAX_HEAD_SKEW = 64
 MAX_HEAD_AGE_S = 60
-MAX_BISECT_SPAN = 200_000
+# Bisection window when no lower bound is known (2**24 blocks ~ 19-38 days at 5-10 blocks/s). With
+# a known lower bound (the prompt block) the search is never clipped: clipping would turn an old but
+# perfectly provable nonce into a false "consumed before the request" conflict. Cost is ~log2(span).
+MAX_BISECT_SPAN = 1 << 24
 SNAPSHOT_TTL_S = 10.0          # a pinned anchor older than this is re-read before a new unit of work
 DEFAULT_CALLS = 120
 DEFAULT_SECONDS = 20.0
@@ -223,13 +235,23 @@ class Corroborator:
     def __init__(self, sources: Sequence[Any], *, chain_id: int = CHAIN, finality: int = 12,
                  clock: Callable[[], float] = time.time,
                  mono: Callable[[], float] = time.monotonic,
-                 max_skew: int = MAX_HEAD_SKEW, max_head_age_s: int = MAX_HEAD_AGE_S) -> None:
+                 max_skew: int = MAX_HEAD_SKEW, max_head_age_s: int = MAX_HEAD_AGE_S,
+                 require_finalized_tag: bool = True) -> None:
         if not 1 <= finality <= 256:
             raise ValueError("finality must be in 1..256")
+        if type(require_finalized_tag) is not bool:
+            raise ValueError("require_finalized_tag must be a bool")
         self.sources = [(self._name(s, i), s) for i, s in enumerate(sources)]
         self.chain_id, self.finality = chain_id, finality
         self.clock, self.mono = clock, mono
         self.max_skew, self.max_head_age_s = max_skew, max_head_age_s
+        # F-04: on a single-sequencer rollup a confirmation COUNT is only the sequencer's promise;
+        # finality additionally needs every source's `finalized` tag at or above the block.
+        self.require_finalized_tag = require_finalized_tag
+
+    @property
+    def finality_policy(self) -> str:
+        return "finalized_tag+depth" if self.require_finalized_tag else "depth"
 
     @staticmethod
     def _name(src: Any, i: int) -> str:
@@ -249,6 +271,7 @@ class Session:
         self.deadline = owner.mono() + seconds
         self._snap: Snapshot | None = None
         self._reads: list[dict] = []
+        self._fin: tuple[Snapshot, int | None, str | None] | None = None
 
     # ------------------------------------------------------------------ metered source access
     def _call(self, name: str, src: Any, method: str, *args: Any, historical: bool = False) -> Any:
@@ -386,6 +409,57 @@ class Session:
         """Start a unit of work: a strict, fresh-enough snapshot. Everything the unit reads is
         then compared at this one anchor."""
         return self.snapshot(strict=True)
+
+    # ------------------------------------------------------------------ finality (F-04)
+    def finalized(self) -> int | None:
+        """The highest block EVERY source reports as `finalized`, capped at the anchor; None when
+        any source does not serve the tag, fails, or answers malformed (fail closed: nothing is
+        then final). Read once per pinned snapshot."""
+        snap = self.snapshot(strict=True)
+        if self._fin is not None and self._fin[0] is snap:
+            return self._fin[1]
+        assert snap.anchor is not None
+        nums: list[int] = []
+        problem: str | None = None
+        for x in snap.live:
+            try:
+                h = self._call(x.name, x.src, "finalized_head")
+            except BudgetExhausted:
+                raise
+            except EvidenceError as exc:
+                problem = exc.code if exc.code != "source_incapable" else "finalized_tag_unsupported"
+                break
+            if h is None:
+                problem = "finalized_tag_unsupported"
+                break
+            if (not isinstance(h, Head) or not HASH.fullmatch(_low(h.hash))
+                    or type(h.number) is not int or h.number < 0 or h.number > x.head.number):
+                problem = "malformed_finalized_tag"
+                break
+            nums.append(h.number)
+        fin = None if problem else min(min(nums), snap.anchor.number)
+        self._fin = (snap, fin, problem)
+        if fin is not None:
+            self._note("finalized", [], fin, fin, snap)
+        return fin
+
+    def finality(self, block: int, confirmations: int) -> tuple[bool, str | None]:
+        """(final?, why-not). Final = at least `finality` confirmations at the shared anchor AND,
+        under the default policy, at or below the corroborated `finalized` height."""
+        if confirmations < self.o.finality:
+            return False, f"only {confirmations}/{self.o.finality} confirmations"
+        if not self.o.require_finalized_tag:
+            return True, None
+        fin = self.finalized()
+        if fin is None:
+            assert self._fin is not None
+            return False, f"finalized height unavailable ({self._fin[2]})"
+        if block > fin:
+            return False, f"block {block} is above the corroborated finalized height {fin}"
+        return True, None
+
+    def is_final(self, block: int, confirmations: int) -> bool:
+        return self.finality(block, confirmations)[0]
 
     # ------------------------------------------------------------------ reads at the anchor
     def _at_or_below_anchor(self, snap: Snapshot, block: int) -> None:
@@ -539,7 +613,7 @@ class Session:
         snap = self.snapshot(strict=True)
         assert snap.anchor is not None
         a = snap.anchor.number
-        lo = max(0, a - MAX_BISECT_SPAN) if lo is None else max(lo, a - MAX_BISECT_SPAN)
+        lo = max(0, a - MAX_BISECT_SPAN) if lo is None else max(0, lo)
         found = []
         for x in snap.live:
             found.append(self._locate_one(x, wallet, nonce, lo, a))
@@ -616,6 +690,9 @@ class Session:
         return {
             "schema": SCHEMA, "chain_id": self.o.chain_id, "taken_at": snap.taken_at,
             "max_head_age_s": self.o.max_head_age_s, "finality": self.o.finality,
+            "finality_policy": self.o.finality_policy,
+            "finalized": (None if self._fin is None or self._fin[0] is not snap or self._fin[1] is None
+                          else {"number": self._fin[1]}),
             "anchor": None if anchor is None else {"number": anchor.number, "hash": anchor.hash,
                                                     "timestamp": anchor.timestamp},
             "sources": [{"name": x.name, "operator": x.operator, "head_number": x.head.number,

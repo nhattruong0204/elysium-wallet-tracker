@@ -48,7 +48,8 @@ def open_ledger(cfg: Config, environ: Mapping[str, str] = os.environ) -> OrderLe
     if not owners:
         raise LedgerConfigError("no ledger owner: set TG_CHAT_ID or "
                                 f"{cfg.trading.ledger_owner_ids_env}")
-    ledger = OrderLedger(make_ledger_engine(url), owner_ids=owners)
+    ledger = OrderLedger(make_ledger_engine(url), owner_ids=owners,
+                         require_finalized_tag=cfg.trading.finality_require_finalized_tag)
     ledger.bootstrap()
     report = ledger.recover()
     if not report.chain_ok:

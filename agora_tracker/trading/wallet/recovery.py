@@ -393,7 +393,8 @@ class LegRecovery:
                             "(no correction is needed or allowed)",
                             None, True, facts, {})
                 # the wallet reported a hash whose transaction is NOT the reviewed request
-                if conf >= self.finality and str(rc.get("status")) in ("0x0", "0x1"):
+                final, why_not = sess.finality(number, conf)            # depth AND finalized tag
+                if final and str(rc.get("status")) in ("0x0", "0x1"):
                     decisive = {"consuming": h, "block_hash": bh}
                     return (EXTERNAL, "reported_hash_is_a_different_transaction",
                             "the wallet executed a different transaction than the one reviewed; its "
@@ -402,7 +403,7 @@ class LegRecovery:
                                 "hash": h, "block_number": number, "block_hash": bh,
                                 "confirmations": conf, "mismatches": bad}}, decisive)
                 return (EXTERNAL, "different_transaction_not_final_yet",
-                        f"a different transaction is mined but only {conf}/{self.finality} deep",
+                        f"a different transaction is mined but not final yet: {why_not}",
                         None, False, facts, {})
 
         # ---- 2. nothing of ours on chain: look at the wallet's nonce
@@ -427,14 +428,15 @@ class LegRecovery:
                             "an identical request was mined under another hash (speed-up); the "
                             "reconciler records it (no correction is needed)",
                             None, True, facts | {"consuming_tx": ctx}, {})
-                if conf >= self.finality:
+                final, why_not = sess.finality(cons.block_number, conf)
+                if final:
                     return (REPLACED, "replaced_by_different_transaction",
                             "the nonce of this request is consumed by a different, final transaction; "
                             "this request can never be mined",
                             "superseded", False, facts | {"consuming_tx": ctx},
                             {"consuming": th, "block_hash": cons.block_hash, "nonce": n})
                 return (REPLACED, "replacement_not_final_yet",
-                        f"replaced by a different transaction only {conf}/{self.finality} deep",
+                        f"replaced by a different transaction that is not final yet: {why_not}",
                         None, False, facts | {"consuming_tx": ctx}, {})
             category, reason = UNKNOWN, "nonce_not_consumed"
             detail = "the request's nonce is still free: the transaction could still be mined"

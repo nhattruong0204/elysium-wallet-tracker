@@ -118,3 +118,15 @@ def test_the_old_recovery_key_is_gone_and_the_new_one_is_validated():
     t = TradingConfig()
     assert (t.corroboration_rpc_urls_env, t.corroboration_calls_per_pass) == (
         "TRADING_CORROBORATION_RPC_URLS", 120) and t.finality_confirmations == 12
+
+
+def test_finality_policy_defaults_to_the_finalized_tag_and_is_validated():
+    t = TradingConfig()
+    assert t.finality_require_finalized_tag is True and t.finality_confirmations == 12
+    assert t.corroboration_max_head_skew_blocks == 64
+    for bad in ("yes", 1, None):
+        with pytest.raises(ValueError):
+            TradingConfig(finality_require_finalized_tag=bad)
+    for bad in (0, 10_001, True, "64"):
+        with pytest.raises(ValueError):
+            TradingConfig(corroboration_max_head_skew_blocks=bad)

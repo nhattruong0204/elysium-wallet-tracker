@@ -120,10 +120,20 @@ def test_a_transaction_mined_above_the_shared_anchor_is_ahead_not_a_conflict():
 def test_heads_too_far_apart_fail_closed():
     ch = ReceiptChain(1100)
     c, (a, b) = corroborator(ch, clk)
-    b.lag = 10
+    b.lag = 65                                      # > MAX_HEAD_SKEW (64 blocks ~ 6-13 s)
     with pytest.raises(Unverifiable) as e:
         c.session().pin()
     assert code(e) == "heads_diverge"
+
+
+def test_a_few_seconds_of_head_difference_is_normal_on_a_fast_chain():
+    # Elysium makes 5-10 blocks/s: providers polled a moment apart differ by several blocks. The
+    # lowest head is the anchor, so this is never a disagreement (F-07).
+    ch = ReceiptChain(1100)
+    c, (a, b) = corroborator(ch, clk)
+    b.lag = 30
+    snap = c.session().pin()
+    assert snap.ok and snap.anchor.number == 1100 - 30
 
 
 def test_a_stale_head_fails_closed():
@@ -446,3 +456,64 @@ def test_the_provenance_names_operators_anchor_finality_and_the_reads():
     assert p["anchor"]["number"] == 1005 and p["anchor"]["hash"] == block_hash(1005)
     assert p["problems"] == [] and p["failed"] == [] and p["calls"] > 0
     assert any(r["read"] == "inclusion" for r in p["reads"])
+
+
+# ====================================================================== finality (F-04)
+
+def test_depth_alone_is_not_final_when_the_finalized_tag_is_behind_the_block():
+    leg, tx, rc, ch = mined_world(head=1100)                 # 101 confirmations, ~10-20 s
+    c, (a, b) = corroborator(ch, clk)
+    a.finalized_lag = b.finalized_lag = 150                  # parent chain has not finalized it
+    s = c.session()
+    inc = s.inclusion(H)
+    assert inc.confirmations >= 12
+    final, why = s.finality(inc.block_number, inc.confirmations)
+    assert final is False and "finalized height" in why
+
+
+def test_finalized_height_is_the_lowest_over_every_source_and_capped_at_the_anchor():
+    ch = ReceiptChain(1100)
+    c, (a, b) = corroborator(ch, clk)
+    a.finalized_lag, b.finalized_lag = 10, 40
+    s = c.session()
+    assert s.finalized() == 1060
+    assert s.is_final(1060, 41) and not s.is_final(1061, 40)
+    assert s.provenance()["finalized"] == {"number": 1060}
+    assert s.provenance()["finality_policy"] == "finalized_tag+depth"
+
+
+def test_one_source_without_the_finalized_tag_means_nothing_is_final():
+    leg, tx, rc, ch = mined_world(head=1100)
+    c, (a, b) = corroborator(ch, clk)
+    b.finalized_lag = None                                   # node does not serve the tag
+    s = c.session()
+    assert s.finalized() is None
+    final, why = s.finality(1000, 101)
+    assert final is False and "finalized_tag_unsupported" in why
+    assert s.provenance()["finalized"] is None
+
+
+def test_a_finalized_tag_above_the_sources_own_head_is_malformed_not_final():
+    ch = ReceiptChain(1100)
+    c, (a, b) = corroborator(ch, clk)
+    b.finalized_lag = -5                                     # "finalized" beyond its own head
+    s = c.session()
+    assert s.finalized() is None and not s.is_final(1000, 101)
+
+
+def test_depth_is_still_required_even_when_the_tag_says_final():
+    ch = ReceiptChain(1100)
+    c, _ = corroborator(ch, clk)
+    s = c.session()
+    assert s.finalized() == 1100
+    assert not s.is_final(1095, 6) and s.is_final(1089, 12)
+
+
+def test_the_depth_only_policy_is_an_explicit_choice():
+    leg, tx, rc, ch = mined_world(head=1100)
+    c, (a, b) = corroborator(ch, clk, require_finalized_tag=False)
+    a.finalized_lag = b.finalized_lag = None
+    s = c.session()
+    assert s.is_final(1000, 101) and s.provenance()["finality_policy"] == "depth"
+    with pytest.raises(ValueError):
+        Corroborator([a, b], require_finalized_tag="yes")

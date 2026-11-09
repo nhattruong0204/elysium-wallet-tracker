@@ -676,7 +676,9 @@ def run_ui(cfg: Config) -> None:
         try:                                    # owner leg recovery (F-02): read-only, owner-driven
             bot.recovery = LegRecovery(ledger, Corroborator(
                 build_rpc_sources(cfg, exec_rpc),
-                finality=cfg.trading.finality_confirmations))
+                finality=cfg.trading.finality_confirmations,
+                require_finalized_tag=cfg.trading.finality_require_finalized_tag,
+                max_skew=cfg.trading.corroboration_max_head_skew_blocks))
         except (ExecutionRpcConfigError, ValueError) as exc:
             raise SystemExit(f"wallet leg recovery misconfigured: {exc}") from exc
     ingress = None

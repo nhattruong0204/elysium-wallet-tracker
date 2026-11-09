@@ -316,6 +316,7 @@ class Provider:
         self.tok_shift = 0
         self.nat_shift = 0
         self.nonce_bias = 0
+        self.finalized_lag: int | None = 0     # None = node does not serve the `finalized` tag
         self.calls: list[str] = []
 
     # -- plumbing
@@ -347,6 +348,16 @@ class Provider:
     def head(self):
         self._go("head")
         return Head(self.n, self._hdr(self.n), int(self.clock()) - self.age)
+
+    def finalized_head(self):
+        self._go("finalized_head")
+        if self.finalized_lag is None or getattr(self.w, "no_finalized_tag", False):
+            return None
+        lag = self.finalized_lag
+        if lag >= 0:
+            lag = max(lag, getattr(self.w, "finalized_lag", 0) or 0)
+        n = max(0, self.n - lag)                 # a negative lag scripts a malformed node
+        return Head(n, self._hdr(n), int(self.clock()) - self.age)
 
     def block_header(self, n):
         self._go("block_header")
@@ -440,7 +451,7 @@ def corroborator(world, clock, n: int = 2, *, finality: int = 12, **kw) -> tuple
 def fake_evidence(clock, leg, outcome: str, *, tx_hash=None, block_number: int = 1000,
                   block_hash_: str | None = None, status: int = 1, confirmations: int = 6,
                   finality: int = 12, fill=None, basis: str | None = None, taken_at=None,
-                  sources=("alpha.test", "beta.test"), **facts) -> dict:
+                  sources=("alpha.test", "beta.test"), finalized: int = 2000, **facts) -> dict:
     """A syntactically valid, corroborated provenance record for tests that drive the LEDGER
     directly (the ledger checks structure; wallet/corroboration.py establishes truth)."""
     now = float(clock()) if taken_at is None else taken_at
@@ -459,6 +470,7 @@ def fake_evidence(clock, leg, outcome: str, *, tx_hash=None, block_number: int =
                        "head_hash": block_hash(2000), "head_timestamp": int(now) - 2}
                       for s in sources],
           "failed": [], "problems": [], "calls": 8, "reads": [], "source_agreement": True,
+          "finality_policy": "finalized_tag+depth", "finalized": {"number": finalized},
           "facts": f}
     if fill is not None:
         ev["fill"] = {"verdict": fill.verdict, "method_agreement": fill.method_agreement,
