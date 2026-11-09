@@ -622,6 +622,28 @@ def migrate() -> int:
     return 0
 
 
+def build_liveness(cfg: Config, bot, *, ingress, worker):
+    """F-18 push alerts: only when the private worker or ingress actually runs, and enabled."""
+    t = cfg.trading
+    if not t.liveness_alerts_enabled or (ingress is None and worker is None):
+        return None
+    from .trading.ledger.runtime import owner_ids
+    from .trading.liveness import LivenessMonitor, Thresholds, telegram_sender
+    owners = bot.ledger.owner_ids if getattr(bot, "ledger", None) is not None else owner_ids(cfg)
+    if not owners:
+        log.warning("liveness alerts enabled but no owner id is configured; alerts go to the log")
+    api = getattr(bot, "api", None)
+
+    def log_only(chat_id: int, text: str) -> None:
+        log.warning("liveness alert (no Telegram API): %s", text)
+    return LivenessMonitor(send=telegram_sender(api) if api is not None else log_only,
+                           owners=owners, ingress=ingress,
+                           worker=worker,
+                           thresholds=Thresholds(interval_s=t.liveness_interval_s,
+                                                 cooldown_s=t.liveness_cooldown_s,
+                                                 ingress_max_restarts=t.liveness_ingress_max_restarts))
+
+
 def run_ui(cfg: Config) -> None:
     """The Telegram Intelligence Center service: update consumer + market collector."""
     import threading
@@ -699,6 +721,7 @@ def run_ui(cfg: Config) -> None:
                          daemon=True).start()
     if worker is not None:
         worker.start()
+    monitor = None
     try:
         if ingress is not None:
             from .trading.ingress import IngressSetupError
@@ -706,8 +729,14 @@ def run_ui(cfg: Config) -> None:
                 ingress.start()
             except IngressSetupError as exc:
                 raise SystemExit(f"Mini App ingress failed to start: {exc}") from exc
+        monitor = build_liveness(cfg, bot, ingress=ingress, worker=worker)
+        if monitor is not None:
+            bot.liveness = monitor
+            monitor.start()
         bot.run(stop)                          # the ONE getUpdates consumer; ingress never polls
     finally:
+        if monitor is not None:                # first: no restart may race the shutdown
+            monitor.stop()
         if ingress is not None:                # stop accepting requests before the workers go
             ingress.stop()
         if worker is not None:

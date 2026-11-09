@@ -175,6 +175,10 @@ trading:
   # corroboration_rpc_urls_env: TRADING_CORROBORATION_RPC_URLS
   # execution_rpc_operator: ""         # optional operator label for TRADING_EXEC_RPC_URL
   # corroboration_calls_per_pass: 120  # RPC calls one reconciler pass may spend in total
+  # liveness_alerts_enabled: true       # F-18 private owner alerts (docs/TRADING_LIVENESS.md)
+  # liveness_interval_s: 30
+  # liveness_cooldown_s: 3600
+  # liveness_ingress_max_restarts: 3    # then the Mini App stays down (degraded) and owners are told
   # Supervised reconciliation worker (docs/TRADING_WORKER_LIFECYCLE.md). Starts ONLY when
   # wallet_execution_enabled is true (then a missing ledger / TRADING_EXEC_RPC_URL is fatal).
   # worker_interval_s: 10            # between cycles while there is work

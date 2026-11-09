@@ -200,18 +200,24 @@ class IngressServer:
 
     def __init__(self, app, sock: socket.socket, *, origin: str, cfg: Config, stats: IngressStats,
                  wallet_routes: bool) -> None:
-        import uvicorn
         t = cfg.trading
         self.origin, self.stats, self.wallet_routes = origin, stats, wallet_routes
+        self._app, self._cfg = app, cfg
         self._sock = sock
         self._address = sock.getsockname()[:2]
         self._error: str | None = None
         self._thread: threading.Thread | None = None
+        self.restarts = 0
         self.limits = {"max_concurrency": t.ingress_max_concurrency, "threads": t.ingress_threads,
                        "max_body_bytes": t.ingress_max_body_bytes,
                        "request_timeout_s": t.ingress_request_timeout_s}
-        self._server = uvicorn.Server(uvicorn.Config(
-            app, log_level="warning", lifespan="on", interface="asgi3", http="h11", ws="none",
+        self._server = self._make_server()
+
+    def _make_server(self):
+        import uvicorn
+        t = self._cfg.trading
+        return uvicorn.Server(uvicorn.Config(
+            self._app, log_level="warning", lifespan="on", interface="asgi3", http="h11", ws="none",
             # the proxy is on loopback; honour its X-Forwarded-Proto/For from loopback ONLY
             proxy_headers=True, forwarded_allow_ips=t.ingress_bind_host,
             access_log=False, server_header=False, date_header=True,
@@ -252,6 +258,21 @@ class IngressServer:
         except OSError:
             pass
 
+    def restart(self, timeout_s: float = 10.0) -> None:
+        """Bounded recovery of a dead listener (F-18), driven by the liveness monitor. Rebinds the
+        SAME loopback address with a fresh uvicorn server around the SAME application object (so
+        in-memory sessions/plans survive). It never polls Telegram, never touches the ledger or a
+        pause, and creates no wallet request. Raises `IngressSetupError` if it cannot come back."""
+        if self.healthy():
+            return
+        self.stop(2.0)
+        self._sock = _bind_loopback(*self._address)
+        self._server = self._make_server()
+        self._error = None
+        self.restarts += 1
+        log.warning("restarting the ingress listener (restart #%d)", self.restarts)
+        self.start(timeout_s)
+
     # ---------------------------------------------------------------- health
     @property
     def address(self) -> tuple[str, int]:
@@ -268,6 +289,7 @@ class IngressServer:
         return {"state": state, "thread_alive": alive, "origin": self.origin,
                 "bind": f"{self._address[0]}:{self._address[1]}",
                 "wallet_routes": self.wallet_routes, "error": self._error,
+                "restarts": self.restarts,
                 "limits": dict(self.limits), **self.stats.snapshot()}
 
 

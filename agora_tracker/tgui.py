@@ -162,6 +162,7 @@ class IntelBot:
     worker: Any = None                    # wallet reconciliation supervisor (None: off)
     ingress: Any = None                   # private Mini App listener (None: off, the default)
     recovery: Any = None                  # owner leg recovery service (None: off, the default)
+    liveness: Any = None                  # F-18 push-alert monitor (None: off)
     _paper_broken = False
 
     def __init__(self, cfg: Config, api: TelegramApi, store: Store, reports: Reports,
@@ -370,6 +371,14 @@ class IntelBot:
         if ingress is not None:
             from .trading.ingress import render_text as render_ingress
             parts.append(render_ingress(ingress.snapshot(), _h.escape))
+        mon = getattr(self, "liveness", None)
+        if mon is not None:                      # F-18: what the push alerts currently see
+            m = mon.snapshot()
+            parts.append("<b>Liveness alerts</b>\n"
+                         f"active: {_h.escape(', '.join(m['active']) or 'none')}; "
+                         f"degraded: {m['degraded']}; sent {m['sent']}, suppressed "
+                         f"{m['suppressed']}, delivery errors {m['delivery_errors']}, ingress "
+                         f"restarts {m['ingress_restarts']}")
         self._send(chat, "\n\n".join(parts), None)
 
     def _leg_recovery(self, chat: int, uid: int, msg: dict, cmd: str, arg: str) -> None:
