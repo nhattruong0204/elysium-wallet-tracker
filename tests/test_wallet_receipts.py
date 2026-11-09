@@ -31,12 +31,15 @@ from walletkit import (
     WALLET,
     ReceiptChain,
     block_hash,
+    corroborator,
     deposit_log,
+    fake_evidence,
     transfer_log,
 )
 
 from agora_tracker.migrate import downgrade, upgrade
 from agora_tracker.trading.v2 import ROUTER
+from agora_tracker.trading.wallet.corroboration import Corroborator
 from agora_tracker.trading.wallet.receipts import ReceiptReconciler
 from agora_tracker.trading.wallet.status import order_status, positions
 
@@ -57,8 +60,10 @@ def mined_buy(live, node, ch=None, *, block=1000, head=1005, fork=0, **kw):
     return oid, leg, ch
 
 
-def rr(live, ch, **kw):
-    return ReceiptReconciler(live, ch, clock=live.clock, **kw)
+def rr(live, ch, *, finality_confirmations=12, n=2, **kw):
+    """The receipt worker over `n` independent providers that all see the scripted chain `ch`."""
+    corro, ch.providers = corroborator(ch, live.clock, n, finality=finality_confirmations)
+    return ReceiptReconciler(live, corro, clock=live.clock, **kw)
 
 
 def state(live, oid):
@@ -120,9 +125,9 @@ def test_a_reported_hash_without_a_receipt_stays_submitted(live, node):
 
 def test_node_that_has_the_receipt_but_not_the_header_yet_is_pending(live, node):
     oid, leg, ch = mined_buy(live, node)
-    del ch.canon[1000]
-    assert rr(live, ch).run_once().counts == {"pending": 1}
-    assert state(live, oid) == "submitted"
+    ch.headerless = {1000}               # the receipt is served, the header at that height is not
+    assert rr(live, ch).run_once().counts == {"unverifiable": 1}     # fail closed, nothing recorded
+    assert state(live, oid) == "submitted" and live.get_fills(U1, oid) == []
 
 
 def test_a_receipt_from_a_non_canonical_block_is_not_recorded(live, node):
@@ -134,16 +139,18 @@ def test_a_receipt_from_a_non_canonical_block_is_not_recorded(live, node):
 
 # ------------------------------------------------------------------ never trust a bad pair
 
-@pytest.mark.parametrize("tx,rc", [
-    ({"input": "0x00"}, None), ({"to": "0x" + "77" * 20}, None), ({"value": "0x1"}, None),
-    ({"from": "0x" + "77" * 20}, None), (None, {"from": "0x" + "77" * 20}),
-    (None, {"to": "0x" + "77" * 20}), (None, {"contractAddress": "0x" + "88" * 20}),
-    (None, {"status": "0x2"}), (None, {"blockHash": block_hash(1000, 5)})])
-def test_a_receipt_that_is_not_the_reviewed_transaction_records_nothing(live, node, tx, rc):
+@pytest.mark.parametrize("tx,rc,label", [
+    ({"input": "0x00"}, None, "invalid"), ({"to": "0x" + "77" * 20}, None, "invalid"),
+    ({"value": "0x1"}, None, "invalid"), ({"from": "0x" + "77" * 20}, None, "invalid"),
+    (None, {"from": "0x" + "77" * 20}, "invalid"), (None, {"to": "0x" + "77" * 20}, "invalid"),
+    (None, {"contractAddress": "0x" + "88" * 20}, "invalid"),
+    (None, {"status": "0x2"}, "unverifiable"),                  # malformed: fail closed
+    (None, {"blockHash": block_hash(1000, 5)}, "conflict")])    # receipt contradicts its own tx
+def test_a_receipt_that_is_not_the_reviewed_transaction_records_nothing(live, node, tx, rc, label):
     oid, plan, leg, flow = submitted(live, node)
     ch = ReceiptChain(1005)
     ch.mine(leg, H1, 1000, logs=[], tx=tx, rc=rc)
-    assert rr(live, ch).run_once().counts == {"invalid": 1}
+    assert rr(live, ch).run_once().counts == {label: 1}
     assert state(live, oid) == "submitted" and live.get_fills(U1, oid) == []
     assert leg_of(live, oid)["state"] == "hash_reported"
 
@@ -257,7 +264,9 @@ def test_a_finalized_inclusion_can_never_be_orphaned(live, node, owner_engine):
     rr(live, ch).run_once()
     row = leg_of(live, oid)
     assert row["finalized_at"] is not None
-    assert live.apply_reorg(row["id"], expected_version=row["version"], reason="late") is False
+    ev = fake_evidence(live.clock, row, "reorg", basis="absent", block_hash_=row["block_hash"])
+    assert live.apply_reorg(row["id"], expected_version=row["version"], reason="late",
+                            evidence=ev) is False
     with pytest.raises(Exception, match="finalized leg is immutable"):
         raw(owner_engine, "UPDATE trading_private.order_legs SET state = 'orphaned', "
                           "version = version + 1 WHERE id = :i", i=row["id"])
@@ -270,8 +279,8 @@ def test_node_is_behind_with_no_header_and_no_receipt_is_not_proof_of_a_reorg(li
     oid, leg, ch = mined_buy(live, node)
     r = rr(live, ch)
     r.run_once()
-    del ch.canon[1000]
     ch.drop(H1)
+    ch.head_n = 998                       # every provider is behind the recorded block (1000)
     assert r.run_once().counts == {"pending": 1} and state(live, oid) == "included"
 
 
@@ -292,10 +301,14 @@ def test_applying_the_same_receipt_twice_is_a_noop(live, node):
     oid, leg, ch = mined_buy(live, node)
     row = leg_of(live, oid)
     from agora_tracker.trading.wallet import fills as F
-    fill = F.compute_fill(row, ch.txs[H1], ch.receipts[H1], H1, ch)
+    corro, _ = corroborator(ch, live.clock)
+    sess = corro.session()
+    fill = F.compute_fill(row, ch.txs[H1], ch.receipts[H1], H1, sess)
+    assert fill.verdict == "verified" and fill.method_agreement
+    ev = fake_evidence(live.clock, row, "included", tx_hash=H1, fill=fill)
     kw = dict(expected_version=row["version"], state="included", block_number=1000,
               block_hash=block_hash(1000), receipt_status=1, gas_used=150_000, gas_cost_wei=GAS,
-              fill=fill, finalize=False)
+              fill=fill, finalize=False, evidence=ev)
     assert live.apply_receipt(row["id"], **kw) is True
     assert live.apply_receipt(row["id"], **kw) is False
     assert len(live.get_fills(U1, oid)) == 1
@@ -324,13 +337,13 @@ def test_receipts_are_recorded_while_trading_is_paused(live, node):
 def test_an_unreachable_node_changes_nothing(live, node):
     oid, leg, ch = mined_buy(live, node)
     ch.down = True
-    assert rr(live, ch).run_once().counts == {"error": 1}
+    assert rr(live, ch).run_once().counts == {"unverifiable": 1}
     assert state(live, oid) == "submitted" and live.get_fills(U1, oid) == []
 
 
 def test_the_rpc_budget_bounds_a_pass_and_leaves_state_untouched(live, node):
     oid, leg, ch = mined_buy(live, node)
-    rep = rr(live, ch, rpc_budget=3).run_once()
+    rep = rr(live, ch, rpc_budget=6).run_once()
     assert rep.budget_exhausted and rep.counts == {"budget_exhausted": 1}
     assert state(live, oid) == "submitted" and live.get_fills(U1, oid) == []
     assert rr(live, ch).run_once().counts == {"provisional_included": 1}   # next pass completes it
@@ -339,7 +352,7 @@ def test_the_rpc_budget_bounds_a_pass_and_leaves_state_untouched(live, node):
 def test_bad_finality_depth_is_rejected(live):
     for bad in (0, 257):
         with pytest.raises(ValueError):
-            ReceiptReconciler(live, ReceiptChain(), finality_confirmations=bad)
+            Corroborator([], finality=bad)
 
 
 # ------------------------------------------------------------------ privacy and the database

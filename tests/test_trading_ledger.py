@@ -79,7 +79,7 @@ def permissive(**kw) -> RiskPolicy:
     return RiskPolicy(**base)
 
 
-LEDGER_TABLES = ("leg_recoveries", "order_events", "execution_attempts", "order_fills", "order_legs", "orders", "controls",
+LEDGER_TABLES = ("chain_evidence", "leg_recoveries", "order_events", "execution_attempts", "order_fills", "order_legs", "orders", "controls",
                  "policy_versions", "order_state_edges")
 
 
@@ -89,7 +89,7 @@ def reset_ledger(engine) -> None:
     with engine.begin() as c:
         for t in LEDGER_TABLES:
             c.execute(sa.text(f"ALTER TABLE trading_private.{t} DISABLE TRIGGER USER"))
-        c.execute(sa.text("TRUNCATE trading_private.leg_recoveries, trading_private.order_events, trading_private.execution_attempts, trading_private.order_fills, "
+        c.execute(sa.text("TRUNCATE trading_private.chain_evidence, trading_private.leg_recoveries, trading_private.order_events, trading_private.execution_attempts, trading_private.order_fills, "
                           "trading_private.order_legs, trading_private.orders, trading_private.controls, "
                           "trading_private.policy_versions RESTART IDENTITY CASCADE"))
         c.execute(sa.text("INSERT INTO trading_private.controls (id) VALUES (1)"))

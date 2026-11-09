@@ -286,3 +286,187 @@ class ReceiptChain:
     def buy_balances(self, number, tokens, *, before=0, wallet=WALLET, token=TOKEN):
         self.tok[(token, wallet, number - 1)] = before
         self.tok[(token, wallet, number)] = before + tokens
+
+
+# ------------------------------------------------------------------ independent RPC providers (#95 F-15)
+from agora_tracker.trading.wallet.corroboration import Corroborator  # noqa: E402
+from agora_tracker.trading.wallet.rpc import RpcError  # noqa: E402
+
+
+class Provider:
+    """One RPC endpoint's VIEW of a scriptable world (a `ReceiptChain`-like object). The world is
+    the canonical chain; a provider can lag, go stale, fail, hide or fabricate facts, or lack
+    historical state, independently of every other provider. `host` and `operator` are distinct
+    per provider exactly like `ExecutionRpc.host` / `.operator`."""
+
+    chain_id = 99901
+    chain_verified = True
+
+    def __init__(self, world, host: str, clock, *, lag: int = 0, age: int = 2,
+                 operator: str | None = None) -> None:
+        from agora_tracker.trading.wallet.rpc import operator_of
+        self.w, self.host, self.clock, self.lag, self.age = world, host, clock, lag, age
+        self.operator = operator or operator_of(host)
+        self.down = False
+        self.no_history = False                 # "pruned node": every balance read is refused
+        self.header_override: dict[int, str] = {}
+        self.hidden: set[str] = set()
+        self.tx_override: dict[str, dict] = {}
+        self.rc_override: dict[str, dict] = {}
+        self.tok_shift = 0
+        self.nat_shift = 0
+        self.nonce_bias = 0
+        self.calls: list[str] = []
+
+    # -- plumbing
+    def _go(self, name: str) -> None:
+        self.calls.append(name)
+        if self.down or getattr(self.w, "down", False):
+            raise TradeRefused("rpc down")
+
+    @property
+    def n(self) -> int:
+        return self.w.head_n - self.lag
+
+    def _hdr(self, n: int) -> str:
+        if n in self.header_override:
+            return self.header_override[n]
+        return getattr(self.w, "canon", {}).get(n) or block_hash(n)
+
+    def _txs(self) -> dict:
+        return self.w.txs
+
+    def _mined(self, t: dict) -> dict:
+        """Node-style worlds omit the block hash of a mined tx: fill in the canonical one."""
+        t = dict(t)
+        if t.get("blockNumber") and not t.get("blockHash"):
+            t["blockHash"] = self._hdr(int(t["blockNumber"], 16))
+        return t
+
+    # -- reads
+    def head(self):
+        self._go("head")
+        return Head(self.n, self._hdr(self.n), int(self.clock()) - self.age)
+
+    def block_header(self, n):
+        self._go("block_header")
+        if n > self.n or n in getattr(self.w, "headerless", ()):
+            return None
+        return {"hash": self._hdr(n), "number": hex(n)}
+
+    def transaction(self, h):
+        self._go("transaction")
+        if h in self.hidden:
+            return None
+        t = self.tx_override.get(h) or self._txs().get(h)
+        if t is None:
+            return None
+        t = self._mined(t)
+        if t.get("blockNumber") and int(t["blockNumber"], 16) > self.n:
+            t["blockNumber"] = t["blockHash"] = None            # not yet in this provider's chain
+        return t
+
+    def receipt(self, h):
+        self._go("receipt")
+        if h in self.hidden:
+            return None
+        r = self.rc_override.get(h)
+        if r is None and hasattr(self.w, "receipts"):
+            r = self.w.receipts.get(h)
+        elif r is None:                                    # node-style world: synthesize it
+            t = self._txs().get(h)
+            if t is None or not t.get("blockNumber"):
+                return None
+            t = self._mined(t)
+            r = {"transactionHash": h, "from": t["from"], "to": t["to"], "status": "0x1",
+                 "blockHash": t["blockHash"], "blockNumber": t["blockNumber"],
+                 "gasUsed": "0x5208", "effectiveGasPrice": hex(10**9), "contractAddress": None,
+                 "logs": []}
+        if r is None or int(r["blockNumber"], 16) > self.n:
+            return None
+        return dict(r)
+
+    def block_transactions(self, n):
+        self._go("block_transactions")
+        return [self._mined(t) for t in self.w.blocks.get(n, []) if t["hash"] not in self.hidden]
+
+    def tx_count(self, address, tag):
+        self._go("tx_count")
+        counts = getattr(self.w, "nonces", None)
+        if tag not in ("latest", "pending"):
+            if counts is not None:
+                return counts(address, int(tag, 16)) + self.nonce_bias
+            return self._nonce_at(address, int(tag, 16)) + self.nonce_bias
+        latest = self._latest()
+        pending = getattr(self.w, "pending_nonce", None)
+        if not isinstance(pending, int):
+            pending = getattr(self.w, "pending", latest)
+        return (latest if tag == "latest" else pending) + self.nonce_bias
+
+    def _latest(self) -> int:
+        v = getattr(self.w, "latest_nonce", None)
+        return v if isinstance(v, int) else getattr(self.w, "latest", 6)
+
+    def _nonce_at(self, address: str, b: int) -> int:
+        """Node-style world: the wallet's nonce at block `b` = base + its txs mined by then."""
+        mined = [(n, t) for n, ts in self.w.blocks.items() for t in ts if t["from"] == address]
+        latest = self._latest()
+        return (latest - len(mined)) + sum(1 for n, _ in mined if n <= b)
+
+    def native_balance(self, address, block):
+        self._go("native_balance")
+        if self.no_history:
+            raise RpcError(-32000)
+        return self.w.native_balance(address, block) + self.nat_shift
+
+    def token_balance(self, token, address, block):
+        self._go("token_balance")
+        if self.no_history:
+            raise RpcError(-32000)
+        return self.w.token_balance(token, address, block) + self.tok_shift
+
+
+def providers(world, clock, n: int = 2, **kw) -> list[Provider]:
+    """`n` operationally distinct providers (alpha.test, beta.test, ...) over one world."""
+    names = ["alpha", "beta", "gamma", "delta"]
+    return [Provider(world, f"node.{names[i]}.test", clock, **kw) for i in range(n)]
+
+
+def corroborator(world, clock, n: int = 2, *, finality: int = 12, **kw) -> tuple[Corroborator, list[Provider]]:
+    ps = providers(world, clock, n)
+    return Corroborator(ps, finality=finality, clock=clock, **kw), ps
+
+
+def fake_evidence(clock, leg, outcome: str, *, tx_hash=None, block_number: int = 1000,
+                  block_hash_: str | None = None, status: int = 1, confirmations: int = 6,
+                  finality: int = 12, fill=None, basis: str | None = None, taken_at=None,
+                  sources=("alpha.test", "beta.test"), **facts) -> dict:
+    """A syntactically valid, corroborated provenance record for tests that drive the LEDGER
+    directly (the ledger checks structure; wallet/corroboration.py establishes truth)."""
+    now = float(clock()) if taken_at is None else taken_at
+    bh = block_hash_ or block_hash(block_number)
+    f = {"leg_id": leg["id"], "leg_version": leg["version"], "outcome": outcome,
+         "tx_hash": tx_hash or leg.get("final_tx_hash") or leg.get("tx_hash"),
+         "block_number": block_number, "block_hash": bh, "receipt_status": status,
+         "confirmations": confirmations}
+    if basis:
+        f["basis"] = basis
+    f.update(facts)
+    ev = {"schema": 1, "chain_id": 99901, "taken_at": now, "max_head_age_s": 60,
+          "finality": finality,
+          "anchor": {"number": 2000, "hash": block_hash(2000), "timestamp": int(now) - 2},
+          "sources": [{"name": f"node.{s}", "operator": s, "head_number": 2000,
+                       "head_hash": block_hash(2000), "head_timestamp": int(now) - 2}
+                      for s in sources],
+          "failed": [], "problems": [], "calls": 8, "reads": [], "source_agreement": True,
+          "facts": f}
+    if fill is not None:
+        ev["fill"] = {"verdict": fill.verdict, "method_agreement": fill.method_agreement,
+                      "inputs_source_agreed": True, "basis": fill.basis}
+    return ev
+
+
+def session_of(world, clock=None, n: int = 2, **kw):
+    """A corroborated session over `n` providers of `world` (for unit tests of the fill code)."""
+    corro, _ = corroborator(world, clock or (lambda: NOW), n, **kw)
+    return corro.session()

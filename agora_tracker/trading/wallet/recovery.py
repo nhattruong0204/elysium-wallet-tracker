@@ -7,9 +7,11 @@ and, only when it is provable and the owner confirms with a reason, record a cor
 Safety rules (each one is covered by tests/test_wallet_recovery*.py):
 
 * Diagnosis is read-only: it only calls chain READ methods and never writes to the ledger.
-* A correction needs evidence from at least TWO distinct, configured sources, ALL of which must be
-  healthy, fresh, on the same canonical chain at one anchor block and in agreement. One stale,
-  failing or disagreeing source => no correction.
+* A correction needs evidence from at least TWO distinct, configured sources (distinct hosts AND
+  distinct operators), ALL of which must be healthy, fresh, on the same canonical chain at one
+  anchor block and in agreement. One stale, failing or disagreeing source => no correction. The
+  corroboration is the SHARED layer `wallet/corroboration.py` (F-15), the same one the receipt
+  worker and the auto-reconciler use; nothing here re-implements it.
 * Only two corrections exist, both terminal for the LEG and neither touches a receipt, fill,
   hash or nonce:
     - `superseded`: another, different transaction from the same wallet occupies the nonce of this
@@ -39,25 +41,19 @@ import re
 import secrets
 import threading
 import time
-from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
-from functools import partial
-from typing import Any, Protocol
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import Any
 
 from ..ledger.core import Actor, LedgerRefused, OrderLedger
-from .approvals import Head
+from .corroboration import Conflict, Corroborator, EvidenceError, Session, Snapshot
 from .reconcile import critical, expected_of, swap_deadline
 from .requests import tx_mismatches
 
 log = logging.getLogger(__name__)
 
 SCHEMA = 1
-MIN_SOURCES = 2
-MAX_HEAD_SKEW = 3              # blocks the sources' heads may differ by
-MAX_HEAD_AGE_S = 60            # a source whose newest block is older than this is stale
 DEADLINE_MARGIN_S = 600        # extra time after a swap deadline, on the sources' block clock
-MAX_BISECT_SPAN = 200_000
-MAX_NONCES_SCANNED = 10
 CODE_TTL_S = 300
 MAX_BAD_CODES = 5
 MAX_OUTSTANDING_CODES = 50
@@ -71,30 +67,12 @@ RECOVERABLE = ("ambiguous", "orphaned")
 ORDER_STATES_OK = ("ambiguous", "orphaned", "awaiting_wallet", "submitted", "cancelled")
 
 
-class ChainSource(Protocol):
-    """Read-only. Implementations (ExecutionRpc) refuse every non-read method."""
-    def head(self) -> Head: ...
-    def transaction(self, tx_hash: str) -> dict | None: ...
-    def receipt(self, tx_hash: str) -> dict | None: ...
-    def block_header(self, number: int) -> dict | None: ...
-    def block_transactions(self, number: int) -> list[dict]: ...
-    def tx_count(self, address: str, tag: str) -> int: ...
-
-
 class RecoveryRefused(Exception):
     """A recovery step was refused. `code` is stable and safe to show; nothing was changed."""
 
     def __init__(self, code: str, message: str, diagnosis: Diagnosis | None = None) -> None:
         super().__init__(f"{code}: {message}")
         self.code, self.message, self.diagnosis = code, message, diagnosis
-
-
-class _Unavailable(Exception):
-    pass
-
-
-class _Disagree(Exception):
-    pass
 
 
 @dataclass(frozen=True)
@@ -134,43 +112,8 @@ class Prepared:
     expires_at: float | None
 
 
-@dataclass(frozen=True)
-class _Live:
-    name: str
-    src: ChainSource
-    head: Head
-
-
-@dataclass
-class _Snapshot:
-    configured: int
-    live: list[_Live]
-    failed: list[dict]
-    anchor: Head | None = None
-    problems: list[str] = field(default_factory=list)
-
-    @property
-    def ok(self) -> bool:
-        return not self.problems and self.anchor is not None
-
-
 def _canon(obj: Any) -> str:
     return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
-
-
-def _qty(v: Any) -> int:
-    if isinstance(v, int) and not isinstance(v, bool):
-        return v
-    return int(str(v), 16)
-
-
-def _header_of(number: int, src: ChainSource) -> dict | None:
-    return src.block_header(number)
-
-
-def _name(src: Any, i: int) -> str:
-    n = getattr(src, "host", None) or getattr(src, "name", None) or f"source{i + 1}"
-    return str(n)[:80]
 
 
 # ----------------------------------------------------------------------------- confirmation codes
@@ -233,14 +176,12 @@ class _Codes:
 
 # ----------------------------------------------------------------------------- the service
 class LegRecovery:
-    def __init__(self, ledger: OrderLedger, sources: Sequence[ChainSource], *,
-                 finality_confirmations: int = 12, clock: Callable[[], float] = time.time,
+    def __init__(self, ledger: OrderLedger, corroborator: Corroborator, *,
+                 clock: Callable[[], float] = time.time,
                  deadline_margin_s: int = DEADLINE_MARGIN_S) -> None:
-        if not 1 <= finality_confirmations <= 256:
-            raise ValueError("finality_confirmations must be in 1..256")
-        self.ledger, self.clock, self.finality = ledger, clock, finality_confirmations
+        self.ledger, self.clock, self.corro = ledger, clock, corroborator
+        self.finality = corroborator.finality
         self.margin = deadline_margin_s
-        self.sources = [(_name(s, i), s) for i, s in enumerate(sources)]
         self._codes = _Codes(clock)
         self._busy = threading.Lock()      # one diagnosis at a time: bounded RPC load
 
@@ -304,117 +245,6 @@ class LegRecovery:
         except Exception:                                           # noqa: BLE001 - best effort
             log.warning("could not audit a refused recovery", exc_info=False)
 
-    # ------------------------------------------------------------------ evidence
-    def _snapshot(self) -> _Snapshot:
-        snap = _Snapshot(configured=len(self.sources), live=[], failed=[])
-        names = [n for n, _ in self.sources]
-        if len(set(names)) != len(names):
-            snap.problems.append("sources_not_independent")
-        for name, src in self.sources:
-            try:
-                h = src.head()
-                if not isinstance(h, Head) or not HASH.fullmatch(str(h.hash)):
-                    raise _Unavailable("malformed head")
-            except Exception as exc:                                # noqa: BLE001
-                snap.failed.append({"name": name, "error": type(exc).__name__})
-                continue
-            snap.live.append(_Live(name, src, h))
-        if snap.failed:
-            snap.problems.append("source_unavailable")
-        if len(self.sources) < MIN_SOURCES:
-            snap.problems.append("needs_two_independent_sources")
-        if not snap.live:
-            return snap
-        now = float(self.clock())
-        numbers = [x.head.number for x in snap.live]
-        anchor_live = min(snap.live, key=lambda x: x.head.number)
-        snap.anchor = anchor_live.head
-        if max(numbers) - min(numbers) > MAX_HEAD_SKEW:
-            snap.problems.append("heads_diverge")
-        if any(not -5 <= now - x.head.timestamp <= MAX_HEAD_AGE_S for x in snap.live):
-            snap.problems.append("stale_head")
-        if "stale_head" not in snap.problems and "heads_diverge" not in snap.problems:
-            try:
-                hashes = {self._header_hash(x, snap.anchor.number) for x in snap.live}
-            except _Unavailable:
-                snap.problems.append("source_unavailable")
-            else:
-                if len(hashes) != 1 or None in hashes:
-                    snap.problems.append("sources_disagree_on_chain")
-        return snap
-
-    @staticmethod
-    def _header_hash(x: _Live, number: int) -> str | None:
-        try:
-            h = x.src.block_header(number)
-        except Exception as exc:                                    # noqa: BLE001
-            raise _Unavailable(type(exc).__name__) from None
-        return None if h is None else str(h.get("hash", "")).lower()
-
-    def _each(self, snap: _Snapshot, fn: Callable[[ChainSource], Any]) -> list[Any]:
-        out = []
-        for x in snap.live:
-            try:
-                out.append(fn(x.src))
-            except Exception as exc:                                # noqa: BLE001
-                raise _Unavailable(f"{x.name}:{type(exc).__name__}") from None
-        return out
-
-    @staticmethod
-    def _agree(values: list[Any], what: str) -> Any:
-        if len({_canon(v) for v in values}) != 1:
-            raise _Disagree(what)
-        return values[0]
-
-    def _locate_one(self, x: _Live, wallet: str, n: int, lo: int, hi: int) -> tuple[dict, int, str]:
-        """The transaction of `wallet` with nonce `n` (state-based bisection on the sender's
-        nonce, so a long window costs ~log2 reads): (tx, block number, block hash)."""
-        def cnt(b: int) -> int:
-            return x.src.tx_count(wallet, hex(b))
-        if cnt(lo) > n:
-            raise _Disagree("nonce_consumed_before_the_request")
-        if cnt(hi) <= n:
-            raise _Disagree("nonce_not_consumed")
-        left, right = lo, hi
-        while right - left > 1:
-            mid = (left + right) // 2
-            if cnt(mid) > n:
-                right = mid
-            else:
-                left = mid
-        hdr = x.src.block_header(right)
-        if hdr is None:
-            raise _Unavailable("header_missing")
-        for tx in x.src.block_transactions(right):
-            try:
-                same = (str(tx.get("from", "")).lower() == wallet and _qty(tx.get("nonce")) == n
-                        and HASH.fullmatch(str(tx.get("hash", "")).lower()))
-            except ValueError:
-                continue
-            if same:
-                bh = str(hdr.get("hash", "")).lower()
-                if str(tx.get("blockHash", bh)).lower() != bh:
-                    raise _Disagree("block_hash_mismatch")
-                return tx, right, bh
-        raise _Disagree("consuming_transaction_not_in_block")
-
-    def _locate(self, snap: _Snapshot, wallet: str, n: int, lo: int | None) -> tuple[dict, int, str]:
-        assert snap.anchor is not None
-        a = snap.anchor.number
-        lo = max(0, a - MAX_BISECT_SPAN) if lo is None else max(lo, a - MAX_BISECT_SPAN)
-        found = []
-        for x in snap.live:
-            try:
-                found.append(self._locate_one(x, wallet, n, lo, a))
-            except (_Disagree, _Unavailable):
-                raise
-            except Exception as exc:                                # noqa: BLE001
-                raise _Unavailable(f"{x.name}:{type(exc).__name__}") from None
-        keys = {(str(t["hash"]).lower(), b, bh) for t, b, bh in found}
-        if len(keys) != 1:
-            raise _Disagree("sources_disagree_on_consuming_transaction")
-        return found[0]
-
     # ------------------------------------------------------------------ diagnosis
     def _diagnose(self, leg: dict) -> Diagnosis:
         if not self._busy.acquire(blocking=False):
@@ -425,7 +255,8 @@ class LegRecovery:
             self._busy.release()
 
     def _diagnose_locked(self, leg: dict) -> Diagnosis:
-        snap: _Snapshot | None = None
+        sess = self.corro.session()
+        snap: Snapshot | None = None
         proposal: str | None = None
         facts: dict[str, Any] = {}
         decisive: dict[str, Any] = {}
@@ -440,14 +271,19 @@ class LegRecovery:
                 category, reason, detail = UNKNOWN, "already_recovered", "a recovery was already recorded"
                 blocked = "already_recovered"
             else:
-                snap = self._snapshot()
-                category, reason, detail, proposal, auto, facts, decisive = self._classify(leg, snap)
-        except _Unavailable as exc:
-            category, reason, detail = (UNAVAILABLE, "chain_source_unavailable",
-                                        "a chain source did not answer: " + str(exc)[:80])
+                snap = sess.snapshot()
+                if not snap.ok:
+                    category, reason, detail = self._no_anchor(snap)
+                else:
+                    category, reason, detail, proposal, auto, facts, decisive = self._classify(
+                        leg, sess, snap)
+        except Conflict as exc:
+            category, reason, detail = (UNKNOWN, exc.code,
+                                        "chain sources disagree or the evidence is inconsistent")
             proposal, auto = None, False
-        except _Disagree as exc:
-            category, reason, detail = (UNKNOWN, str(exc), "chain sources disagree or the evidence is inconsistent")
+        except EvidenceError as exc:
+            category, reason, detail = (UNAVAILABLE, "chain_source_unavailable",
+                                        "chain evidence is unavailable: " + exc.code)
             proposal, auto = None, False
         if proposal is not None:
             if snap is None or not snap.ok:
@@ -457,7 +293,7 @@ class LegRecovery:
         if proposal is None and blocked is None and not auto:
             blocked = self._blocked_reason(snap, reason)
         corroborated = bool(snap and snap.ok)
-        evidence = self._evidence(leg, snap, category, reason, proposal, facts)
+        evidence = self._evidence(leg, sess, snap, category, reason, proposal, facts)
         digest = hashlib.sha256(_canon(evidence).encode()).hexdigest()
         decision = None
         if proposal is not None:
@@ -478,80 +314,76 @@ class LegRecovery:
             escalation=() if proposal is not None or auto else escalation(leg, category, blocked))
 
     @staticmethod
-    def _blocked_reason(snap: _Snapshot | None, reason: str) -> str:
+    def _no_anchor(snap: Snapshot) -> tuple[str, str, str]:
+        if not snap.live:
+            return UNAVAILABLE, "chain_source_unavailable", "no chain source answered"
+        code = snap.problems[0] if snap.problems else "source_unavailable"
+        unavailable = code in ("source_unavailable", "needs_two_independent_sources")
+        return ((UNAVAILABLE if unavailable else UNKNOWN), "chain_source_unavailable"
+                if unavailable else code, "the chain sources are not corroborated: " + code)
+
+    @staticmethod
+    def _blocked_reason(snap: Snapshot | None, reason: str) -> str:
         if snap is not None and snap.problems:
             return snap.problems[0]
         return reason
 
-    def _evidence(self, leg: dict, snap: _Snapshot | None, category: str, reason: str,
-                  proposal: str | None, facts: dict) -> dict[str, Any]:
-        srcs: list[dict[str, Any]] = []
-        anchor = {"number": 0, "hash": "0x" + "0" * 64, "timestamp": 0}
-        if snap is not None:
-            for x in snap.live:
-                srcs.append({"name": x.name, "head_number": x.head.number, "head_hash": x.head.hash,
-                             "head_timestamp": x.head.timestamp})
-            for f in snap.failed:
-                srcs.append({"name": f["name"], "error": f["error"]})
-            if snap.anchor is not None:
-                anchor = {"number": snap.anchor.number, "hash": snap.anchor.hash,
-                          "timestamp": snap.anchor.timestamp}
-            for k, v in facts.get("per_source", {}).items():
-                for s in srcs:
-                    if s["name"] == k:
-                        s.update(v)
-        return {
-            "schema": SCHEMA, "action": proposal, "category": category, "reason": reason,
-            "anchor": anchor, "sources": srcs,
-            "problems": list(snap.problems) if snap else [],
+    def _evidence(self, leg: dict, sess: Session, snap: Snapshot | None, category: str,
+                  reason: str, proposal: str | None, facts: dict) -> dict[str, Any]:
+        """The shared provenance record plus what this diagnosis concluded. For a diagnosis that
+        is not corroborated the record says so (`source_agreement` False, `problems` set) and the
+        ledger would refuse it; the owner still sees it."""
+        prov = sess.provenance(strict=False) if snap is not None else {
+            "schema": SCHEMA, "chain_id": self.corro.chain_id, "taken_at": float(self.clock()),
+            "finality": self.finality, "anchor": None, "sources": [], "failed": [],
+            "problems": [], "calls": 0, "reads": [], "source_agreement": False}
+        if prov["anchor"] is None:
+            prov["anchor"] = {"number": 0, "hash": "0x" + "0" * 64, "timestamp": 0}
+        return prov | {
+            "action": proposal, "category": category, "reason": reason,
             "leg": {"id": leg["id"], "version": leg["version"], "state": leg["state"],
                     "kind": leg["kind"], "wallet": leg["wallet"], "chain_id": leg["chain_id"],
                     "tx_hash": leg["tx_hash"], "final_tx_hash": leg["final_tx_hash"],
                     "nonce": None if leg["nonce"] is None else int(leg["nonce"]),
                     "nonce_hint": None if leg["nonce_hint"] is None else int(leg["nonce_hint"]),
                     "prompt_block": leg["prompt_block"], "order_state": leg["order_state"]},
-            "facts": {k: v for k, v in facts.items() if k != "per_source"},
+            "facts": {"leg_id": leg["id"], "leg_version": leg["version"], "outcome": proposal,
+                      **facts},
         }
 
     # ------------------------------------------------------------------ classification
-    def _classify(self, leg: dict, snap: _Snapshot):
-        """-> (category, reason, detail, proposal, auto, facts, decisive)"""
-        facts: dict[str, Any] = {"per_source": {}}
-        if not snap.live:
-            return (UNAVAILABLE, "chain_source_unavailable", "no chain source answered",
-                    None, False, facts, {})
+    def _classify(self, leg: dict, sess: Session, snap: Snapshot):
+        """-> (category, reason, detail, proposal, auto, facts, decisive). Every read goes through
+        the shared corroborated session, so a fact here is identical on all sources at the anchor."""
+        facts: dict[str, Any] = {}
         assert snap.anchor is not None
         exp = expected_of(leg)
         wallet, anchor = leg["wallet"], snap.anchor
         h = leg["final_tx_hash"] or leg["tx_hash"]
 
-        # ---- 1. is the recorded transaction on chain?  (presence from ANY healthy source counts)
+        # ---- 1. is the recorded transaction on chain?  (unanimous at the anchor, or a conflict)
         if h:
-            views = self._each(snap, lambda s: (s.transaction(h), s.receipt(h)))
-            seen = [(t, r) for t, r in views if t is not None]
-            if seen:
-                txs = {(str(t.get("from", "")).lower(), str(t.get("to", "")).lower(),
-                        str(t.get("input", "")).lower(), str(t.get("value", ""))) for t, _ in seen}
-                if len(txs) > 1:
-                    raise _Disagree("sources_disagree_on_transaction")
-                tx = seen[0][0]
-                rcs = [r for _, r in seen if r is not None]
-                bad = critical(tx_mismatches(exp, tx, h))
-                if not rcs:
-                    return (UNKNOWN, "transaction_pending", "the transaction is known but not mined yet",
-                            None, False, facts | {"tx_hash": h}, {})
-                rc = rcs[0]
-                incomplete = len(seen) != len(views) or len(rcs) != len(views)
-                if len({(str(r.get("blockHash", "")).lower(), str(r.get("blockNumber")),
-                         str(r.get("status"))) for r in rcs}) != 1:
-                    raise _Disagree("sources_disagree_on_receipt")
-                number = _qty(rc.get("blockNumber"))
-                bh = str(rc.get("blockHash", "")).lower()
-                canon = self._each(snap, partial(_header_of, number))
-                canonical = all(c is not None and str(c.get("hash", "")).lower() == bh for c in canon)
-                conf = anchor.number - number + 1
+            inc = sess.inclusion(h)
+            if inc.status == "pending":
+                return (UNKNOWN, "transaction_pending", "the transaction is known but not mined yet",
+                        None, False, facts | {"tx_hash": h}, {})
+            if inc.status == "ahead":
+                return (UNKNOWN, "mined_above_the_shared_anchor",
+                        "the transaction was mined beyond the block every source has reached; "
+                        "diagnose again in a moment", None, False, facts | {"tx_hash": h}, {})
+            if inc.status == "not_canonical":
+                return (UNKNOWN, "inclusion_not_canonical",
+                        "the receipt is from a block that is no longer canonical", None, False,
+                        facts | {"tx_hash": h, "block_hash": inc.block_hash}, {})
+            if inc.status == "mined":
+                assert inc.tx is not None and inc.receipt is not None
+                assert inc.block_number is not None and inc.block_hash is not None
+                assert inc.confirmations is not None
+                number, bh, conf = inc.block_number, inc.block_hash, inc.confirmations
+                rc = inc.receipt
+                bad = critical(tx_mismatches(exp, inc.tx, h))
                 facts |= {"tx_hash": h, "block_number": number, "block_hash": bh,
-                          "canonical_in_all_sources": canonical, "confirmations": conf,
+                          "canonical_in_all_sources": True, "confirmations": conf,
                           "mismatches": bad}
                 if not bad:
                     ok = str(rc.get("status")) == "0x1"
@@ -561,9 +393,7 @@ class LegRecovery:
                             "(no correction is needed or allowed)",
                             None, True, facts, {})
                 # the wallet reported a hash whose transaction is NOT the reviewed request
-                if incomplete:
-                    raise _Disagree("sources_disagree_on_transaction")
-                if canonical and conf >= self.finality and str(rc.get("status")) in ("0x0", "0x1"):
+                if conf >= self.finality and str(rc.get("status")) in ("0x0", "0x1"):
                     decisive = {"consuming": h, "block_hash": bh}
                     return (EXTERNAL, "reported_hash_is_a_different_transaction",
                             "the wallet executed a different transaction than the one reviewed; its "
@@ -576,13 +406,8 @@ class LegRecovery:
                         None, False, facts, {})
 
         # ---- 2. nothing of ours on chain: look at the wallet's nonce
-        counts = self._each(snap, lambda s: (s.tx_count(wallet, hex(anchor.number)),
-                                             s.tx_count(wallet, "latest"),
-                                             s.tx_count(wallet, "pending")))
-        at_anchor = self._agree([c[0] for c in counts], "sources_disagree_on_wallet_nonce")
-        for x, c in zip(snap.live, counts, strict=True):
-            facts["per_source"][x.name] = {"nonce_at_anchor": c[0], "latest_nonce": c[1],
-                                           "pending_nonce": c[2]}
+        at_anchor = sess.nonce_at(wallet, anchor.number)
+        queued = sess.queued(wallet)
         facts["wallet_nonce_at_anchor"] = at_anchor
         n = leg["nonce"]
         hint = leg["nonce_hint"]
@@ -590,26 +415,27 @@ class LegRecovery:
         if n is not None:
             n = int(n)
             if at_anchor > n:
-                tx, number, bh = self._locate(snap, wallet, n, leg["prompt_block"])
-                th = str(tx["hash"]).lower()
-                bad = critical(tx_mismatches(exp, tx, None))
-                conf = anchor.number - number + 1
-                cons = {"hash": th, "block_number": number, "block_hash": bh, "nonce": n,
-                        "confirmations": conf, "mismatches": bad}
+                cons = sess.consuming_tx(wallet, n, leg["prompt_block"])
+                th = str(cons.tx["hash"]).lower()
+                bad = critical(tx_mismatches(exp, cons.tx, None))
+                conf = cons.confirmations
+                ctx = {"hash": th, "block_number": cons.block_number,
+                       "block_hash": cons.block_hash, "nonce": n, "confirmations": conf,
+                       "mismatches": bad}
                 if not bad:
                     return (REPLACED, "replaced_by_identical_request",
                             "an identical request was mined under another hash (speed-up); the "
                             "reconciler records it (no correction is needed)",
-                            None, True, facts | {"consuming_tx": cons}, {})
+                            None, True, facts | {"consuming_tx": ctx}, {})
                 if conf >= self.finality:
                     return (REPLACED, "replaced_by_different_transaction",
                             "the nonce of this request is consumed by a different, final transaction; "
                             "this request can never be mined",
-                            "superseded", False, facts | {"consuming_tx": cons},
-                            {"consuming": th, "block_hash": bh, "nonce": n})
+                            "superseded", False, facts | {"consuming_tx": ctx},
+                            {"consuming": th, "block_hash": cons.block_hash, "nonce": n})
                 return (REPLACED, "replacement_not_final_yet",
                         f"replaced by a different transaction only {conf}/{self.finality} deep",
-                        None, False, facts | {"consuming_tx": cons}, {})
+                        None, False, facts | {"consuming_tx": ctx}, {})
             category, reason = UNKNOWN, "nonce_not_consumed"
             detail = "the request's nonce is still free: the transaction could still be mined"
         elif hint is not None and at_anchor > int(hint):
@@ -624,7 +450,7 @@ class LegRecovery:
         deadline = swap_deadline(leg)
         if deadline is None:
             return category, reason, detail + "; the swap deadline is unreadable", None, False, facts, {}
-        anchor_ts = min(x.head.timestamp for x in snap.live)
+        anchor_ts = anchor.timestamp
         facts |= {"swap_deadline": deadline, "deadline_margin_s": self.margin,
                   "anchor_timestamp": anchor_ts}
         if anchor_ts <= deadline + self.margin:
@@ -634,30 +460,27 @@ class LegRecovery:
         lo = leg["prompt_block"]
         if lo is None:
             return category, reason, detail + "; no prompt block recorded", None, False, facts, {}
-        if any(c[2] != c[1] for c in counts):
+        if queued:
             return (category, "wallet_has_pending_transactions",
                     detail + "; the wallet has queued transactions", None, False, facts, {})
-        c0 = self._agree(self._each(snap, lambda s: s.tx_count(wallet, hex(lo))),
-                         "sources_disagree_on_wallet_nonce")
-        if at_anchor < c0:
-            raise _Disagree("wallet_nonce_went_backwards")
-        if at_anchor - c0 > MAX_NONCES_SCANNED:
+        act = sess.wallet_activity(wallet, lo)
+        if act.too_many:
             return (category, "too_many_wallet_transactions_to_check", detail, None, False, facts, {})
         checked = []
-        for k in range(c0, at_anchor):
-            tx, number, bh = self._locate(snap, wallet, k, lo)
-            checked.append({"nonce": k, "hash": str(tx["hash"]).lower(), "block_number": number,
-                            "block_hash": bh})
-            if not critical(tx_mismatches(exp, tx, None)):
+        for c in act.txs:
+            checked.append({"nonce": int(str(c.tx.get("nonce")), 16), "hash": str(c.tx["hash"]).lower(),
+                            "block_number": c.block_number, "block_hash": c.block_hash})
+            if not critical(tx_mismatches(exp, c.tx, None)):
                 return (CONFIRMED, "identical_request_found_on_chain",
                         "an identical request was mined; the reconciler records it", None, True,
                         facts | {"checked_nonces": checked}, {})
-        facts |= {"nonce_at_prompt_block": c0, "checked_nonces": checked}
+        facts |= {"nonce_at_prompt_block": act.nonce_at_start, "checked_nonces": checked,
+                  "wallet_queue_empty": True}
         return (EXPIRED, "no_transaction_found_and_deadline_passed",
                 "no matching transaction exists and the swap deadline has passed: a late broadcast "
                 "could only revert",
                 "abandoned", False, facts,
-                {"deadline": deadline, "from_nonce": c0, "to_nonce": at_anchor,
+                {"deadline": deadline, "from_nonce": act.nonce_at_start, "to_nonce": act.nonce_at_anchor,
                  "checked": [c["hash"] for c in checked]})
 
 
@@ -711,8 +534,8 @@ def render_diagnosis(d: Diagnosis, esc: Callable[[str], str] = lambda x: x,
         f"<b>diagnosis: {esc(d.category)}</b> — {esc(d.reason)}",
         esc(d.detail),
         f"anchor block {ev['anchor']['number']}; sources: "
-        + ", ".join(esc(s["name"]) + (f" (error {esc(s['error'])})" if "error" in s else "")
-                    for s in ev["sources"]),
+        + ", ".join([esc(s["name"]) + f" [{esc(s.get('operator', '?'))}]" for s in ev["sources"]]
+                    + [esc(f["name"]) + f" (error {esc(f['error'])})" for f in ev.get("failed", [])]),
         f"corroborated by 2+ independent sources: {'yes' if d.corroborated else 'NO'}",
     ]
     if d.auto:

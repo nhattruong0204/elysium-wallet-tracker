@@ -130,6 +130,25 @@ class CircuitBreaker:
                 self._opened_at = self.clock()
 
 
+_MULTI_SUFFIX = frozenset({"co.uk", "org.uk", "ac.uk", "com.au", "net.au", "co.jp", "co.in", "com.br",
+                           "com.sg", "co.nz", "com.cn", "com.tw", "com.hk", "co.kr"})
+
+
+def operator_of(host: str) -> str:
+    """Who runs an endpoint, as far as its host name says: the registrable domain
+    (`eth-a.alchemy.com` and `eth-b.alchemy.com` are one operator), or the address itself for an
+    IP. Two sources with the same operator are NOT independent. This is a name heuristic; the
+    operator can override it with an explicit label (see `runtime.build_rpc_sources`)."""
+    h = host.lower().rstrip(".")
+    if re.fullmatch(r"[0-9.]+|[0-9a-f:]+", h):
+        return h
+    parts = h.split(".")
+    if len(parts) <= 2:
+        return h
+    tail = ".".join(parts[-2:])
+    return ".".join(parts[-3:]) if tail in _MULTI_SUFFIX else tail
+
+
 def _qty(v: object) -> int:
     if not isinstance(v, str) or not re.fullmatch(r"0x(?:0|[1-9a-fA-F][0-9a-fA-F]*)", v):
         raise RpcUnavailable("malformed quantity from execution RPC")
@@ -142,12 +161,16 @@ class ExecutionRpc:
                  wall: Callable[[], float] = time.time, sleep: Callable[[float], None] = time.sleep,
                  max_concurrency: int = 4, queue_wait: float = 0.25, timeout: float = 5.0,
                  retries: int = 2, breaker: CircuitBreaker | None = None,
-                 chain_id: int = CHAIN) -> None:
+                 chain_id: int = CHAIN, operator: str | None = None) -> None:
         parts = urlsplit(url)
         if parts.scheme not in ("https", "http") or not parts.hostname:
             raise ValueError("execution RPC url must be http(s)")
         self._url = url
         self.host = parts.hostname                 # the only part of the URL ever logged
+        label = (operator or "").strip().lower()
+        if label and not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,63}", label):
+            raise ValueError("operator label must be 1-64 of [a-z0-9._-]")
+        self.operator = label or operator_of(self.host)
         self.transport = transport or RequestsTransport()
         self.clock, self.wall, self.sleep = clock, wall, sleep
         self.timeout, self.retries, self.queue_wait = timeout, retries, queue_wait
@@ -158,6 +181,13 @@ class ExecutionRpc:
         self._lock = threading.Lock()
         self._chain_ok_at: float | None = None
         self._m: dict[str, dict[str, Any]] = {}
+
+    @property
+    def chain_verified(self) -> bool:
+        """True while this endpoint has recently answered `eth_chainId == self.chain_id` (every
+        read verifies it first, so any successful read leaves it True for CHAIN_RECHECK_S)."""
+        at = self._chain_ok_at
+        return at is not None and self.clock() - at < CHAIN_RECHECK_S
 
     # ------------------------------------------------------------------ metrics
     def _count(self, method: str, outcome: str, ms: float | None = None) -> None:
@@ -174,7 +204,8 @@ class ExecutionRpc:
     def metrics(self) -> dict[str, Any]:
         with self._lock:
             methods = {k: {**v, "buckets": list(v["buckets"])} for k, v in self._m.items()}
-        return {"host": self.host, "breaker": self.breaker.state, "methods": methods,
+        return {"host": self.host, "operator": self.operator, "breaker": self.breaker.state,
+                "methods": methods,
                 "bucket_upper_ms": list(LATENCY_BUCKETS_MS)}
 
     # ------------------------------------------------------------------ core

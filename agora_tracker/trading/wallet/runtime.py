@@ -6,6 +6,7 @@ reconcile what a wallet did, so the flag must not be honoured."""
 from __future__ import annotations
 
 import os
+import re
 from collections.abc import Mapping
 
 from ...config import Config
@@ -29,37 +30,54 @@ def build_execution_rpc(cfg: Config, environ: Mapping[str, str] = os.environ) ->
     if url.strip() in {str(u).strip() for u in shared}:
         raise ExecutionRpcConfigError("the execution RPC must not be the scanner/paper RPC")
     try:
-        return ExecutionRpc(url)
+        return ExecutionRpc(url, operator=(cfg.trading.execution_rpc_operator or None))
     except ValueError:
-        raise ExecutionRpcConfigError(f"{name} is not a valid http(s) URL") from None
+        raise ExecutionRpcConfigError(f"{name} is not a valid http(s) URL or operator label") from None
 
 
-def build_recovery_sources(cfg: Config, exec_rpc: ExecutionRpc | None,
-                           environ: Mapping[str, str] = os.environ) -> list[ExecutionRpc]:
-    """Chain sources for owner leg recovery (F-02): the execution RPC plus the endpoints listed in
-    `recovery_rpc_urls_env`. Every endpoint is read-only (ExecutionRpc allowlist). Endpoints that
-    are the scanner/paper RPC, duplicate another endpoint or share a host are refused: two names
-    for one provider are not two independent sources. Fewer than two sources is allowed (the
-    owner can still DIAGNOSE) but can never RESOLVE."""
+_LABELED = re.compile(r"^([a-z0-9][a-z0-9._-]{0,63})=(https?://.+)$", re.I)
+
+
+def build_rpc_sources(cfg: Config, exec_rpc: ExecutionRpc | None,
+                      environ: Mapping[str, str] = os.environ) -> list[ExecutionRpc]:
+    """The independently configured chain sources (F-15): the execution RPC plus the endpoints in
+    `corroboration_rpc_urls_env` (comma-separated SECRET urls, each optionally `label=url`). The
+    same list feeds the receipt worker, the auto-reconciler and owner recovery. Every endpoint is
+    read-only (ExecutionRpc allowlist). Refused at startup: the scanner/paper RPC, a duplicate URL,
+    two endpoints with the same host, and two endpoints with the same OPERATOR (an explicit label,
+    else the registrable domain). That is what code can check; whether two operators share an
+    upstream node is the deployer's attestation (docs/TRADING_RPC_CORROBORATION.md). Fewer than
+    two sources is allowed (owners can still DIAGNOSE) but nothing safety-critical is then ever
+    recorded: the system fails closed."""
     if exec_rpc is None:
         return []
     out = [exec_rpc]
-    raw = environ.get(cfg.trading.recovery_rpc_urls_env, "")
+    raw = environ.get(cfg.trading.corroboration_rpc_urls_env, "")
     shared = {str(u).strip() for u in
               (cfg.trading.paper_rpc_url, *getattr(getattr(cfg, "chain", None), "rpc_urls", []))}
-    seen_hosts = {exec_rpc.host}
-    for url in (u.strip() for u in raw.split(",")):
-        if not url:
+    seen_hosts, seen_ops, seen_urls = {exec_rpc.host}, {exec_rpc.operator}, set()
+    for entry in (u.strip() for u in raw.split(",")):
+        if not entry:
             continue
+        m = _LABELED.match(entry)
+        label, url = (m.group(1).lower(), m.group(2)) if m else (None, entry)
         if url in shared:
-            raise ExecutionRpcConfigError("a recovery RPC must not be the scanner/paper RPC")
+            raise ExecutionRpcConfigError("a corroboration RPC must not be the scanner/paper RPC")
+        if url in seen_urls:
+            raise ExecutionRpcConfigError("a corroboration RPC url is listed twice")
+        seen_urls.add(url)
         try:
-            rpc = ExecutionRpc(url)
+            rpc = ExecutionRpc(url, operator=label)
         except ValueError:
             raise ExecutionRpcConfigError(
-                f"{cfg.trading.recovery_rpc_urls_env} holds an invalid http(s) URL") from None
+                f"{cfg.trading.corroboration_rpc_urls_env} holds an invalid entry") from None
         if rpc.host in seen_hosts:
-            raise ExecutionRpcConfigError("recovery RPC endpoints must have distinct hosts")
+            raise ExecutionRpcConfigError("corroboration RPC endpoints must have distinct hosts")
+        if rpc.operator in seen_ops:
+            raise ExecutionRpcConfigError(
+                f"two RPC endpoints share the operator '{rpc.operator}': they are not independent "
+                "sources (use endpoints from different operators)")
         seen_hosts.add(rpc.host)
+        seen_ops.add(rpc.operator)
         out.append(rpc)
     return out

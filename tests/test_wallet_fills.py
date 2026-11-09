@@ -16,6 +16,7 @@ from walletkit import (
     block_hash,
     deposit_log,
     make_plan,
+    session_of,
     transfer_log,
     withdrawal_log,
 )
@@ -63,6 +64,25 @@ def sell_world(*, sold=AMT, proceeds=8 * E18 // 10, native_gain=None, logs_proce
     return leg, tx, rc, ch
 
 
+# ------------------------------------------------------------------ two properties, never one
+
+def test_a_fill_is_never_verified_from_an_uncorroborated_source_object():
+    """Method agreement alone (logs == balances) is NOT enough: a single provider can return
+    perfectly consistent but fabricated logs and balances. The fill code refuses to certify."""
+    leg, tx, rc, ch = buy_world()
+    f = F.compute_fill(leg, tx, rc, H, ch)                  # the raw, single-provider chain
+    assert f.verdict == "unknown" and "not corroborated" in f.reason and f.token_wei is None
+
+
+def test_a_verified_fill_records_method_agreement_separately():
+    leg, tx, rc, ch = buy_world()
+    f = F.compute_fill(leg, tx, rc, H, session_of(ch))
+    assert f.verdict == "verified" and f.method_agreement is True
+    leg, tx, rc, ch = buy_world(balance_gain=3 * E18 - 1)   # methods disagree
+    f = F.compute_fill(leg, tx, rc, H, session_of(ch))
+    assert f.verdict == "unknown" and f.method_agreement is False
+
+
 # ------------------------------------------------------------------ constants
 
 def test_event_topics_and_selectors_are_derived_not_remembered():
@@ -76,7 +96,7 @@ def test_event_topics_and_selectors_are_derived_not_remembered():
 
 def test_buy_is_verified_only_when_logs_and_balances_agree():
     leg, tx, rc, ch = buy_world()
-    f = F.compute_fill(leg, tx, rc, H, ch)
+    f = F.compute_fill(leg, tx, rc, H, session_of(ch))
     assert (f.verdict, f.side, f.token) == ("verified", "buy", TOKEN)
     assert (f.native_wei, f.token_wei, f.gas_cost_wei) == (AMT, 3 * E18, GAS)
 
@@ -85,32 +105,32 @@ def test_fee_on_transfer_token_uses_the_net_amount_both_sources_agree_on():
     tax = 3 * E18 // 20
     leg, tx, rc, ch = buy_world(extra_logs=[transfer_log(TOKEN, WALLET, FEE, tax)],
                                 balance_gain=3 * E18 - tax)
-    f = F.compute_fill(leg, tx, rc, H, ch)
+    f = F.compute_fill(leg, tx, rc, H, session_of(ch))
     assert f.verdict == "verified" and f.token_wei == 3 * E18 - tax
 
 
 def test_a_hidden_tax_that_logs_do_not_show_is_unknown_not_guessed():
     leg, tx, rc, ch = buy_world(balance_gain=3 * E18 - 10**15)
-    f = F.compute_fill(leg, tx, rc, H, ch)
+    f = F.compute_fill(leg, tx, rc, H, session_of(ch))
     assert f.verdict == "unknown" and f.token_wei is None and "disagree" in f.reason
 
 
 def test_a_deposit_log_that_does_not_match_the_value_sent_is_unknown():
     leg, tx, rc, ch = buy_world(deposit=AMT - 1)
-    assert F.compute_fill(leg, tx, rc, H, ch).verdict == "unknown"
+    assert F.compute_fill(leg, tx, rc, H, session_of(ch)).verdict == "unknown"
 
 
 def test_another_transaction_touching_the_wallet_in_the_block_makes_balances_unusable():
     leg, tx, rc, ch = buy_world()
     ch.blocks[1000].append({"hash": "0x" + "99" * 32, "from": "0x" + "55" * 20, "to": WALLET})
-    f = F.compute_fill(leg, tx, rc, H, ch)
+    f = F.compute_fill(leg, tx, rc, H, session_of(ch))
     assert f.verdict == "unknown" and "same block" in f.reason
 
 
 def test_unrelated_transactions_in_the_block_do_not_matter():
     leg, tx, rc, ch = buy_world()
     ch.blocks[1000].append({"hash": "0x" + "99" * 32, "from": "0x" + "55" * 20, "to": "0x" + "66" * 20})
-    assert F.compute_fill(leg, tx, rc, H, ch).verdict == "verified"
+    assert F.compute_fill(leg, tx, rc, H, session_of(ch)).verdict == "verified"
 
 
 def test_erc721_transfers_and_other_tokens_are_ignored():
@@ -119,15 +139,15 @@ def test_erc721_transfers_and_other_tokens_are_ignored():
            "data": "0x"}
     other = transfer_log("0x" + "44" * 20, PAIR, WALLET, 7 * E18)
     leg, tx, rc, ch = buy_world(extra_logs=[nft, other])
-    assert F.compute_fill(leg, tx, rc, H, ch).token_wei == 3 * E18
+    assert F.compute_fill(leg, tx, rc, H, session_of(ch)).token_wei == 3 * E18
 
 
 def test_unreadable_balances_raise_in_strict_mode_and_become_unknown_when_not():
     leg, tx, rc, ch = buy_world()
     del ch.tok[(TOKEN, WALLET, 999)]
     with pytest.raises(F.EvidenceUnavailable):
-        F.compute_fill(leg, tx, rc, H, ch)
-    f = F.compute_fill(leg, tx, rc, H, ch, strict=False)
+        F.compute_fill(leg, tx, rc, H, session_of(ch))
+    f = F.compute_fill(leg, tx, rc, H, session_of(ch), strict=False)
     assert f.verdict == "unknown" and "unavailable" in f.reason
 
 
@@ -135,7 +155,7 @@ def test_reverted_swap_moved_nothing_but_gas():
     leg, tx, rc, ch = buy_world()
     rc["status"] = "0x0"
     rc["logs"] = []
-    f = F.compute_fill(leg, tx, rc, H, ch)
+    f = F.compute_fill(leg, tx, rc, H, session_of(ch))
     assert (f.verdict, f.native_wei, f.token_wei, f.gas_cost_wei) == ("reverted", None, None, GAS)
 
 
@@ -143,25 +163,25 @@ def test_reverted_swap_moved_nothing_but_gas():
 
 def test_sell_is_verified_from_transfer_withdrawal_and_both_balance_deltas():
     leg, tx, rc, ch = sell_world()
-    f = F.compute_fill(leg, tx, rc, H, ch)
+    f = F.compute_fill(leg, tx, rc, H, session_of(ch))
     assert (f.verdict, f.side) == ("verified", "sell")
     assert (f.token_wei, f.native_wei) == (AMT, 8 * E18 // 10)
 
 
 def test_sell_proceeds_that_the_wallet_balance_does_not_confirm_are_unknown():
     leg, tx, rc, ch = sell_world(native_gain=8 * E18 // 10 - 10**12)
-    assert F.compute_fill(leg, tx, rc, H, ch).verdict == "unknown"
+    assert F.compute_fill(leg, tx, rc, H, session_of(ch)).verdict == "unknown"
 
 
 def test_sell_without_a_withdrawal_log_is_unknown():
     leg, tx, rc, ch = sell_world(logs_proceeds=0)
-    assert F.compute_fill(leg, tx, rc, H, ch).verdict == "unknown"
+    assert F.compute_fill(leg, tx, rc, H, session_of(ch)).verdict == "unknown"
 
 
 def test_sell_token_delta_must_match_the_transfer_logs():
     leg, tx, rc, ch = sell_world()
     ch.tok[(TOKEN, WALLET, 1000)] += 1
-    assert F.compute_fill(leg, tx, rc, H, ch).verdict == "unknown"
+    assert F.compute_fill(leg, tx, rc, H, session_of(ch)).verdict == "unknown"
 
 
 # ------------------------------------------------------------------ validation

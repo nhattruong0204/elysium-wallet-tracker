@@ -54,8 +54,10 @@ A diagnosis never writes. Rendering is escaped and carries an evidence digest.
 
 All of the following, every time, for every correction:
 
-1. **≥ 2 configured sources with distinct hosts** (`TRADING_EXEC_RPC_URL` + `TRADING_RECOVERY_RPC_URLS`).
-   Fewer, or two names for one host → diagnose only.
+1. **≥ 2 configured sources with distinct hosts AND distinct operators** (`TRADING_EXEC_RPC_URL` +
+   `TRADING_CORROBORATION_RPC_URLS`; since F-15 this check, and every read below, is the shared
+   layer in `docs/TRADING_RPC_CORROBORATION.md`). Fewer, or two hosts of one operator → diagnose
+   only. The evidence is also re-checked by the ledger (`check_chain_evidence`) before any write.
 2. **Every** source answers (one outage = no correction), has a head ≤ 60 s old on its own block
    clock, and the heads are within 3 blocks.
 3. At the **anchor block** (the lowest head) all sources return the **identical header hash** — same
@@ -117,7 +119,7 @@ All of the following, every time, for every correction:
 
 | Key | Default | Meaning |
 |---|---|---|
-| `trading.recovery_rpc_urls_env` | `TRADING_RECOVERY_RPC_URLS` | Env var holding comma-separated SECRET http(s) URLs of *additional* read-only endpoints. Must not equal the scanner/paper RPC; hosts must be distinct (startup is fatal otherwise). |
+| `trading.corroboration_rpc_urls_env` | `TRADING_CORROBORATION_RPC_URLS` | Env var holding comma-separated SECRET http(s) URLs (optionally `label=url`) of *additional* read-only endpoints. Must not equal the scanner/paper RPC; hosts AND operators must be distinct (startup is fatal otherwise). **Renamed in F-15** from `recovery_rpc_urls_env` / `TRADING_RECOVERY_RPC_URLS`. |
 | `trading.finality_confirmations` | 12 | Reused (depth that makes a consuming tx final) |
 
 The service is built in `run_ui` only when `wallet_execution_enabled` is on. Owner ids come from the
@@ -140,8 +142,9 @@ an audit record. The widened `order_events` kind CHECK intentionally stays (appe
 ## 10. Unresolved / not done
 
 * Evidence is only as good as the *configured* endpoints. Two endpoints from one upstream provider
-  would agree while both being wrong; host distinctness is checked, true independence is the
-  operator's job (F-15 remains open and is out of scope here).
+  would agree while both being wrong; host and operator distinctness are checked (F-15), but true
+  upstream independence and colluding operators cannot be detected in code
+  (`docs/TRADING_RPC_CORROBORATION.md` §8).
 * Codes live in memory: a restart voids them (safe), but there is no cross-process single-use
   guarantee beyond the database (`UNIQUE(leg_id)`, request-key idempotency, version check).
 * The owner's *reason* is free text (printable, ≤ 190 chars) — not verified by the system.
