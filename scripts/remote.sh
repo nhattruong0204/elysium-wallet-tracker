@@ -216,7 +216,57 @@ status() {
   docker compose logs --no-color --tail 30 ui || true
 }
 
+muted_queue() {
+  # Read-only: queued/retrying vs suppressed alerts for the Telegram-muted tokens (no text shown).
+  local toks
+  toks=$(docker compose config 2>/dev/null | sed -n 's/^ *ALERTS_TELEGRAM_MUTE_TOKENS: *//p' | tr -d '"' | head -1)
+  [ -n "$toks" ] || { echo "  no ALERTS_TELEGRAM_MUTE_TOKENS in the compose file"; return 0; }
+  local list
+  list=$(echo "$toks" | tr ', ' '\n\n' | grep -E '^0x[0-9a-fA-F]{40}$' | tr 'A-F' 'a-f' | sed "s/.*/'&'/" | paste -sd, -)
+  psql_admin -Atc "SELECT 'queued (pending or retrying): ' || count(*) FILTER (WHERE status = 'pending') || ', suppressed: ' || count(*) FILTER (WHERE status = 'dead' AND last_error LIKE 'suppressed:%') || ', sent before the mute: ' || count(*) FILTER (WHERE status = 'sent') FROM notification_outbox WHERE lower(payload->>'token') IN ($list)" | sed 's/^/  muted-token alerts: /' || true
+  psql_admin -Atc "SELECT 'all pending: ' || count(*) FROM notification_outbox WHERE status = 'pending'" | sed 's/^/  /' || true
+}
+
 case "$ACTION" in
+  tracker)
+    # Code-only hotfix for the TRACKER container (indexer + alert notifier). Does not install
+    # config/, does not migrate, does not touch postgres, ui (Telegram menu) or web. The running
+    # ui/web containers keep their current image. The previous tracker image is tagged
+    # elysium-wallet-tracker:pre-tracker-hotfix for `tracker-rollback`.
+    need_docker
+    [ -f .env ] || { echo ".env missing: run the normal deploy first" >&2; exit 1; }
+    log "before"
+    prev=$(docker inspect -f '{{.Image}}' elysium-wallet-tracker 2>/dev/null || true)
+    echo "  running tracker image: ${prev:-none}"
+    [ -n "$prev" ] && docker tag "$prev" elysium-wallet-tracker:pre-tracker-hotfix
+    muted_queue
+    tracker_alive
+    log "build the image (retags :latest; ui/web keep running their current image)"
+    docker compose build migrate
+    log "schema head must be unchanged (no migration in a tracker hotfix)"
+    docker compose run --rm --no-deps tracker --health >/dev/null 2>&1 && echo "  schema OK for the new code" || echo "  (health check before start is advisory)"
+    log "recreate the tracker only"
+    docker compose up -d --no-deps --force-recreate tracker
+    if ! wait_healthy; then
+      docker logs --tail 80 elysium-wallet-tracker 2>&1 | sed 's/^/  tracker| /'
+      echo "tracker not healthy: run action tracker-rollback" >&2
+      exit 1
+    fi
+    log "after (give the notifier one drain cycle)"
+    sleep 20
+    muted_queue
+    tracker_alive
+    docker compose logs --no-color --since 2m tracker | grep -iE "closed .* queued alert|error|traceback" | tail -20 | sed 's/^/  log| /' || true
+    resources
+    ;;
+  tracker-rollback)
+    need_docker
+    docker image inspect elysium-wallet-tracker:pre-tracker-hotfix >/dev/null 2>&1 || { echo "no pre-tracker-hotfix image" >&2; exit 1; }
+    docker tag elysium-wallet-tracker:pre-tracker-hotfix elysium-wallet-tracker:latest
+    docker compose up -d --no-deps --force-recreate tracker
+    wait_healthy || true
+    tracker_alive
+    ;;
   deploy)
     need_docker
     write_env

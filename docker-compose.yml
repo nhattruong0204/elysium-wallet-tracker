@@ -50,7 +50,12 @@ services:
     container_name: elysium-wallet-tracker
     restart: unless-stopped
     env_file: .env                 # TG_BOT_TOKEN, TG_CHAT_ID
-    environment: *db-url
+    environment:
+      <<: *db-url
+      # Telegram-only mute by exact contract (still indexed, in PnL, signals and the website).
+      # Bridged USDC on Elysium mainnet (HyperEVM USDC 0xb88339cb7199b77e23db6e890353e22632ba630f
+      # via the Orbit gateway); evidence in docs/OPERATIONS.md "Telegram-only token mute".
+      ALERTS_TELEGRAM_MUTE_TOKENS: "0xb47c4c8f73f009cc0c0d3f92b388d13e293f0b65"
     volumes:
       - ./config:/config:ro        # config.yaml + watchlist.txt
       - tracker-data:/data         # v0.1/v0.2 SQLite file lives here (for --import-sqlite)

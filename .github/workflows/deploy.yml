@@ -28,7 +28,7 @@ on:
         description: What to do on the VPS
         type: choice
         default: status
-        options: [preflight, deploy, status, logs, discover, dry-run, test-telegram, test-card, ui-smoke, restart, stop, audit, backup, maint, web, web-smoke, web-rollback, loadtest]
+        options: [preflight, deploy, tracker, tracker-rollback, status, logs, discover, dry-run, test-telegram, test-card, ui-smoke, restart, stop, audit, backup, maint, web, web-smoke, web-rollback, loadtest]
       deploy_dir:
         description: Directory on the VPS (relative to the SSH user's home, or absolute)
         type: string
@@ -73,7 +73,7 @@ jobs:
             IN_SCOPE="$(get scope)"; IN_STEPS="$(get steps)"; IN_BACKUP_RUN="$(get backup_run)"
           fi
           case "$IN_ACTION" in
-            preflight|deploy|status|logs|discover|dry-run|test-telegram|test-card|ui-smoke|restart|stop|audit|backup|maint|web|web-smoke|web-rollback|loadtest) ;;
+            preflight|deploy|tracker|tracker-rollback|status|logs|discover|dry-run|test-telegram|test-card|ui-smoke|restart|stop|audit|backup|maint|web|web-smoke|web-rollback|loadtest) ;;
             *) echo "invalid action '$IN_ACTION'"; exit 1 ;;
           esac
           [ "$IN_INSTALL" = true ] || IN_INSTALL=false
@@ -172,7 +172,7 @@ jobs:
             echo "backup run $BACKUP_RUN: conclusion=$concl, live encrypted artifacts=$arts, age=${age_h}h"
             [ "$concl" = success ] && [ "$arts" -ge 1 ] && [ "$age_h" -le 36 ] || { echo "no recent verified backup: refusing to change the schema"; exit 1; }
           fi
-          if [ "$ACTION" = deploy ] || [ "$ACTION" = web ]; then
+          if [ "$ACTION" = deploy ] || [ "$ACTION" = web ] || [ "$ACTION" = tracker ]; then
             # code bundle (tracked files only; never .env, config/, backups/)
             git archive --format=tar HEAD | \
               ssh_ "mkdir -p '$DIR' && cd '$DIR' && rm -rf agora_tracker && tar -xf -"

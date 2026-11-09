@@ -500,11 +500,46 @@ class Store:
             outbox_id=alert_id, ok=False, error=error[:500]))
         return status
 
-    def outbox_counts(self) -> dict[str, int]:
+    def mark_suppressed(self, c: Connection, alert_id: int, reason: str) -> None:
+        """Close one queued alert WITHOUT sending it: terminal 'dead' (the existing status for
+        "will not be delivered"), last_error says why, and the decision is logged in
+        notification_deliveries (ok=false). Never marked 'sent'."""
         o = t.notification_outbox
+        c.execute(sa.update(o).where(o.c.id == alert_id, o.c.status == "pending")
+                  .values(status="dead", last_error=reason[:500]))
+        c.execute(sa.insert(t.notification_deliveries).values(
+            outbox_id=alert_id, ok=False, error=reason[:500]))
+
+    def suppress_pending_alerts(self, tokens: Iterable[str], reason: str) -> int:
+        """Close every still-pending (queued or retrying) alert whose structured payload reports
+        one of `tokens` (exact lower-case contract addresses). Rows locked by a concurrent
+        notifier are skipped (SKIP LOCKED) and caught on the next drain. Returns the count."""
+        toks = sorted({x.lower() for x in tokens})
+        if not toks:
+            return 0
+        o = t.notification_outbox
+        with self.engine.begin() as c:
+            ids = (sa.select(o.c.id).where(
+                o.c.status == "pending",
+                sa.func.lower(o.c.payload["token"].astext).in_(toks))
+                .with_for_update(skip_locked=True))
+            done = c.execute(sa.update(o).where(o.c.id.in_(ids.scalar_subquery()))
+                             .values(status="dead", last_error=reason[:500])
+                             .returning(o.c.id)).scalars().all()
+            if done:
+                c.execute(sa.insert(t.notification_deliveries),
+                          [{"outbox_id": i, "ok": False, "error": reason[:500]} for i in done])
+        return len(done)
+
+    def outbox_counts(self) -> dict[str, int]:
+        """Counts by status; alerts closed by a Telegram mute ("suppressed: ...") are reported
+        as 'suppressed', not as failed deliveries."""
+        o = t.notification_outbox
+        st = sa.case((sa.and_(o.c.status == "dead", o.c.last_error.like("suppressed:%")),
+                      "suppressed"), else_=o.c.status)
         with self.engine.connect() as c:
             return {r[0]: r[1] for r in c.execute(
-                sa.select(o.c.status, sa.func.count()).group_by(o.c.status))}
+                sa.select(st, sa.func.count()).group_by(st))}
 
     # --- launch intelligence ------------------------------------------------------------
     def recent_buyer_blocks(self, c: Connection, token: str, since_ts: int,
