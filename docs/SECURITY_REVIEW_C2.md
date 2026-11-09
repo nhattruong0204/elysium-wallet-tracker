@@ -8,19 +8,34 @@
 
 ## 1. Scope and frozen heads
 
-| Issue | PR (draft) | Branch | Head under review |
-|---|---|---|---|
-| #92 finite approvals, wallet-managed Buy/Sell | #104 | `feat/trading-c2-wallet-approvals` | `f769b42` (CI green) |
-| #93 nonce/idempotency, execution RPC, reconciliation | #105 | `feat/trading-c2-nonce-idempotency` | `e6c4fcd` (CI green) |
-| #94 receipts, reorgs, verified fills, status | #106 | `feat/trading-c2-receipt-reconciliation` | `de3bdc1` (CI green) |
-| #95 F-01 supervised worker lifecycle | #108 | `feat/trading-c2-worker-lifecycle` | `8985c1f` (CI green; head of integration PR #109) |
-| #95 F-16 Mini App / wallet ingress | #110 | `feat/trading-c2-ingress` | `80e12a6` (CI green: docker, lint, test) |
-| #95 F-02 owner-audited leg recovery | #111 | `feat/trading-c2-leg-recovery` | `026277c` (CI green: docker, lint, test; stacked on #110) |
-| #95 F-15 corroborated RPC evidence | #112 | `feat/trading-c2-corroboration` | `e0ed3f0` (CI green: docker, lint, test; stacked on #111; draft) |
+State fetched from GitHub on 2026-11-09 (re-fetch before reviewing; nothing here is frozen until
+the reviewer records the exact SHA in §10).
 
-Stack base: `feat/trading-c1-unsigned-plans` (auth, plans, ledger) — **`main` contains only #100;
-#101–#103 are not on `main` yet**, so these PRs cannot merge to `main` until that chain does.
-PRs #100–#103 were not modified.
+| Issue / finding | PR (draft unless noted) | Branch | Head |
+|---|---|---|---|
+| #88 Mini App | #100 (**merged to `main`**) | `feat/trading-c1-miniapp` | `8a46e53` |
+| #89 Telegram initData + SIWE | #101 (merged into `feat/trading-c1-miniapp`, not `main`) | `feat/trading-c1-auth` | `3d15431` |
+| #90 immutable V2 plans | #102 (merged into its stack base) | `feat/trading-c1-unsigned-plans` | `ad6f9c6` |
+| #91 order ledger, pause | #103 (merged into its stack base) | `feat/trading-c2-order-ledger` | `893938a` |
+| #92 finite approvals | #104 (merged into its stack base) | `feat/trading-c2-wallet-approvals` | `f769b42` |
+| #93 nonce/idempotency | #105 (merged into its stack base) | `feat/trading-c2-nonce-idempotency` | `e6c4fcd` |
+| #94 receipts/fills | #106 (merged into its stack base) | `feat/trading-c2-receipt-reconciliation` | `de3bdc1` |
+| #95 review package | #107 | `feat/trading-c2-security-review` | `4695d9e` |
+| F-01 worker lifecycle | #108 | `feat/trading-c2-worker-lifecycle` | `8985c1f` |
+| F-16 ingress | #110 | `feat/trading-c2-ingress` | `2a0a1f4` (code `80e12a6`) |
+| F-02 owner recovery | #111 | `feat/trading-c2-leg-recovery` | `a67f1ab` (code `026277c`) |
+| F-15 corroboration | #112 | `feat/trading-c2-corroboration` | `bd6d32c` (CI green) |
+| F-04 / F-07 / F-22 finality + RPC diagnostics | #113 | `feat/trading-c2-finality-rpc` | `013e861` (CI green) |
+| F-18 liveness | #114 | `feat/trading-c2-liveness` | `a66a9d0` (CI green) |
+| F-21 lock order, F-17 proxy, preflight | #115 | `feat/trading-c2-release-hardening` | `7e5f95e` |
+| release package (this document, runbook, matrices, `/trading_status`) | #116 | `feat/trading-c2-release-package` | `e1e561e` + docs-only follow-up |
+| **integration candidate → `main`** | **#117** (supersedes #109) | `release/trading-c2-rc1` | same as #116 (record the exact SHA in §10 when reviewing) |
+
+Ancestry (verified with `git merge-base --is-ancestor`): every branch above is contained in the next
+one; the merge commits of #101–#106 only exist on their stack bases and carry no extra content
+(tree-identical). `main` contains only #100. The old integration PR **#109 points at `8985c1f`
+(F-01) and is stale**: it lacks F-16, F-02, F-15 and everything after. The single integration
+candidate is described in `docs/RELEASE_READINESS.md`.
 
 Out of scope / not reviewed: the scanner/collector, Postgres tuning, the web app and the independent Revival
 bot (the change set does not touch them — verify with `git diff --stat`; `tgui.py` is the one shared module touched, see §3), the Telegram login/SIWE
@@ -51,6 +66,10 @@ fill. Anything uncertain fails closed (no prompt, no state change, amounts `unkn
 | Mini App / wallet routes not publicly reachable unless explicitly configured (F-16) | `ingress_enabled` default false (no listener); loopback-only bind validated in config; `IngressGuard` refuses anything not forwarded by the configured HTTPS proxy (secret, Host, https); wallet routes need `wallet_execution_enabled` as a second opt-in; public dashboard is a separate service and untouched | `tests/test_wallet_ingress.py`, `tests/test_wallet_ingress_e2e.py` (see `docs/TRADING_INGRESS.md` §2) |
 | Stuck legs are never released without proof (F-02) | owner-only, private-chat, two-step (one-time code + mandatory reason); ≥ 2 distinct-host sources, all healthy/fresh/same-fork; only monotone facts (final consumed nonce, passed swap deadline + margin); fresh re-diagnosis must match the prepared decision; append-only `leg_recoveries` + hash-chained audit events; receipts/fills/hashes/nonces never rewritten; no signing, no broadcast, no wallet request | `tests/test_wallet_recovery.py` (see `docs/TRADING_LEG_RECOVERY.md` §4–§6) |
 | Nothing is finalized, certified as a fill or unlocked on one provider's word (F-15) | shared corroboration layer (≥ 2 distinct-host AND distinct-operator sources, same canonical anchor, same-state reads, identical facts, bounded calls/time, fail closed); ledger-side `check_chain_evidence` on every inclusion/final/reorg/supersede/abandon; verified fill = method agreement AND source agreement; append-only `chain_evidence`; finality depth unchanged | `test_wallet_corroboration.py`, `test_wallet_corroboration_ledger.py`; provider independence itself is NOT proven by tests |
+| Finality is more than a confirmation count (F-04) | `Session.finality()`: ≥ 12 confirmations AND ≤ lowest `finalized` tag of every source; ledger `_check_finalized` on finalize/supersede/recovery; tag missing → nothing final | `test_wallet_corroboration*.py` finality cases, recovery test 14 |
+| Operators are told when things break (F-18) | liveness monitor: private, deduplicated, capped alerts; bounded listener restart then degraded mode; never touches ledger/pause/flags/polling | `tests/test_trading_liveness.py` |
+| Proxy cannot be fooled by client headers (F-17) | template sets every forwarded header; verifier + CI rehearsal against the real guard | `tests/test_verify_ingress_proxy.py`, CI `ingress-proxy` |
+| Ledger writers never deadlock (F-21) | order row before the audit-chain lock everywhere | `test_event_writers_take_the_order_row_before_the_audit_chain_lock` |
 | Scanner/Postgres/web/Revival unaffected | additive migrations 0012–0016 confined to the `trading_private` schema (no `public`/scanner table altered); wallet code is imported by nothing in the collector/engine/web/Revival paths. The only touch of a shared module is `tgui.py` (a ledger-gated, exception-safe text section; returns `""` when the ledger is off) the owner-only `/wallet_recover` / `/wallet_resolve` commands (F-02; "Not available." for everyone else) and `config.py` (validated fields) | `git diff --stat`; `test_migration_*` round-trip tests; `test_telegram_section_never_raises_into_the_command_handler`, `test_telegram_commands_are_owner_private_chat_only` |
 
 ## 4. Threat model (STRIDE-oriented)
@@ -77,39 +96,53 @@ flag, the execution-RPC secret, the Telegram identity binding.
 ## 5. Findings register
 
 Severity is the reviewer-style estimate of *impact if the feature were enabled with funds*.
-"Status": **open** = must be resolved or consciously accepted by a human before #96; **accepted** =
-documented trade-off; **unverified** = could not be tested in this environment.
+Status vocabulary (#95): **OPEN** · **MITIGATED IN CODE — AWAITING VERIFICATION** · **VERIFIED BY
+INDEPENDENT REVIEWER** · **ACCEPTED RESIDUAL RISK — WITH NAMED APPROVER** · **NOT APPLICABLE —
+WITH JUSTIFICATION** · **BLOCKED** (needs external access/evidence). Nothing below is "verified":
+no independent reviewer has seen this code. Earlier "accepted" items are AI-proposed acceptances
+and still need a **named human approver**.
 
-| ID | Sev | Finding | Status | Recommendation |
+| ID | Sev | Finding | Status | Evidence / next action |
 |---|---|---|---|---|
-| F-01 | Med | Nothing started the reconciler / receipt worker or built the execution RPC at process start. | **mitigated in code (worker-lifecycle PR); awaiting human verification** | `docs/TRADING_WORKER_LIFECYCLE.md`: flag-gated, fail-closed startup, one active worker (advisory lock) + ledger-level exactly-once, bounded retries/budgets, pause-independent, private health. Evidence: `tests/test_wallet_worker.py` (47 tests incl. real PostgreSQL and the real `run_ui` wiring). Residual: see F-16 and the lifecycle doc's *Unresolved*. |
-| F-16 | Med | No process entrypoint mounted the wallet/Mini App routes (`miniapp.create_app(wallet=…)` had no caller, and could not be given a matching `PlanBook` from outside), so the user-facing flow could not run end to end; found while wiring F-01. | **mitigated in code (ingress PR); awaiting human verification** | `docs/TRADING_INGRESS.md`: in-process loopback listener in `--ui`, default OFF, fail-closed startup, ingress-secret/Host/https guard, resource limits, wallet routes behind a second flag, one `getUpdates` consumer. Evidence: `tests/test_wallet_ingress.py` (54, incl. the real `run_ui` wiring and real PostgreSQL ledger) and `tests/test_wallet_ingress_e2e.py` (13, real signed Telegram/SIWE session over the real listener). Not exercised: a real proxy/TLS, browser, Telegram client or RPC (F-17, F-18). |
-| F-17 | Med | The reverse proxy is a trusted component: it terminates TLS and injects the shared ingress secret, `X-Forwarded-Proto` and the client IP (which feeds the per-IP bootstrap rate limit). Anyone holding the secret who can reach loopback bypasses the edge controls (they still need Telegram identity, SIWE ownership and CSRF); rotation needs a restart. Proxy/TLS/DNS config is outside this repository and unreviewed. | open | Human review of the real vhost against `docs/TRADING_INGRESS.md` §4 (overwriting headers, single host, body/time limits, secret file mode). |
-| F-18 | Low | Listener liveness is pull-only: if the ingress thread dies the bot keeps running and the Mini App is silently unavailable until `/wallet_health` is read; no auto-restart or alert push. | open | Add an alert/automatic restart before #96, or accept explicitly. |
-| F-02 | Med | No owner force-resolve tool for a leg stuck `ambiguous`/`orphaned`; the (wallet, chain) pair stays blocked until chain evidence appears. | **mitigated in code (leg-recovery PR); awaiting human verification** | `docs/TRADING_LEG_RECOVERY.md`: read-only diagnosis (tx hash, nonce, chain, wallet, last evidence, state, reason, category: confirmed / reverted / replaced / nonce consumed externally / RPC unavailable / unknown); a correction (`superseded` or `abandoned`, nothing else) only with chain evidence from ≥ 2 distinct-host sources that are all healthy, fresh and on one fork, identical on every fact, and only monotone facts (final consumed nonce; passed swap deadline + margin with no matching tx and no queued tx); owner-only two-step confirmation with a mandatory reason; fresh re-diagnosis must reproduce the prepared decision; append-only `leg_recoveries` (+ `LEG_RECOVERY` / `LEG_RECOVERY_REFUSED` hash-chained events, migration 0015); receipts, fills, hashes and nonces are never rewritten; approvals/resets can never be abandoned; nothing signs, broadcasts or prompts a wallet. Everything unproven stays blocked with an escalation procedure. Evidence: `tests/test_wallet_recovery.py` (74 cases against the real PostgreSQL ledger incl. stale/lagging/forked/down providers, single source, delayed inclusion, external nonce change, duplicate/concurrent confirms, restarts, unauthorized users, append-only guards, orphaned legs, Telegram gating); 7 hand-made mutations of the safety guards were each caught. **Residual:** quality depends on two truly independent endpoints (F-15 adds operator distinctness and ledger-side evidence checks, but cannot prove independence); owner reason is unverified free text; a hostile endpoint lying consistently to every configured source is not mitigated. |
-| F-03 | Low | An approval/swap the wallet holds but did not broadcast could be sent after we abandoned the leg (approval: 1 h; swap: after deadline+margin). Swaps expire by their on-chain deadline; approvals are finite and bound to the router. | accepted | Keep amounts finite; consider revoking via a new reviewed zero-approval prompt. |
-| F-04 | Med | Finality (12 confirmations) is an assumption; no finality gadget queried; reorg depth on chain 99901 unmeasured. | open | Measure on the production RPC; set `finality_confirmations` from data. |
-| F-05 | Info | Telegram's in-app WebView usually has no injected wallet provider; users must open the page in a wallet browser. | accepted | UX only; the page explains instead of faking. |
-| F-06 | High (blocking if used) | The current Elysium/Agora raw-submission relay / inbox permission and its exact status are **NOT ESTABLISHED** (no network in the build environment). | unverified | Not needed in wallet-managed mode. Raw-signed submission stays unimplemented and needs its own review. |
-| F-07 | Med | The real execution RPC was never exercised: chain-id behaviour, head freshness, rate limits, `Retry-After`, historical `eth_call`/`eth_getBalance` support (needed for fills). | unverified | Run the read-only smoke list in §8 against the real endpoint. |
-| F-08 | Med | Only a mocked EIP-1193 provider was exercised; real wallets differ (fee fields, `from` casing, rejection codes, nonce handling). | unverified | Manual matrix on the wallets the owner actually uses, with no funds. |
-| F-09 | Info | Fills are `unknown` whenever another transaction from/to the wallet shares the block, for fee-on-transfer/rebasing mismatches, or when state is pruned. PnL then reads unknown. | accepted | Intended fail-closed behaviour. |
-| F-10 | Low | Fill rows are immutable; a wrong `unknown` cannot be corrected in place. | accepted | Add a compensating-entry mechanism if it becomes common. |
-| F-11 | Med | The in-page re-check cannot protect against a server that also serves modified JS (same origin). | accepted | Wallet confirmation screen is the control; consider SRI/CSP hash pinning of `wallet.js`. |
-| F-12 | Info | `main` lacks #101–#103; #104/#105/#94 are stacked drafts. The paused clustering PR's migration number must be renumbered (now 0017; 0015 is `leg_recoveries`, 0016 is `chain_evidence`). | process | Owner decides merge order. |
-| F-13 | Low | Telegram status section swallows all exceptions (logs a warning). | accepted | Acceptable for a read-only display. |
-| F-14 | Low | Migration 0014 downgrade drops `order_fills`. | accepted | Backup before downgrade (documented). |
-| F-15 | Med | Facts about a transaction come from one execution RPC (reconciliation can use several, receipts use one). A dishonest endpoint could fabricate a receipt, a balance or a block. | **mitigated in code (corroboration PR); awaiting independent verification** | `docs/TRADING_RPC_CORROBORATION.md`: one shared, bounded layer (call + time budget) used by the receipt worker, the reconciler and owner recovery; ≥ 2 configured sources with distinct hosts AND operators, chain id 99901, fresh heads, one canonical anchor, every fact read at the same block and required to be identical; missing/lagging/forked/rate-limited/inconsistent/historical-state-less ⇒ `unknown` (nothing recorded; conflicts only append an audit row). The LEDGER re-checks the evidence before any inclusion, finalization, reorg, supersession or abandonment (a verified fill needs method agreement AND source agreement; `ck_fill_verified_evidence`); append-only `chain_evidence` (migration 0016); finality depth unchanged (12). Evidence: 114 new cases (`tests/test_wallet_corroboration.py` 40 unit; `tests/test_wallet_corroboration_ledger.py` 74 against the real PostgreSQL ledger: colluding-looking/same-operator providers, stale/forked heads, inconsistent receipts, historical-state failures, single-provider balance fabrication, reorgs, re-inclusion, restart, flapping providers, 6 concurrent workers, call budget, migration round trip) plus the adapted receipt/fill/reconcile/recovery/worker/runtime suites; 11 of 12 hand-made guard mutations were caught (the 12th is a redundant check: the transaction's block fields are already tied to the receipt per source). **Residual (not closed):** provider independence is NOT provable in code - colluding operators or a shared upstream node would pass; no cryptographic inclusion proofs; archive/historical-state support and nodes that ignore the block parameter are untested on real providers; real-provider validation is required (see the PR). |
+| F-01 | Med | Nothing started the reconciler / receipt worker at process start. | MITIGATED IN CODE — AWAITING VERIFICATION | `docs/TRADING_WORKER_LIFECYCLE.md`; `tests/test_wallet_worker.py`. |
+| F-02 | Med | No owner tool for a leg stuck `ambiguous`/`orphaned`. | MITIGATED IN CODE — AWAITING VERIFICATION | `docs/TRADING_LEG_RECOVERY.md`; `tests/test_wallet_recovery.py` (now also: finalized-tag finality, lock-order, transient-busy code retention). Owner recovery never abandons approvals and never releases a lock while the request's nonce is free. |
+| F-03 | Low | An approval the wallet holds but never sent can be broadcast after the automatic reconciler abandons it (`approval_never_sent`, ≥ 600 s ledger minimum, 3600 s default); swaps are protected by their on-chain deadline. | OPEN — needs a named approver to ACCEPT, or set the auto policy off | Finite, router-bound approvals limit the impact; owner recovery itself never abandons approvals. Reviewer decides. |
+| F-04 | **High** (was Med) | Elysium is a single-sequencer Arbitrum Orbit chain with ~100–200 ms blocks: 12 confirmations ≈ 2 s of the sequencer's promise, no documented guarantee. | OPEN (interim policy in code) | `docs/TRADING_FINALITY.md`: final = 12 confirmations AND ≤ lowest `finalized` tag of every source (ledger re-checks; fail closed). Needs 24 h rpcdiag on real endpoints + Kinetiq/Conduit statement. |
+| F-05 | Info | Telegram iOS WebView usually has no injected wallet provider. | ACCEPTED RESIDUAL RISK — approver pending | UX only. |
+| F-06 | High (if used) | Raw-signed submission / relay permission not established. | NOT APPLICABLE — wallet-managed mode never submits raw transactions; any raw path needs its own review | — |
+| F-07 | Med | Real execution RPC behaviour never exercised (chain id, freshness, 429/Retry-After, historical state). | BLOCKED (no endpoint access here); tooling complete | `python -m agora_tracker.trading.wallet.rpcdiag` + `docs/TRADING_RPC_DIAGNOSTICS.md`; 18 adversarial tests on a loopback mock. |
+| F-08 | Med | Only mocked EIP-1193 providers exercised. | BLOCKED (no physical device/wallet) | `docs/TRADING_DEVICE_ACCEPTANCE.md` (16-row matrix, steps, evidence form). |
+| F-09 | Info | Fills `unknown` when other txs touch the wallet in the block, fee-on-transfer, pruned state. | ACCEPTED RESIDUAL RISK — approver pending | Intended fail-closed. |
+| F-10 | Low | Fill rows immutable; a wrong `unknown` cannot be corrected in place. | ACCEPTED RESIDUAL RISK — approver pending | Compensating entries if it becomes common. |
+| F-11 | Med | Same-origin JS could be modified by a compromised server. | ACCEPTED RESIDUAL RISK — approver pending | Wallet confirmation screen is the control; consider SRI/CSP hashes. |
+| F-12 | Info | Stacked branches; `main` has only #100; #109 head (`8985c1f`) predates F-16/F-02/F-15. Clustering migration `0011` collides. | MITIGATED IN CODE — AWAITING VERIFICATION | One integration candidate PR (`RELEASE_READINESS.md`); preflight graph check in CI; clustering must become `0017` on `0016` (free on every branch). |
+| F-13 | Low | Telegram status section swallows exceptions. | ACCEPTED RESIDUAL RISK — approver pending | Read-only display. |
+| F-14 | Low | Migration 0014 downgrade drops `order_fills`. | ACCEPTED RESIDUAL RISK — approver pending | Backup before downgrade (DATABASE.md). |
+| F-15 | Med | Facts came from one execution RPC. | MITIGATED IN CODE — AWAITING VERIFICATION; provider independence **not established** | `docs/TRADING_RPC_CORROBORATION.md`; inventory in `TRADING_RPC_DIAGNOSTICS.md` §4 (Kinetiq- and Conduit-branded endpoints may be one operator). |
+| F-16 | Med | No process entrypoint mounted the Mini App/wallet routes. | MITIGATED IN CODE — AWAITING VERIFICATION | `docs/TRADING_INGRESS.md`; ingress tests. See F-19 for Docker. |
+| F-17 | Med | Reverse proxy is trusted and outside the repository. | OPEN (template, verifier and CI rehearsal done; real VPS proxy unverified) | `deploy/nginx/*.template`, `scripts/verify_ingress_proxy.py`, CI job `ingress-proxy`. Operator runs remote + `--local` checks; human reviews redacted `nginx -T`. |
+| F-18 | Low | Liveness was pull-only. | MITIGATED IN CODE — AWAITING VERIFICATION (real Telegram delivery untested) | `docs/TRADING_LIVENESS.md`; `tests/test_trading_liveness.py`. |
+| F-19 | Med (blocking for ingress in Docker) | In the shipped compose file `ui` runs in a bridge network; its loopback-only ingress is unreachable from a host nginx, and the config (correctly) refuses a non-loopback bind — fails closed, but the ingress cannot be deployed as-is. | OPEN — owner decision | `deploy/trading-release.compose.yaml`: host networking for `ui` or `--ui` under systemd. |
+| F-20 | Low | The Mini App's add-chain request proposes `https://rpc.agoradex.app` (a third-party RPC) as the user's wallet RPC; that endpoint would see and could censor/delay users' transactions. | OPEN — owner decision | Confirm the official endpoint with Kinetiq; record wallets' stored RPC in the device matrix. |
+| F-21 | Med | Lock-order inversion: refusal-audit / wallet-result events took the audit-chain lock before the order row → deadlocks; the winning recovery confirmation was refused `busy` (seen in CI). | MITIGATED IN CODE — AWAITING VERIFICATION | Fixed in the hardening PR; deterministic test fails on the old code. |
+| F-22 | Med | Corroboration tolerated only 3 blocks of head skew (≈ 0.5 s here) and clipped nonce bisection at ~6–11 h: on this chain the F-15 layer would fail closed permanently / raise false conflicts. | MITIGATED IN CODE — AWAITING VERIFICATION | Skew 64 blocks (lowest head stays the anchor); bisection unclipped when the prompt block is known. |
+| F-23 | Info | The durable ledger execution flag has no UI; turning it on needs a deliberate owner action on the database/code. | ACCEPTED RESIDUAL RISK — approver pending (intentional friction) | `/trading_status` shows it read-only. |
 
-No critical or high finding was identified *in the code*, but F-04, F-17 and F-18 are open (F-01, F-02, F-15 and F-16 are mitigated in code, unverified by a human) and
-F-06/F-07/F-08 are unverifiable here. **These are the reasons the sign-off is blocked.**
+**Summary.** No unresolved critical issue was found *in the code*. **F-04 (High) is OPEN**, as are
+F-03, F-17, F-19 and F-20; F-07 and F-08 are BLOCKED on real endpoints/devices; F-15's provider
+independence is not established. Every "accepted" item needs a named human approver. These are the
+reasons sign-off is blocked.
+
 
 ## 6. What this review did NOT do
 
 * No independent reviewer, no penetration test, no fuzzing, no dependency/CVE audit (offline), no
   formal verification, no review of the router/token contracts, no load test.
 * Static checks were limited to `ruff` and `mypy`; dynamic evidence is the pytest suite.
-* Nothing was run against a real chain, RPC, wallet or funded account.
+* Nothing was run against a real chain, RPC, wallet or funded account (rpcdiag ran only against an
+  isolated loopback mock; the nginx template only on a disposable CI runner).
+* Chain facts in `docs/TRADING_FINALITY.md` come from third-party sources; Kinetiq's own docs could
+  not be fetched from the build environment.
 * Local environment lacked `eth_keys`/`eth_abi`/`eth_hash`; the modules depending on them (the #101
   authenticator tests) ran only in CI.
 
@@ -120,7 +153,8 @@ git fetch origin && git checkout de3bdc1          # or each frozen head in §1
 ruff check agora_tracker tests
 mypy agora_tracker/trading
 export TEST_DATABASE_URL=postgresql+psycopg://…/tracker_test     # disposable database only
-pytest tests/test_wallet_*.py tests/test_trading_ledger.py -q   # includes test_wallet_ingress*.py (F-16) and test_wallet_recovery.py (F-02) and test_wallet_corroboration*.py (F-15)
+pytest tests/test_wallet_*.py tests/test_trading_*.py tests/test_preflight.py tests/test_verify_ingress_proxy.py -q
+python -m agora_tracker.preflight --graph-only                  # single linear migration head
 # no key material in the wallet/ledger packages (expect no hits besides docs/comments):
 grep -rniE "private_key|mnemonic|seed phrase|keystore|sign_transaction" agora_tracker/trading/wallet agora_tracker/trading/ledger
 # no send/sign RPC in the allowlist:
@@ -130,28 +164,32 @@ assert not any(m.startswith(FORBIDDEN_PREFIXES) for m in READ_METHODS); print(so
 PY
 git diff --stat main...HEAD -- agora_tracker/web agora_tracker/collector.py agora_tracker/engine.py agora_tracker/rpc.py   # expect nothing
 ```
-CI (docker, lint, test) was green for `f769b42`, `e6c4fcd` and `de3bdc1` when written. The human reviewer should re-run everything on the exact heads.
+CI results per head are in §1 and `docs/RELEASE_READINESS.md`. The human reviewer should re-run
+everything on the exact candidate SHA (full `pytest -v -rs` in CI includes the browser suites).
 
-## 8. Read-only smoke list for the real endpoint (no funds, no flag)
+## 8. Real-endpoint checks (no funds, no flag)
 
-`eth_chainId == 0x1863d`; `eth_getBlockByNumber latest` is < 30 s old; `eth_getBlockByNumber N-1000`
-and `eth_getBalance`/`eth_call` at a block 1000 back succeed (historical state); 429 behaviour with
-`Retry-After`; a concurrent burst stays within the semaphore; observed reorg depth over a week.
+`python -m agora_tracker.trading.wallet.rpcdiag` on the VPS with the real execution and
+corroboration endpoints (`docs/TRADING_RPC_DIAGNOSTICS.md`): chain id, freshness, continuity,
+`finalized`/`safe` tags, historical block-parameter honouring, archive depth, receipt consistency,
+reorgs, 429/Retry-After, latency percentiles, cross-provider agreement. Proxy:
+`scripts/verify_ingress_proxy.py --local`. Devices: `docs/TRADING_DEVICE_ACCEPTANCE.md`.
 
 ## 9. Preconditions for #96 (NOT started; each needs explicit owner authorization)
 
-1. A human reviewer signs §10 after verifying F-01, F-02, F-15 and F-16 (F-15 specifically with real, independently operated providers) and closing or consciously accepting F-04, F-17, F-18 and
-   resolving F-06/F-07/F-08 by evidence.
-2. Owner provisions the dedicated execution RPC (and ideally a second source) and approves a funded
-   test wallet with a hard cap far below the policy ceilings.
-3. Worker wiring (F-01, implemented in the worker-lifecycle PR) reviewed and merged; operator alerting on ambiguous legs / breaker state / `failed` worker defined (health is pull-only today).
-4. Owner turns the flags on themselves (config flag + durable owner-only execution flag), with a
-   written rollback (pause + flag off) and an observer present.
-5. Written test plan: one buy, one finite approval, one sell; expected receipts; stop conditions.
+The full checklist, canary parameters, stop conditions and drills are in
+`docs/RELEASE_C2_CANARY.md` (prepared, not executed). In short: this review signed for the exact
+SHA; F-04 closed or explicitly accepted by a named approver on real measurements; F-07/F-08/F-15
+evidence attached; F-17/F-19/F-20 resolved; a written owner authorization naming wallet, token,
+amounts, gas and window.
 
 ## 10. Sign-off — BLOCKED
 
 | Role | Name | Date | Heads reviewed | Decision |
 |---|---|---|---|---|
-| Independent human security reviewer | _pending_ | _pending_ | _pending_ | **NOT SIGNED** |
+| Independent human security reviewer | _pending_ | _pending_ | candidate SHA: _pending_ | **NOT SIGNED** |
 | Owner (authorizes #96 separately) | _pending_ | _pending_ | — | **NOT AUTHORIZED** |
+
+Re-review rule: any change after sign-off to `agora_tracker/trading/**`, the migrations, the
+nginx templates or the RPC/finality configuration is security-sensitive; the reviewer decides
+whether it needs re-review before #96.
