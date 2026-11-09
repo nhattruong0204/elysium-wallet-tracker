@@ -162,11 +162,16 @@ trading:
   # Confirmations before a receipt is treated as final (docs/TRADING_RECEIPTS.md). An assumption
   # about reorg depth, not a guarantee; fills are provisional until it is reached.
   # finality_confirmations: 12
-  # Owner leg recovery (docs/TRADING_LEG_RECOVERY.md, #95 F-02). Read-only chain endpoints used to
-  # DIAGNOSE a leg stuck ambiguous/orphaned. A correction needs evidence from >= 2 endpoints with
-  # distinct hosts: TRADING_EXEC_RPC_URL plus the comma-separated SECRET urls in the env var named
-  # here. Unset => owners can diagnose but never resolve. Needs wallet_execution_enabled.
-  # recovery_rpc_urls_env: TRADING_RECOVERY_RPC_URLS
+  # RPC corroboration (docs/TRADING_RPC_CORROBORATION.md, #95 F-15; replaces recovery_rpc_urls_env).
+  # Receipts, finalization, fills, reorgs, automatic lock release and owner leg recovery
+  # (docs/TRADING_LEG_RECOVERY.md) are recorded only on facts that >= 2 endpoints with distinct
+  # hosts AND distinct operators agree on at one anchor block: TRADING_EXEC_RPC_URL plus the
+  # comma-separated SECRET urls in the env var named here (optionally `label=url` to name the
+  # operator). Unset => nothing safety-critical is recorded (fail closed). Two brands that share
+  # an upstream node are NOT independent; that cannot be checked here, it is your attestation.
+  # corroboration_rpc_urls_env: TRADING_CORROBORATION_RPC_URLS
+  # execution_rpc_operator: ""         # optional operator label for TRADING_EXEC_RPC_URL
+  # corroboration_calls_per_pass: 120  # RPC calls one reconciler pass may spend in total
   # Supervised reconciliation worker (docs/TRADING_WORKER_LIFECYCLE.md). Starts ONLY when
   # wallet_execution_enabled is true (then a missing ledger / TRADING_EXEC_RPC_URL is fatal).
   # worker_interval_s: 10            # between cycles while there is work

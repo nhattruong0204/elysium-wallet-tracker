@@ -1,24 +1,43 @@
-"""Receipt reconciliation (issue #94): turn mined transactions into truthful ledger facts.
+"""Receipt reconciliation (issue #94, hardened by #95 F-15): turn mined transactions into
+truthful ledger facts, never on one provider's word.
 
-Per leg that has a transaction hash and is not final yet, each pass:
+Every pass opens ONE corroboration session (`wallet/corroboration.py`): the heads of >= 2
+operationally distinct RPC sources are read, the lowest is the anchor, every source must report
+the identical header there, and every fact below is read at blocks <= that anchor and required to
+be identical on EVERY source. A provider that is merely a block or two behind moves the anchor; it
+is not a disagreement. Anything else that is not unanimous fails closed (nothing is recorded; a
+disagreement is appended to the audit trail).
 
-  1. fetches receipt + transaction (+ the canonical header at the receipt's height);
-  2. validates them against the leg (hash, sender, target, value, calldata, status, block hash);
+Per leg that has a transaction hash and is not final yet:
+
+  1. `Session.inclusion`: transaction, receipt, inclusion block and its canonical hash, identical
+     on all sources (a receipt without a transaction, a different block or a different receipt
+     on one source is a conflict, not a verdict);
+  2. validate them against the leg (hash, sender, target, value, calldata, status, block hash);
      a pair that does not match the request is NEVER accounted: it is left for the #93 reconciler;
-  3. records the inclusion (`included` / `reverted`) with its fill, provisional until the block is
-     `finality_confirmations` deep, then final;
-  4. detects reorgs: a recorded block that is no longer canonical (or a receipt that vanished)
-     rolls the provisional fill back and marks the leg/order `orphaned`; a receipt in a different
-     block is a fresh inclusion (new fill row, the old one rolled back).
+  3. record the inclusion (`included` / `reverted`) with its fill, provisional until the block is
+     `finality_confirmations` deep at the shared anchor, then final. The configured finality depth
+     is used unchanged;
+  4. detect reorgs: a recorded block that all sources agree is no longer canonical (or a receipt
+     that every source has lost while the recorded block is no longer the canonical one) rolls the
+     provisional fill back and marks the leg/order `orphaned`; a receipt in a different block is a
+     fresh inclusion (new fill row, the old one rolled back). One source saying "gone" is not
+     enough to orphan anything.
 
 Rules that keep it honest:
+  * the ledger refuses every write above unless it carries the session's provenance (F-15), so a
+    caller that forgot to corroborate cannot finalize, certify or orphan;
+  * a fill is `verified` only with two SEPARATE properties: the two on-chain accounting methods
+    agree (`FillRecord.method_agreement`) AND every input was read through the corroborated
+    session (see fills.py);
   * the receipt worker does not consult the pause / execution flag: pausing stops NEW prompts, but
     what already happened on chain must still be recorded;
   * an approval leg changes nothing about its order and never has a fill; the swap is a new plan;
   * a hash reported by a wallet is never trusted over the chain: no receipt -> still `submitted`;
   * unreadable evidence => nothing recorded this pass (retry), and after `evidence_retries` passes the
     fill is recorded as `unknown` (never a guess) so PnL stays unknown rather than wrong;
-  * every pass has a hard RPC-call budget so a backlog cannot starve the execution RPC."""
+  * every pass has a hard RPC-call and wall-time budget so a backlog cannot starve the execution
+    RPC, whatever the number of providers."""
 
 from __future__ import annotations
 
@@ -27,145 +46,87 @@ import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Protocol
 
 from ..ledger.core import LedgerRefused, OrderLedger
 from ..ledger.legs import FillRecord
 from ..paper import TradeRefused
-from .approvals import Head
+from .corroboration import (
+    DEFAULT_CALLS,
+    DEFAULT_SECONDS,
+    BudgetExhausted,
+    Conflict,
+    Corroborator,
+    EvidenceError,
+    Inclusion,
+    Session,
+)
 from .fills import EvidenceUnavailable, ReceiptError, compute_fill, gas_cost, validate
 
 log = logging.getLogger(__name__)
 
-DEFAULT_FINALITY = 12
-DEFAULT_RPC_BUDGET = 120
+DEFAULT_RPC_BUDGET = DEFAULT_CALLS
 DEFAULT_EVIDENCE_RETRIES = 3
-
-
-class ReceiptSource(Protocol):
-    def head(self) -> Head: ...
-    def transaction(self, tx_hash: str) -> dict | None: ...
-    def receipt(self, tx_hash: str) -> dict | None: ...
-    def block_header(self, number: int) -> dict | None: ...
-    def block_transactions(self, number: int) -> list[dict]: ...
-    def native_balance(self, address: str, block: int) -> int: ...
-    def token_balance(self, token: str, address: str, block: int) -> int: ...
-
-
-class BudgetExhausted(Exception):
-    """This pass used its RPC budget; the remaining legs wait for the next pass."""
-
-
-class _Metered:
-    """Counts every chain read so one pass cannot exceed its budget."""
-
-    def __init__(self, src: ReceiptSource, budget: int) -> None:
-        self._src, self.left = src, budget
-
-    def _spend(self) -> None:
-        if self.left <= 0:
-            raise BudgetExhausted
-        self.left -= 1
-
-    def head(self) -> Head:
-        self._spend()
-        return self._src.head()
-
-    def transaction(self, h: str) -> dict | None:
-        self._spend()
-        return self._src.transaction(h)
-
-    def receipt(self, h: str) -> dict | None:
-        self._spend()
-        return self._src.receipt(h)
-
-    def block_header(self, n: int) -> dict | None:
-        self._spend()
-        return self._src.block_header(n)
-
-    def block_transactions(self, n: int) -> list[dict]:
-        self._spend()
-        return self._src.block_transactions(n)
-
-    def native_balance(self, a: str, b: int) -> int:
-        self._spend()
-        return self._src.native_balance(a, b)
-
-    def token_balance(self, t: str, a: str, b: int) -> int:
-        self._spend()
-        return self._src.token_balance(t, a, b)
 
 
 @dataclass
 class PassReport:
     checked: int = 0
     counts: dict[str, int] = field(default_factory=dict)
+    codes: dict[str, int] = field(default_factory=dict)     # evidence error codes (stable, bounded)
     budget_exhausted: bool = False
+    calls: int = 0
 
     def add(self, kind: str) -> None:
         self.counts[kind] = self.counts.get(kind, 0) + 1
 
+    def code(self, code: str) -> None:
+        self.codes[code] = self.codes.get(code, 0) + 1
+
 
 class ReceiptReconciler:
-    def __init__(self, ledger: OrderLedger, source: ReceiptSource, *,
-                 finality_confirmations: int = DEFAULT_FINALITY,
-                 rpc_budget: int = DEFAULT_RPC_BUDGET,
+    def __init__(self, ledger: OrderLedger, corroborator: Corroborator, *,
+                 rpc_budget: int = DEFAULT_RPC_BUDGET, rpc_seconds: float = DEFAULT_SECONDS,
                  evidence_retries: int = DEFAULT_EVIDENCE_RETRIES,
                  clock: Callable[[], float] = time.time) -> None:
-        if not 1 <= finality_confirmations <= 256:
-            raise ValueError("finality_confirmations must be in 1..256")
-        self.ledger, self.source, self.clock = ledger, source, clock
-        self.finality = finality_confirmations
-        self.rpc_budget, self.evidence_retries = rpc_budget, evidence_retries
+        self.ledger, self.corro, self.clock = ledger, corroborator, clock
+        self.finality = corroborator.finality
+        self.rpc_budget, self.rpc_seconds = rpc_budget, rpc_seconds
+        self.evidence_retries = evidence_retries
         self._evidence_failures: dict[tuple[int, str], int] = {}
 
     # ------------------------------------------------------------------ one leg
-    def process(self, leg: dict, src: ReceiptSource) -> str:
-        """Returns a short outcome label (also the metric label)."""
+    def process(self, leg: dict, sess: Session) -> str:
+        """Returns a short outcome label (also the metric label). Raises `EvidenceError` when the
+        sources cannot establish the facts (the pass records it and moves on)."""
         tx_hash = leg["final_tx_hash"] or leg["tx_hash"]
         if not tx_hash:
             return "no_hash"
-        head = src.head()
+        mark = sess.mark()
+        inc = sess.inclusion(tx_hash)
         if leg["block_hash"] is not None and leg["state"] in ("included", "reverted"):
-            return self._recheck(leg, tx_hash, head, src)
-        return self._first_sight(leg, tx_hash, head, src)
+            return self._recheck(leg, tx_hash, inc, sess, mark)
+        return self._first_sight(leg, tx_hash, inc, sess, mark)
 
-    def _canonical(self, number: int, block_hash: str, src: ReceiptSource) -> bool | None:
-        """True / False when the node answered; None when it has no header for that height yet."""
-        h = src.block_header(number)
-        if h is None:
-            return None
-        return str(h["hash"]).lower() == block_hash
+    def _first_sight(self, leg: dict, tx_hash: str, inc: Inclusion, sess: Session,
+                     mark: tuple[int, int]) -> str:
+        if inc.status in ("absent", "pending", "ahead"):
+            return "pending"        # a wallet-reported hash is only an acknowledgment; ahead = retry
+        if inc.status == "not_canonical":
+            return "not_canonical"  # every source agrees the receipt is from a non-canonical block
+        return self._record(leg, tx_hash, inc, sess, mark)
 
-    def _first_sight(self, leg: dict, tx_hash: str, head: Head, src: ReceiptSource) -> str:
-        receipt = src.receipt(tx_hash)
-        if receipt is None:
-            return "pending"                    # a wallet-reported hash is only an acknowledgment
-        tx = src.transaction(tx_hash)
-        if tx is None:
-            return "unverifiable"               # receipt without a transaction: node is inconsistent
-        return self._record(leg, tx_hash, tx, receipt, head, src)
-
-    def _record(self, leg: dict, tx_hash: str, tx: dict, receipt: dict, head: Head,
-                src: ReceiptSource) -> str:
+    def _record(self, leg: dict, tx_hash: str, inc: Inclusion, sess: Session,
+                mark: tuple[int, int]) -> str:
+        tx, receipt = inc.tx, inc.receipt
+        assert tx is not None and receipt is not None
+        assert inc.block_number is not None and inc.block_hash is not None
+        assert inc.confirmations is not None
         problems = validate(leg, tx, receipt, tx_hash)
         if problems:
             log.error("leg %s receipt does not match the request: %s", leg["id"], problems)
             return "invalid"
-        try:
-            number = int(receipt["blockNumber"], 16)
-        except (KeyError, TypeError, ValueError):
-            return "invalid"
-        block_hash = str(receipt["blockHash"]).lower()
-        canon = self._canonical(number, block_hash, src)
-        if canon is None:
-            return "pending"                    # node has the receipt but not the header yet
-        if not canon:
-            return "not_canonical"              # receipt from a fork the node is leaving
-        if number > head.number:
-            return "pending"
-        confirmations = head.number - number + 1
-        final = confirmations >= self.finality
+        number, block_hash = inc.block_number, inc.block_hash
+        final = inc.confirmations >= self.finality
         status = 1 if receipt["status"] == "0x1" else 0
         state = "included" if status else "reverted"
         used, cost = gas_cost(tx, receipt)
@@ -175,7 +136,7 @@ class ReceiptReconciler:
             key = (leg["id"], block_hash)
             fails = self._evidence_failures.get(key, 0)
             try:
-                fill = compute_fill(leg, tx, receipt, tx_hash, src,
+                fill = compute_fill(leg, tx, receipt, tx_hash, sess,
                                     strict=fails < self.evidence_retries)
             except EvidenceUnavailable:
                 self._evidence_failures[key] = fails + 1
@@ -184,43 +145,70 @@ class ReceiptReconciler:
                 log.error("leg %s receipt unusable: %s", leg["id"], exc)
                 return "invalid"
             self._evidence_failures.pop(key, None)
-        ok = self.ledger.apply_receipt(
-            leg["id"], expected_version=leg["version"], state=state, block_number=number,
-            block_hash=block_hash, receipt_status=status, gas_used=used, gas_cost_wei=cost,
-            fill=fill, finalize=final)
+        evidence = sess.provenance(since=mark) | {
+            "facts": {"leg_id": leg["id"], "leg_version": leg["version"], "outcome": state,
+                      "tx_hash": tx_hash, "block_number": number, "block_hash": block_hash,
+                      "receipt_status": status, "confirmations": inc.confirmations}}
+        if fill is not None:
+            evidence["fill"] = {"verdict": fill.verdict, "method_agreement": fill.method_agreement,
+                                "inputs_source_agreed": sess.corroborated, "basis": fill.basis}
+        try:
+            ok = self.ledger.apply_receipt(
+                leg["id"], expected_version=leg["version"], state=state, block_number=number,
+                block_hash=block_hash, receipt_status=status, gas_used=used, gas_cost_wei=cost,
+                fill=fill, finalize=final, evidence=evidence)
+        except LedgerRefused as exc:
+            if exc.code != "evidence_required":
+                raise
+            log.error("leg %s receipt refused by the evidence gate: %s", leg["id"], exc)
+            return "evidence_refused"
         if not ok:
             return "stale"
         return ("final_" if final else "provisional_") + state
 
-    def _recheck(self, leg: dict, tx_hash: str, head: Head, src: ReceiptSource) -> str:
+    def _recheck(self, leg: dict, tx_hash: str, inc: Inclusion, sess: Session,
+                 mark: tuple[int, int]) -> str:
         """The leg already has an inclusion recorded: is it still canonical, and is it final?"""
         number, block_hash = leg["block_number"], leg["block_hash"]
-        canon = self._canonical(number, block_hash, src)
-        if canon is None or canon is False:
-            # The recorded block is not (or no longer) the canonical one at that height. Ask for the
-            # receipt again: a different block = re-included (new fill row); none = orphaned.
-            receipt = src.receipt(tx_hash)
-            if receipt is not None and str(receipt.get("blockHash", "")).lower() != block_hash:
-                tx = src.transaction(tx_hash)
-                if tx is None:
-                    return "unverifiable"
-                return self._record(leg, tx_hash, tx, receipt, head, src)
-            if receipt is not None:
-                return "pending"                # same block again: header lag, not a reorg
-            if canon is None:
-                return "pending"                # no header AND no receipt: node is behind, not proof
-            ok = self.ledger.apply_reorg(leg["id"], expected_version=leg["version"],
-                                         reason="recorded block is no longer canonical")
-            return "orphaned" if ok else "stale"
-        if head.number - number + 1 < self.finality:
-            return "provisional_unchanged"
-        # canonical and deep enough: finalize. The fill is re-derived (strictly) and keyed by block
-        # hash, so an existing provisional row is promoted, never duplicated or rewritten.
-        receipt = src.receipt(tx_hash)
-        tx = src.transaction(tx_hash)
-        if receipt is None or tx is None:
+        if inc.status == "mined":
+            if inc.block_hash != block_hash:
+                # re-included in a different canonical block: a fresh inclusion (new fill row,
+                # the old provisional one is rolled back by the ledger)
+                return self._record(leg, tx_hash, inc, sess, mark)
+            assert inc.confirmations is not None
+            if inc.confirmations < self.finality:
+                return "provisional_unchanged"
+            # canonical and deep enough: finalize. The fill is re-derived (strictly) and keyed by
+            # block hash, so an existing provisional row is promoted, never duplicated or rewritten.
+            return self._record(leg, tx_hash, inc, sess, mark)
+        anchor = sess.anchor()
+        if number > anchor.number:
+            return "pending"            # the shared view has not reached the recorded block
+        if inc.status == "ahead":
             return "pending"
-        return self._record(leg, tx_hash, tx, receipt, head, src)
+        if inc.status == "not_canonical" and inc.block_hash != block_hash:
+            return "pending"            # a different, non-canonical block: nothing about ours
+        # absent / pending (receipt lost by EVERY source) / our block reported non-canonical by
+        # every source. Only a corroborated, different canonical block at that height is a reorg.
+        canonical_here = sess.header_hash(number)
+        if canonical_here == block_hash:
+            raise Conflict("receipt_missing_in_canonical_block",
+                           "every source lost the receipt although the recorded block is canonical")
+        basis = "not_canonical" if inc.status == "not_canonical" else "absent"
+        evidence = sess.provenance(since=mark) | {
+            "facts": {"leg_id": leg["id"], "leg_version": leg["version"], "outcome": "reorg",
+                      "block_hash": block_hash, "block_number": number, "basis": basis,
+                      "canonical_hash_at_height": canonical_here, "tx_hash": tx_hash}}
+        try:
+            ok = self.ledger.apply_reorg(leg["id"], expected_version=leg["version"],
+                                         reason="recorded block is no longer canonical",
+                                         evidence=evidence)
+        except LedgerRefused as exc:
+            if exc.code != "evidence_required":
+                raise
+            log.error("leg %s reorg refused by the evidence gate: %s", leg["id"], exc)
+            return "evidence_refused"
+        return "orphaned" if ok else "stale"
 
     # ------------------------------------------------------------------ the pass
     def run_once(self, limit: int = 100,
@@ -228,21 +216,54 @@ class ReceiptReconciler:
         """One pass. `should_continue` (optional) lets a supervisor bound the pass by wall time or
         a shutdown request; legs not reached wait for the next pass."""
         rep = PassReport()
-        src = _Metered(self.source, self.rpc_budget)
-        for leg in self.ledger.receipt_candidates(limit=limit):
+        legs = self.ledger.receipt_candidates(limit=limit)
+        if not legs:
+            return rep
+        sess = self.corro.session(calls=self.rpc_budget, seconds=self.rpc_seconds)
+        try:
+            sess.pin()                      # no usable shared anchor => nothing at all is recorded
+        except BudgetExhausted:
+            rep.budget_exhausted = True
+            rep.add("budget_exhausted")
+            return rep
+        except EvidenceError as exc:
+            rep.add("unverifiable")
+            rep.code(exc.code)
+            log.warning("receipt pass: no corroborated anchor (%s)", exc.code)
+            return rep
+        for leg in legs:
             if should_continue is not None and not should_continue():
                 break
             rep.checked += 1
             try:
-                rep.add(self.process(leg, src))
+                rep.add(self.process(leg, sess))
             except BudgetExhausted:
                 rep.budget_exhausted = True
                 rep.add("budget_exhausted")
                 break
+            except Conflict as exc:
+                rep.add("conflict")
+                rep.code(exc.code)
+                self._record_conflict(leg, exc, sess)
+            except EvidenceError as exc:
+                rep.add("unverifiable")
+                rep.code(exc.code)
+                log.warning("receipt check of leg %s: evidence unavailable (%s)", leg.get("id"),
+                            exc.code)
             except (TradeRefused, LedgerRefused) as exc:
                 rep.add("error")
                 log.warning("receipt check of leg %s skipped: %s", leg.get("id"), exc)
+        rep.calls = sess.spent
         return rep
+
+    def _record_conflict(self, leg: dict, exc: Conflict, sess: Session) -> None:
+        try:
+            ev = sess.provenance(strict=False) | {"source": exc.source,
+                                                  "tx_hash": leg["final_tx_hash"] or leg["tx_hash"]}
+            self.ledger.record_chain_conflict(leg["id"], code=exc.code, evidence=ev)
+        except Exception:                                        # noqa: BLE001 - audit best effort
+            log.warning("could not record a chain conflict for leg %s", leg.get("id"))
+        log.error("leg %s: RPC sources disagree (%s); nothing was recorded", leg.get("id"), exc.code)
 
 
 def serve(reconciler: ReceiptReconciler, stop: threading.Event, *, interval: float = 5.0,

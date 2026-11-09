@@ -1,8 +1,19 @@
 """Realized-fill accounting from on-chain evidence only (issue #94).
 
-A fill is `verified` only when two *independent* on-chain measurements agree; otherwise it is
-`unknown`, and nothing downstream (positions, PnL) is allowed to guess. Never used as evidence:
-the quote, `min_out`, the router's return value from a simulation, or a wallet-reported number.
+A fill is `verified` only when TWO SEPARATE properties hold; otherwise it is `unknown`, and
+nothing downstream (positions, PnL) is allowed to guess:
+
+  1. METHOD agreement: two independent on-chain accounting methods agree (below);
+  2. SOURCE agreement: every input of both methods (header, block contents, balances at N-1 and N)
+     was read through a corroborated session, i.e. identical on >= 2 operationally distinct RPC
+     sources at one anchor (`wallet/corroboration.py`).
+
+(1) says the chain is internally consistent; (2) says it is not just one provider's story. A single
+provider can return perfectly consistent but fabricated logs AND balances, so (1) alone is never
+enough; and two providers agreeing on inconsistent data is not a fill either. `FillRecord.
+method_agreement` records (1); (2) is the `corroborated` marker of the source object this module
+refuses to read from otherwise. Never used as evidence: the quote, `min_out`, the router's return
+value from a simulation, or a wallet-reported number.
 
 BUY  (native in, token out)
   native spent  = the mined transaction's `value` (exact: the router consumes all of msg.value),
@@ -36,6 +47,8 @@ ADVISORY = frozenset({"gas_limit", "fee_cap"})
 
 
 class FillSource(Protocol):
+    corroborated: bool       # True only for a `corroboration.Session`
+
     def block_transactions(self, number: int) -> list[dict]: ...
     def native_balance(self, address: str, block: int) -> int: ...
     def token_balance(self, token: str, address: str, block: int) -> int: ...
@@ -168,12 +181,16 @@ def compute_fill(leg: dict, tx: dict, receipt: dict, tx_hash: str, src: FillSour
     wallet, router = leg["wallet"], leg["expected_to"]
     used, gas = gas_cost(tx, receipt)
 
-    def unknown(reason: str) -> FillRecord:
-        return FillRecord("unknown", side, token, None, None, gas, None, reason[:190])
+    def unknown(reason: str, *, methods: bool = False) -> FillRecord:
+        return FillRecord("unknown", side, token, None, None, gas, None, reason[:190],
+                          method_agreement=methods)
 
     if receipt["status"] == "0x0":
         return FillRecord("reverted", side, token, None, None, gas, "receipt status 0", None)
 
+    if getattr(src, "corroborated", False) is not True:
+        # defense in depth: a fill is never certified from an uncorroborated source object
+        return unknown("inputs are not corroborated by independent sources")
     block = _int(receipt["blockNumber"], "blockNumber")
     logs = parse_logs(receipt)
     got, sent = net_transfers(logs, token, wallet)
@@ -183,9 +200,10 @@ def compute_fill(leg: dict, tx: dict, receipt: dict, tx_hash: str, src: FillSour
         before = src.token_balance(token, wallet, block - 1)
         after = src.token_balance(token, wallet, block)
     except TradeRefused as exc:
+        code = getattr(exc, "code", "source_unavailable")
         if strict:
-            raise EvidenceUnavailable("balance evidence unavailable") from exc
-        return unknown("balance evidence unavailable")
+            raise EvidenceUnavailable(f"balance evidence unavailable: {code}") from exc
+        return unknown(f"balance evidence unavailable: {code}")
 
     if side == "buy":
         if _int(tx.get("value"), "value") != value:
@@ -197,7 +215,8 @@ def compute_fill(leg: dict, tx: dict, receipt: dict, tx_hash: str, src: FillSour
         if log_in <= 0 or delta != log_in:
             return unknown("token transfer logs and balance delta disagree")
         return FillRecord("verified", side, token, value, delta, gas,
-                          "transfer logs == token balance delta; native == tx value", None)
+                          "transfer logs == token balance delta; native == tx value", None,
+                          method_agreement=True)
 
     log_out = sent - got
     delta_out = before - after
@@ -207,10 +226,12 @@ def compute_fill(leg: dict, tx: dict, receipt: dict, tx_hash: str, src: FillSour
     try:
         native_delta = src.native_balance(wallet, block) - src.native_balance(wallet, block - 1) + gas
     except TradeRefused as exc:
+        code = getattr(exc, "code", "source_unavailable")
         if strict:
-            raise EvidenceUnavailable("native balance evidence unavailable") from exc
-        return unknown("native balance evidence unavailable")
+            raise EvidenceUnavailable(f"native balance evidence unavailable: {code}") from exc
+        return unknown(f"native balance evidence unavailable: {code}")
     if withdrawn <= 0 or native_delta != withdrawn:
         return unknown("native proceeds: withdrawal log and balance delta disagree")
     return FillRecord("verified", side, token, withdrawn, log_out, gas,
-                      "transfer logs == token delta; withdrawal log == native delta + gas", None)
+                      "transfer logs == token delta; withdrawal log == native delta + gas", None,
+                      method_agreement=True)

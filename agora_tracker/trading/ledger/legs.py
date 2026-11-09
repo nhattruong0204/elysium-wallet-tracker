@@ -62,6 +62,10 @@ class FillRecord:
     gas_cost_wei: int
     basis: str | None = None
     reason: str | None = None
+    # Two accounting methods agreed (token-transfer logs == balance delta; native == tx value).
+    # This says NOTHING about whether independent RPC sources agreed: that is the evidence's
+    # `source_agreement`. A `verified` fill needs both (the ledger enforces it).
+    method_agreement: bool = False
 
 
 def fill_public(row) -> dict[str, Any]:
@@ -72,11 +76,12 @@ def fill_public(row) -> dict[str, Any]:
             "side": row.side, "tx_hash": row.tx_hash, "block_number": int(row.block_number),
             "block_hash": row.block_hash, "verdict": row.verdict, "native_wei": s(row.native_wei),
             "token_wei": s(row.token_wei), "gas_cost_wei": s(row.gas_cost_wei),
-            "status": row.status, "basis": row.basis, "reason": row.reason}
+            "status": row.status, "basis": row.basis, "reason": row.reason,
+            "evidence_id": None if row.evidence_id is None else int(row.evidence_id)}
 
 
 FILL_COLS = ("id, order_id, leg_id, user_id, wallet, chain_id, token, side, tx_hash, block_number, "
-             "block_hash, verdict, native_wei, token_wei, gas_cost_wei, status, basis, reason")
+             "block_hash, verdict, native_wei, token_wei, gas_cost_wei, status, basis, reason, evidence_id")
 
 
 def _ts(v) -> float | None:

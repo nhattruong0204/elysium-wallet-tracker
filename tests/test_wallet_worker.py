@@ -27,7 +27,7 @@ from test_trading_ledger import (  # noqa: F401
 )
 from test_wallet_receipts import mined_buy, rr  # noqa: F401
 from test_wallet_reconcile import FakeNode, errored, node  # noqa: F401
-from walletkit import ReceiptChain
+from walletkit import ReceiptChain, providers
 
 import agora_tracker
 from agora_tracker.config import TradingConfig
@@ -36,6 +36,7 @@ from agora_tracker.trading.wallet import supervisor as sv
 from agora_tracker.trading.wallet.rpc import RpcBusy, RpcUnavailable
 from agora_tracker.trading.wallet.supervisor import (
     BudgetedChain,
+    ChainGroup,
     PgAdvisoryLease,
     WorkerSetupError,
     WorkerSupervisor,
@@ -508,8 +509,11 @@ def test_pg_lease_is_exclusive_releases_and_dies_with_its_session(live, owner_en
         b.release()
 
 
-def real_worker(live, ch, lease=None, **kw):
-    chain = BudgetedChain(ch, calls_per_min=100_000)
+def real_worker(live, ch, lease=None, *, calls_per_min=100_000, sources=2, **kw):
+    """The real supervisor over `sources` independent providers of the scripted chain `ch`, each
+    behind its own per-minute budget (as `build_worker` does)."""
+    chain = ChainGroup([BudgetedChain(p, calls_per_min=calls_per_min)
+                        for p in providers(ch, live.clock, sources)])
     args = dict(interval_s=0.01, idle_interval_s=0.02, standby_retry_s=0.02, pass_budget_s=10.0,
                 lower_priority=False, finality_confirmations=12, clock=live.clock)
     args.update(kw)
@@ -614,12 +618,14 @@ def test_rpc_outage_changes_no_ledger_state_and_recovery_completes_the_work(live
 def test_rpc_budget_exhaustion_is_fail_closed_for_real_reconcilers(live, node):
     oid, leg, ch = mined_buy(live, node)
     w = real_worker(live, ch)
-    w.chain._limit = 2
+    for m in w.chain.sources:
+        m._limit = 2                                       # each provider's own per-minute budget
     w.run_cycle()
     assert live.get_order(U1, oid).state == "submitted"    # not enough evidence: nothing recorded
     assert w.snapshot()["rpc"]["budget_refusals"] >= 1
-    w.chain._limit = 10_000
-    w.chain._stamps.clear()
+    for m in w.chain.sources:
+        m._limit = 10_000
+        m._stamps.clear()
     w.run_cycle()
     assert live.get_order(U1, oid).state == "included"
 
@@ -725,3 +731,18 @@ def test_run_ui_enabled_runs_one_worker_beside_the_single_update_consumer(monkey
     assert seen["workers_during_run"] == ["wallet-reconciler"]
     assert seen["bot"].worker is not None
     assert not [t for t in threading.enumerate() if t.name == "wallet-reconciler"]   # stopped
+
+
+# ------------------------------------------------------------------ F-15: the worker's shared corroboration
+def test_build_worker_wires_every_source_into_one_shared_corroborator_and_fails_closed_alone():
+    engine = SimpleNamespace(url="postgresql+psycopg://trading_rw:pw@127.0.0.1/db")
+    c = cfg(ledger_enabled=True, wallet_execution_enabled=True)
+    w = build_worker(c, SimpleNamespace(engine=engine),
+                     environ={**ENV, "TRADING_CORROBORATION_RPC_URLS": "https://rpc.other.example/K"})
+    assert len(w.chain.sources) == 2 and w.snapshot()["rpc"]["sources"] == 2
+    assert w.receipts.corro is w.legs.corro and len(w.receipts.corro.sources) == 2
+    solo = build_worker(c, SimpleNamespace(engine=engine), environ=ENV)       # one source only
+    assert len(solo.chain.sources) == 1
+    with pytest.raises(WorkerSetupError, match="operator"):
+        build_worker(c, SimpleNamespace(engine=engine), environ={
+            **ENV, "TRADING_CORROBORATION_RPC_URLS": "https://other.example/K,https://rpc.other.example/K"})

@@ -48,6 +48,7 @@ from walletkit import WALLET, block_hash
 from agora_tracker.migrate import downgrade, upgrade
 from agora_tracker.trading.paper import TradeRefused
 from agora_tracker.trading.wallet.approvals import Head
+from agora_tracker.trading.wallet.corroboration import Corroborator
 from agora_tracker.trading.wallet.flow import WalletFlow
 from agora_tracker.trading.wallet.reconcile import swap_deadline
 from agora_tracker.trading.wallet.recovery import (
@@ -112,9 +113,13 @@ class Src:
     """One RPC provider's view. `host` is distinct per provider, like ExecutionRpc.host."""
 
     READS = {"head", "transaction", "receipt", "block_header", "block_transactions", "tx_count"}
+    chain_id = 99901
+    chain_verified = True
 
     def __init__(self, world: World, host: str, clock, *, lag: int = 0) -> None:
+        from agora_tracker.trading.wallet.rpc import operator_of
         self.w, self.host, self.clock, self.lag = world, host, clock, lag
+        self.operator = operator_of(host)
         self.down, self.age = False, 0
         self.override: dict[int, str] = {}
         self.hidden: set[str] = set()
@@ -164,7 +169,10 @@ class Src:
         b = int(t["blockNumber"], 16)
         if b > self.n:
             return None
-        return {"blockNumber": hex(b), "blockHash": self._bh(b), "status": hex(self.w.status[h])}
+        t = self.w.txs[h]
+        return {"transactionHash": h, "from": t["from"], "to": t["to"], "blockNumber": hex(b),
+                "blockHash": self._bh(b), "status": hex(self.w.status[h]), "gasUsed": "0x5208",
+                "effectiveGasPrice": hex(10**9), "contractAddress": None, "logs": []}
 
     def tx_count(self, address: str, tag: str) -> int:
         self._go("tx_count")
@@ -185,9 +193,14 @@ def srcs(world, clock):
     return Src(world, "rpc-a.example", clock), Src(world, "rpc-b.example", clock)
 
 
+def recovery(live, sources, clock, **kw):
+    """The F-02 owner tool over the SHARED corroboration layer (F-15)."""
+    return LegRecovery(live, Corroborator(sources, finality=12, clock=clock), clock=clock, **kw)
+
+
 @pytest.fixture
 def svc(live, srcs, clock):
-    return LegRecovery(live, list(srcs), clock=clock)
+    return recovery(live, list(srcs), clock)
 
 
 # ------------------------------------------------------------------ stuck-leg builders
@@ -353,7 +366,8 @@ def test_reported_hash_with_a_different_payload_not_final_yet_stays_blocked(live
 def test_a_pending_transaction_is_never_resolved(live, node, svc, world):
     _, leg, _ = stuck_hashed(live, node)
     world.txs[H1] = {"hash": H1, "from": WALLET, "to": leg["expected_to"], "value": "0x0",
-                     "input": leg["expected_data"], "blockNumber": None}
+                     "input": leg["expected_data"], "nonce": "0x5", "blockNumber": None,
+                     "blockHash": None}
     d = svc.diagnose(OWNER_ACTOR, leg["id"])
     assert (d.reason, d.proposal) == ("transaction_pending", None) and d.blocked_reason
 
@@ -470,7 +484,7 @@ def test_one_provider_down_means_no_correction_even_if_the_other_has_proof(
     srcs[1].down = True
     d = svc.diagnose(OWNER_ACTOR, leg["id"])
     assert d.proposal is None and "source_unavailable" in d.evidence["problems"]
-    assert not d.corroborated and any("error" in s for s in d.evidence["sources"])
+    assert not d.corroborated and [f["error"] for f in d.evidence["failed"]] == ["source_unavailable"]
 
 
 def test_all_providers_down_is_reported_as_rpc_unavailable(live, node, svc, srcs):
@@ -522,7 +536,7 @@ def test_a_receipt_that_differs_between_providers_blocks(live, node, svc, srcs, 
 
 def test_a_single_source_can_diagnose_but_never_resolve(live, node, srcs, world, clock):
     oid, leg = provable_superseded(live, node, world)
-    one = LegRecovery(live, [srcs[0]], clock=clock)
+    one = recovery(live, [srcs[0]], clock)
     d = one.diagnose(OWNER_ACTOR, leg["id"])
     assert d.proposal is None and "needs_two_independent_sources" in d.evidence["problems"]
     assert not d.corroborated and one.prepare(OWNER_ACTOR, leg["id"]).code is None
@@ -531,7 +545,7 @@ def test_a_single_source_can_diagnose_but_never_resolve(live, node, srcs, world,
 def test_two_names_for_one_provider_are_not_two_sources(live, node, srcs, world, clock):
     oid, leg = provable_superseded(live, node, world)
     twin = Src(world, srcs[0].host, clock)
-    d = LegRecovery(live, [srcs[0], twin], clock=clock).diagnose(OWNER_ACTOR, leg["id"])
+    d = recovery(live, [srcs[0], twin], clock).diagnose(OWNER_ACTOR, leg["id"])
     assert d.proposal is None and "sources_not_independent" in d.evidence["problems"]
 
 
@@ -761,7 +775,7 @@ def test_the_leg_changing_after_prepare_is_refused(live, node, svc, world):
 # ------------------------------------------------------------------ 6. duplicates, races, restarts
 def test_concurrent_confirmations_of_one_code_apply_exactly_once(live, node, srcs, world, clock, owner_engine):
     oid, leg = provable_superseded(live, node, world)
-    svc = LegRecovery(live, list(srcs), clock=clock)
+    svc = recovery(live, list(srcs), clock)
     p = svc.prepare(OWNER_ACTOR, leg["id"])
     gate = threading.Barrier(4)
 
@@ -782,7 +796,7 @@ def test_concurrent_confirmations_of_one_code_apply_exactly_once(live, node, src
 
 def test_concurrent_distinct_services_cannot_double_apply(live, node, srcs, world, clock, owner_engine):
     oid, leg = provable_superseded(live, node, world)
-    a, b = LegRecovery(live, list(srcs), clock=clock), LegRecovery(live, list(srcs), clock=clock)
+    a, b = recovery(live, list(srcs), clock), recovery(live, list(srcs), clock)
     pa, pb = a.prepare(OWNER_ACTOR, leg["id"]), b.prepare(OWNER_ACTOR, leg["id"])
     gate = threading.Barrier(2)
 
@@ -827,15 +841,15 @@ def test_a_request_key_cannot_be_reused_for_another_leg(live, node, svc, world):
 
 def test_restart_voids_codes_but_keeps_the_recovery(live, node, srcs, world, clock):
     oid, leg = provable_superseded(live, node, world)
-    old = LegRecovery(live, list(srcs), clock=clock)
+    old = recovery(live, list(srcs), clock)
     p = old.prepare(OWNER_ACTOR, leg["id"])
-    new = LegRecovery(live, list(srcs), clock=clock)            # "process restarted"
+    new = recovery(live, list(srcs), clock)            # "process restarted"
     with pytest.raises(RecoveryRefused) as e:
         new.confirm(OWNER_ACTOR, leg["id"], p.code, REASON)
     assert e.value.code == "bad_code" and leg_of(live, oid)["state"] == "ambiguous"
     p2 = new.prepare(OWNER_ACTOR, leg["id"])
     assert new.confirm(OWNER_ACTOR, leg["id"], p2.code, REASON).applied is True
-    third = LegRecovery(live, list(srcs), clock=clock)          # restart again: state is durable
+    third = recovery(live, list(srcs), clock)          # restart again: state is durable
     d = third.diagnose(OWNER_ACTOR, leg["id"])
     assert d.proposal is None and d.blocked_reason in ("already_recovered", "leg_not_stuck:superseded")
     assert third.prepare(OWNER_ACTOR, leg["id"]).code is None
@@ -1160,3 +1174,41 @@ def test_migration_0015_creates_a_guarded_append_only_table(pg_engine):
     upgrade(pg_engine)
     assert raw(pg_engine, "SELECT count(*) FROM information_schema.tables WHERE table_schema = "
                           "'trading_private' AND table_name = 'leg_recoveries'")[0][0] == 1
+
+
+# ------------------------------------------------------------------ 13. F-15: independence of the sources
+def test_two_hosts_of_one_operator_never_yield_a_proposal_or_a_confirmable_recovery(
+        live, node, world, clock, owner_engine):
+    oid, leg = provable_superseded(live, node, world)
+    same = [Src(world, "rpc1.shop.example", clock), Src(world, "rpc2.shop.example", clock)]
+    assert same[0].operator == same[1].operator
+    svc = recovery(live, same, clock)
+    d = svc.diagnose(OWNER_ACTOR, leg["id"])
+    assert d.proposal is None and d.decision_key is None and d.corroborated is False
+    assert "sources_not_independent" in json.dumps(d.evidence) and d.blocked_reason
+    before = counts(owner_engine)
+    p = svc.prepare(OWNER_ACTOR, leg["id"])
+    assert p.code is None
+    with pytest.raises(RecoveryRefused):
+        svc.confirm(OWNER_ACTOR, leg["id"], "0123456789", REASON)
+    after = counts(owner_engine)                  # only the audited refusal is appended
+    assert after == {**before, "events": before["events"] + 1}
+    assert raw(owner_engine, "SELECT kind FROM trading_private.order_events ORDER BY chain_no DESC LIMIT 1"
+               )[0][0] == "LEG_RECOVERY_REFUSED"
+    assert leg_of(live, oid)["state"] == "ambiguous" and locked_legs(owner_engine) == 1
+
+
+def test_a_single_source_is_diagnosable_but_never_corroborated(live, node, world, clock, srcs):
+    oid, leg = provable_superseded(live, node, world)
+    svc = recovery(live, [srcs[0]], clock)
+    d = svc.diagnose(OWNER_ACTOR, leg["id"])
+    assert d.proposal is None and d.corroborated is False
+
+
+def test_the_recovery_evidence_passes_the_shared_ledger_gate_with_operators(
+        live, node, world, svc, owner_engine):
+    oid, leg = provable_superseded(live, node, world)
+    d = svc.diagnose(OWNER_ACTOR, leg["id"])
+    assert d.proposal and d.corroborated is True
+    assert sorted(s["operator"] for s in d.evidence["sources"]) == ["rpc-a.example", "rpc-b.example"]
+    assert "rpc-a.example" in render_diagnosis(d)

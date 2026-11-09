@@ -34,7 +34,7 @@ import random
 import threading
 import time
 from collections import deque
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any, Protocol
 
 import sqlalchemy as sa
@@ -42,10 +42,11 @@ from sqlalchemy.engine import Connection, Engine
 
 from ...config import Config
 from ..paper import TradeRefused
+from .corroboration import Corroborator
 from .receipts import ReceiptReconciler
 from .reconcile import LegReconciler
 from .rpc import ExecutionRpc, RpcBusy
-from .runtime import ExecutionRpcConfigError, build_execution_rpc
+from .runtime import ExecutionRpcConfigError, build_execution_rpc, build_rpc_sources
 
 log = logging.getLogger(__name__)
 
@@ -219,6 +220,23 @@ class BudgetedChain:
     def token_balance(self, token, address, block):
         return self._do("token_balance", token, address, block)
 
+    # identity of the endpoint behind this handle (the corroboration layer checks it)
+    @property
+    def host(self) -> str:
+        return str(getattr(self._inner, "host", ""))
+
+    @property
+    def operator(self) -> str:
+        return str(getattr(self._inner, "operator", self.host))
+
+    @property
+    def chain_id(self) -> Any:
+        return getattr(self._inner, "chain_id", None)
+
+    @property
+    def chain_verified(self) -> bool:
+        return bool(getattr(self._inner, "chain_verified", False))
+
     def take_cycle(self) -> tuple[int, int]:
         """(ok, failed) RPC calls since the previous call; resets the window."""
         with self._lock:
@@ -231,10 +249,42 @@ class BudgetedChain:
             return sum(1 for t in self._stamps if now - t < 60.0)
 
 
+class ChainGroup:
+    """The independently configured RPC sources of one worker, each behind its OWN per-minute
+    budget (a provider's rate limit is per provider). Aggregates the accounting the supervisor
+    reports. Worst-case load on the shared VPS is therefore (sources x worker_rpc_calls_per_min)
+    calls a minute, and no more than `corroboration_calls_per_pass` per reconciler pass."""
+
+    def __init__(self, members: Sequence[BudgetedChain]) -> None:
+        self.sources: list[BudgetedChain] = list(members)
+
+    @property
+    def calls(self) -> int:
+        return sum(m.calls for m in self.sources)
+
+    @property
+    def failures(self) -> int:
+        return sum(m.failures for m in self.sources)
+
+    @property
+    def refused(self) -> int:
+        return sum(m.refused for m in self.sources)
+
+    def take_cycle(self) -> tuple[int, int]:
+        ok = bad = 0
+        for m in self.sources:
+            a, b = m.take_cycle()
+            ok, bad = ok + a, bad + b
+        return ok, bad
+
+    def in_window(self) -> int:
+        return sum(m.in_window() for m in self.sources)
+
+
 # ------------------------------------------------------------------------------ supervisor
 
 class WorkerSupervisor:
-    def __init__(self, ledger: Any, chain: BudgetedChain, *, lease: Lease,
+    def __init__(self, ledger: Any, chain: BudgetedChain | ChainGroup, *, lease: Lease,
                  finality_confirmations: int, interval_s: float = 10.0, idle_interval_s: float = 30.0,
                  max_backoff_s: float = 300.0, batch: int = 50, pass_budget_s: float = 20.0,
                  standby_retry_s: float = 15.0, external_stop: threading.Event | None = None,
@@ -242,7 +292,7 @@ class WorkerSupervisor:
                  clock: Callable[[], float] = time.time,
                  mono: Callable[[], float] = time.monotonic,
                  leg_reconciler: Any = None, receipt_reconciler: Any = None,
-                 lower_priority: bool = True) -> None:
+                 lower_priority: bool = True, corroboration_calls: int = 120) -> None:
         self.ledger, self.chain, self.lease = ledger, chain, lease
         self.interval_s, self.idle_interval_s = interval_s, idle_interval_s
         self.max_backoff_s, self.batch = max_backoff_s, batch
@@ -254,9 +304,17 @@ class WorkerSupervisor:
         self._thread: threading.Thread | None = None
         self._guard = threading.Lock()
         self._lower_priority = lower_priority
-        self.legs = leg_reconciler or LegReconciler(ledger, [chain], clock=clock)
+        members = chain.sources if isinstance(chain, ChainGroup) else [chain]
+        # ONE corroborator (stateless) shared by both reconcilers: there is a single verification
+        # implementation. With fewer than two sources it fails closed (records nothing).
+        self.corroborator = Corroborator(members, finality=finality_confirmations, clock=clock,
+                                         mono=mono)
+        self.legs = leg_reconciler or LegReconciler(
+            ledger, self.corroborator, clock=clock, rpc_budget=corroboration_calls,
+            rpc_seconds=pass_budget_s)
         self.receipts = receipt_reconciler or ReceiptReconciler(
-            ledger, chain, finality_confirmations=finality_confirmations, clock=clock)
+            ledger, self.corroborator, clock=clock, rpc_budget=corroboration_calls,
+            rpc_seconds=pass_budget_s)
         self._h: dict[str, Any] = {
             "state": "stopped", "started_at": None, "cycles": 0, "last_cycle_at": None,
             "last_success_at": None, "last_duration_s": None, "consecutive_failures": 0,
@@ -512,7 +570,12 @@ def build_worker(cfg: Config, ledger: Any, *, stop: threading.Event | None = Non
             raise WorkerSetupError(str(exc)) from None
     if rpc is None:
         raise WorkerSetupError("no execution RPC")
-    chain = BudgetedChain(rpc, calls_per_min=t.worker_rpc_calls_per_min)
+    try:
+        sources = build_rpc_sources(cfg, rpc, environ)
+    except ExecutionRpcConfigError as exc:
+        raise WorkerSetupError(str(exc)) from None
+    chain = ChainGroup([BudgetedChain(x, calls_per_min=t.worker_rpc_calls_per_min)
+                        for x in sources])
     if lease is None:
         try:
             lease = PgAdvisoryLease(ledger.engine.url)
@@ -524,4 +587,6 @@ def build_worker(cfg: Config, ledger: Any, *, stop: threading.Event | None = Non
         interval_s=t.worker_interval_s, idle_interval_s=t.worker_idle_interval_s,
         max_backoff_s=t.worker_max_backoff_s, batch=t.worker_batch,
         pass_budget_s=t.worker_pass_budget_s, standby_retry_s=t.worker_standby_retry_s,
-        external_stop=stop, rpc_info=lambda: {"breaker": rpc_ref.breaker.state})
+        external_stop=stop, rpc_info=lambda: {"breaker": rpc_ref.breaker.state,
+                                              "sources": len(chain.sources)},
+        corroboration_calls=t.corroboration_calls_per_pass)

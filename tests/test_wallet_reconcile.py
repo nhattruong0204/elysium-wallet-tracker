@@ -22,11 +22,12 @@ from test_trading_ledger import (  # noqa: F401
     step,
 )
 from test_wallet_flow import SESSION, buy_order, mkflow, ok, state
-from walletkit import E18
+from walletkit import E18, Provider
 
 from agora_tracker.trading.ledger import OrderState
 from agora_tracker.trading.paper import TradeRefused
 from agora_tracker.trading.wallet.approvals import Head
+from agora_tracker.trading.wallet.corroboration import Corroborator
 from agora_tracker.trading.wallet.flow import FlowRefused, WalletFlow
 from agora_tracker.trading.wallet.reconcile import LegReconciler, swap_deadline, timeline
 
@@ -106,8 +107,17 @@ def errored(live, node, key="buy-order-1"):
     return oid, plan, live.get_legs(U1, oid)[0], flow
 
 
-def rec(live, *nodes, **kw):
-    return LegReconciler(live, list(nodes), clock=live.clock, **kw)
+def rec(live, *nodes, finality=12, **kw):
+    """The reconciler over >= 2 independent providers. Several nodes = one provider each (they may
+    disagree); a single node is seen through two providers (they agree by construction)."""
+    names = ["alpha", "beta", "gamma", "delta"]
+    ps = [Provider(n, f"node.{names[i]}.test", live.clock) for i, n in enumerate(nodes)]
+    if len(ps) == 1:
+        ps.append(Provider(nodes[0], "node.beta.test", live.clock))
+    corro = Corroborator(ps, finality=finality, clock=live.clock)
+    r = LegReconciler(live, corro, clock=live.clock, **kw)
+    r.providers = ps
+    return r
 
 
 def leg_of(live, oid):
@@ -187,23 +197,31 @@ def test_an_unreachable_source_changes_nothing(live, node):
     assert leg_of(live, oid)["version"] == leg["version"]
 
 
-def test_presence_in_any_source_counts_but_absence_needs_every_source(live, node):
+def test_one_blind_source_blocks_every_verdict_but_a_lagging_one_is_not_disagreement(live, node):
     oid, _, leg, _ = submitted(live, node)
     other = FakeNode()
     assert rec(live, node, other).run_once().counts == {"unresolved": 1}     # both healthy, both absent
     other.down = True
     assert rec(live, node, other).run_once().counts == {"unknown": 1}        # one blind: no belief
     node.add(leg, H1)
-    assert rec(live, other, node).run_once().counts == {"pending": 1}        # one source saw it
+    assert rec(live, other, node).run_once().counts == {"unknown": 1}        # ... not even of presence
+    other.down = False
+    assert rec(live, other, node).run_once().counts == {"pending": 1}        # one saw it, one lags
 
 
-def test_sources_that_disagree_on_what_a_hash_is_are_ambiguous(live, node):
+def test_sources_that_disagree_on_what_a_hash_is_are_a_recorded_conflict_not_a_verdict(live, node):
     oid, _, leg, _ = submitted(live, node)
     other = FakeNode()
     node.add(leg, H1)
     other.add(leg, H1, to=OTHER_TO)
-    assert rec(live, node, other).run_once().counts == {"mismatch": 1}
-    assert state(live, oid) == "ambiguous"
+    assert rec(live, node, other).run_once().counts == {"conflict": 1}
+    # nothing was concluded and nothing moved: the leg still holds the wallet lock
+    assert leg_of(live, oid)["state"] == "hash_reported" and state(live, oid) == "submitted"
+    assert leg_of(live, oid)["version"] == leg["version"]
+    ev = live.chain_evidence_for(leg["id"])
+    assert [(e["kind"], e["code"]) for e in ev] == [("conflict", "sources_disagree_on_transaction")]
+    assert rec(live, node, other).run_once().counts == {"conflict": 1}      # no table growth
+    assert len(live.chain_evidence_for(leg["id"])) == 1
 
 
 # ------------------------------------------------------------------ replacement / nonce reuse
@@ -227,6 +245,9 @@ def test_cancel_replacement_proves_the_original_cannot_execute(live, node):
     rec(live, node).run_once()
     del node.txs[H1]
     node.add(leg, H2, nonce=5, mined=1095, to=leg["wallet"], input="0x", value="0x0")
+    assert rec(live, node).run_once().counts == {"unresolved": 1}    # only 6 deep: not final yet
+    assert leg_of(live, oid)["state"] == "hash_reported"
+    node.head_n = 1110                                           # 16 confirmations >= finality (12)
     assert rec(live, node).run_once().counts == {"superseded": 1}
     assert leg_of(live, oid)["state"] == "superseded"
     assert state(live, oid) == "cancelled"
@@ -241,6 +262,8 @@ def test_externally_consumed_nonce_with_unknown_hash_stays_ambiguous_and_blocked
     node.latest = node.pending = 7
     node.blocks[1095] = [{"hash": H3, "from": leg["wallet"], "nonce": "0x5", "to": OTHER_TO,
                           "value": "0x0", "input": "0x", "chainId": "0x1863d"}]
+    node.blocks[1096] = [{"hash": "0x" + "c4" * 32, "from": leg["wallet"], "nonce": "0x6",
+                          "to": OTHER_TO, "value": "0x0", "input": "0x", "chainId": "0x1863d"}]
     assert rec(live, node).run_once().counts == {"unresolved": 1}
     assert leg_of(live, oid)["state"] == "ambiguous" and state(live, oid) == "ambiguous"
 
@@ -254,12 +277,13 @@ def test_lost_answer_is_found_by_scanning_for_an_identical_request(live, node):
     assert state(live, oid) == "submitted"
 
 
-def test_no_scan_window_means_unresolved_not_guessed(live, node):
+def test_a_nonce_that_moved_without_a_findable_transaction_is_a_recorded_conflict(live, node):
     oid, _, leg, _ = errored(live, node)
-    node.latest = node.pending = 9
-    node.head_n = 99_999                                         # prompt block far outside the window
-    assert rec(live, node, scan_blocks=10).run_once().counts == {"unresolved": 1}
-    assert state(live, oid) == "ambiguous"
+    node.latest = node.pending = 9          # the nonce "moved" before the prompt block: inconsistent
+    assert rec(live, node).run_once().counts == {"conflict": 1}
+    assert state(live, oid) == "ambiguous" and leg_of(live, oid)["state"] == "ambiguous"
+    ev = live.chain_evidence_for(leg_of(live, oid)["id"])
+    assert [e["kind"] for e in ev] == ["conflict"] and ev[0]["code"].startswith("nonce_consumed")
 
 
 # ------------------------------------------------------------------ abandonment is evidence-only
@@ -319,7 +343,7 @@ def test_restart_resumes_from_durable_state_and_duplicate_reports_do_nothing(liv
     again = flow.report(user_id=U1, session=SESSION, request_id=leg["request_id"],
                         outcome="hash", tx_hash=H1)
     assert again["status"] == "duplicate" and len(live.list_orders(U1)) == 1
-    fresh = LegReconciler(live, [node], clock=live.clock)         # "new process"
+    fresh = rec(live, node)                                       # "new process"
     assert fresh.run_once().counts == {"pending": 1}
     assert len(live.get_legs(U1, oid)) == 1 and len(live.get_order(U1, oid).attempts) == 1
 

@@ -30,7 +30,7 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, NoReturn
 from uuid import UUID, uuid4
 
 import sqlalchemy as sa
@@ -40,6 +40,7 @@ from sqlalchemy.exc import DBAPIError, IntegrityError
 from ..paper import CHAIN
 from ..plans import UnsignedTradePlan, fingerprint
 from . import legs as _legs
+from .evidence import EvidenceRefused, check_chain_evidence
 from .legs import WALLET_REASONS, FillRecord, LegSpec
 from .policy import RiskPolicy
 from .states import (
@@ -1064,15 +1065,161 @@ class OrderLedger:
                     detail={"attempt_no": n, "attempt_kind": kind, "nonce": None,
                             "tx_hash": tx_hash})
 
+
+    # ------------------------------------------------------------------ chain evidence gate (F-15)
+
+    MAX_CONFLICT_ROWS = 50
+    TERMINAL_STATES = ("rejected", "superseded", "abandoned")
+    MIN_DEADLINE_MARGIN_S = 60
+    MIN_APPROVAL_AGE_S = 600
+
+    @staticmethod
+    def _gate(evidence: Any, *, leg_id: int, version: int, outcome: str,
+              now: float) -> tuple[str, dict]:
+        """Refuse any chain-fact write that is not backed by corroborated provenance (>= 2
+        distinct operators agreeing at one anchor, fresh, on this chain) AND that does not name
+        this exact leg version and outcome. Returns (canonical json, facts)."""
+        try:
+            raw = check_chain_evidence(evidence, chain_id=CHAIN, now=now)
+        except EvidenceRefused as exc:
+            raise LedgerRefused("evidence_required", str(exc)) from None
+        facts = evidence.get("facts")
+        if (not isinstance(facts, dict) or facts.get("leg_id") != leg_id
+                or facts.get("leg_version") != version or facts.get("outcome") != outcome):
+            raise LedgerRefused("evidence_required",
+                                "evidence does not name this leg, its version and the outcome")
+        return raw, facts
+
+    @classmethod
+    def _check_terminal_facts(cls, outcome: str, facts: dict, finality: int) -> None:
+        """What makes a lock-releasing verdict provable (monotone facts only)."""
+        def bad(why: str) -> NoReturn:
+            raise LedgerRefused("evidence_required", why)
+        if outcome == "superseded":
+            ct = facts.get("consuming_tx")
+            if (not isinstance(ct, dict) or not TXHASH.fullmatch(str(ct.get("hash", "")))
+                    or not TXHASH.fullmatch(str(ct.get("block_hash", "")))
+                    or type(ct.get("block_number")) is not int
+                    or type(ct.get("confirmations")) is not int
+                    or ct["confirmations"] < max(1, finality)
+                    or not isinstance(ct.get("mismatches"), list) or not ct["mismatches"]):
+                bad("a supersession needs a different transaction, final on the canonical chain")
+        elif outcome == "abandoned":
+            if facts.get("wallet_queue_empty") is not True:
+                bad("an abandonment needs a corroborated empty wallet queue")
+            ts = facts.get("anchor_timestamp")
+            if type(ts) is not int:
+                bad("an abandonment needs the anchor block time")
+            if "swap_deadline" in facts:
+                dl, margin = facts.get("swap_deadline"), facts.get("deadline_margin_s")
+                if (type(dl) is not int or type(margin) is not int
+                        or margin < cls.MIN_DEADLINE_MARGIN_S or ts <= dl + margin):
+                    bad("an abandonment needs a passed swap deadline plus margin")
+            elif facts.get("policy") == "approval_never_sent":
+                age = facts.get("age_s")
+                if type(age) is not int or age < cls.MIN_APPROVAL_AGE_S:
+                    bad("an unsent approval is abandoned only after a long, corroborated wait")
+            else:
+                bad("an abandonment needs a passed deadline or an explicit policy")
+        elif outcome == "rejected":
+            bad("a rejection is never decided from chain evidence")
+
+    @staticmethod
+    def _store_evidence(c: Connection, leg, *, kind: str, evidence: dict, raw: str,
+                        method_agreement: bool | None = None, code: str | None = None,
+                        digest: str | None = None) -> int:
+        digest = digest or hashlib.sha256(raw.encode()).hexdigest()
+        raw_anchor = evidence.get("anchor")
+        anchor: dict = raw_anchor if isinstance(raw_anchor, dict) else {}
+        srcs = evidence.get("sources")
+        params = {"l": leg.id, "o": leg.order_id, "u": leg.user_id, "k": kind,
+                  "c": int(evidence.get("chain_id") or leg.chain_id),
+                  "an": anchor.get("number") if type(anchor.get("number")) is int else None,
+                  "ah": anchor.get("hash") if isinstance(anchor.get("hash"), str) else None,
+                  "sc": len(srcs) if isinstance(srcs, list) else 0,
+                  "sa": evidence.get("source_agreement") is True, "ma": method_agreement,
+                  "cd": (code or None) and str(code)[:80], "ev": raw, "dg": digest}
+        row = c.execute(sa.text(
+            "INSERT INTO chain_evidence (leg_id, order_id, user_id, kind, chain_id, anchor_number, "
+            "anchor_hash, source_count, source_agreement, method_agreement, code, evidence, "
+            "evidence_digest) VALUES (:l, :o, :u, :k, :c, :an, :ah, :sc, :sa, :ma, :cd, "
+            "CAST(:ev AS jsonb), :dg) ON CONFLICT (leg_id, kind, evidence_digest) DO NOTHING "
+            "RETURNING id"), params).first()
+        if row is None:
+            row = c.execute(sa.text("SELECT id FROM chain_evidence WHERE leg_id = :l AND kind = :k "
+                                    "AND evidence_digest = :dg"), params).one()
+        return int(row.id)
+
+    def record_chain_conflict(self, leg_id: int, *, code: str, evidence: dict | None) -> bool:
+        """Append a record that the sources DISAGREED about this leg (nothing was concluded and
+        the leg is not changed). Deduplicated per (leg, code, hour) and capped per leg so a
+        persistent disagreement cannot grow the table without bound. System scope."""
+        now = float(self.clock())
+        why = re.sub(r"[^a-z0-9_:.-]", "", str(code).lower())[:80] or "conflict"
+        ev = dict(evidence) if isinstance(evidence, dict) else {}
+        ev.setdefault("schema", 1)
+        ev["code"] = why
+
+        def go() -> bool:
+            with self._tx("system") as c:
+                leg = _legs.by_id(c, leg_id)
+                if leg is None:
+                    raise LedgerRefused("not_found", "unknown leg")
+                n = c.execute(sa.text("SELECT count(*) FROM chain_evidence WHERE leg_id = :l "
+                                      "AND kind = 'conflict'"), {"l": leg_id}).scalar_one()
+                if int(n) >= self.MAX_CONFLICT_ROWS:
+                    return False
+                body = ev
+                raw = json.dumps(body, sort_keys=True, separators=(",", ":"), default=str)
+                if len(raw) > self.MAX_EVIDENCE_BYTES:      # keep the fact of the conflict, drop bulk
+                    body = {"schema": 1, "code": why, "truncated": True}
+                    raw = json.dumps(body, sort_keys=True, separators=(",", ":"))
+                digest = hashlib.sha256(f"{why}|{int(now // 3600)}".encode()).hexdigest()
+                before = c.execute(sa.text("SELECT count(*) FROM chain_evidence WHERE leg_id = :l "
+                                           "AND kind = 'conflict'"), {"l": leg_id}).scalar_one()
+                self._store_evidence(c, leg, kind="conflict", evidence=body, raw=raw, code=why,
+                                     digest=digest)
+                after = c.execute(sa.text("SELECT count(*) FROM chain_evidence WHERE leg_id = :l "
+                                          "AND kind = 'conflict'"), {"l": leg_id}).scalar_one()
+                return int(after) > int(before)
+        return bool(self._run(go))
+
+    def chain_evidence_for(self, leg_id: int, *, limit: int = 50) -> list[dict]:
+        """Append-only provenance of a leg's chain-fact writes (system scope; read only)."""
+        def go():
+            with self._tx("system") as c:
+                rows = c.execute(sa.text(
+                    "SELECT id, leg_id, kind, chain_id, anchor_number, anchor_hash, source_count, "
+                    "source_agreement, method_agreement, code, evidence_digest, evidence "
+                    "FROM chain_evidence WHERE leg_id = :l ORDER BY id LIMIT :n"),
+                    {"l": leg_id, "n": limit}).all()
+                return [dict(r._mapping) for r in rows]
+        return self._run(go)
+
     def resolve_leg(self, leg_id: int, *, expected_version: int, to_state: str, resolution: str,
                     nonce: int | None = None, final_tx_hash: str | None = None,
                     seen: bool = False, order_path: tuple[OrderState | str, ...] = (),
-                    order_reason: str | None = None) -> bool:
+                    order_reason: str | None = None, evidence: dict | None = None) -> bool:
         """Reconciler write path (system scope): move a leg on chain evidence, optionally with the
         order (stepping through `order_path`, skipping states it is already in), in one
         transaction. Optimistic: returns False if the leg changed since it was read
-        (another worker or a late wallet answer won), so evidence is never applied to stale state."""
+        (another worker or a late wallet answer won), so evidence is never applied to stale state.
+
+        A terminal verdict (superseded/abandoned/rejected: these release the wallet lock) or any
+        write that records a `final_tx_hash` REQUIRES corroborated chain evidence (F-15); the
+        ledger refuses it otherwise. Moves that only keep or tighten the block (hash_reported,
+        ambiguous) need none, because a wrong one cannot release anything."""
         now = float(self.clock())
+        gated = to_state in self.TERMINAL_STATES or final_tx_hash is not None
+        raw = facts = None
+        if gated:
+            raw, facts = self._gate(evidence, leg_id=leg_id, version=expected_version,
+                                    outcome=to_state, now=now)
+            if to_state in self.TERMINAL_STATES:
+                self._check_terminal_facts(to_state, facts, int(evidence["finality"]))  # type: ignore[index]
+            elif facts.get("final_tx_hash") != final_tx_hash:
+                raise LedgerRefused("evidence_required",
+                                    "evidence does not name the recorded transaction")
         system = Actor.system()
         if final_tx_hash is not None and not TXHASH.fullmatch(final_tx_hash):
             raise LedgerRefused("invalid_request", "malformed transaction hash")
@@ -1090,7 +1237,9 @@ class OrderLedger:
                 leg = _legs.by_id(c, leg_id, lock=True)
                 if leg.version != expected_version:
                     return False
-                terminal = to_state in ("rejected", "superseded", "abandoned")
+                if gated and int(leg.chain_id) != int(evidence["chain_id"]):   # type: ignore[index]
+                    raise LedgerRefused("evidence_required", "evidence is for another chain")
+                terminal = to_state in self.TERMINAL_STATES
                 try:
                     with c.begin_nested():
                         c.execute(sa.text(
@@ -1106,6 +1255,9 @@ class OrderLedger:
                     raise LedgerRefused("invalid_transition",
                                         f"leg {leg.state} -> {to_state} is not allowed") from exc
                 version = expected_version + 1
+                if gated:
+                    self._store_evidence(c, leg, kind="resolution", evidence=evidence,  # type: ignore[arg-type]
+                                         raw=raw)  # type: ignore[arg-type]
                 evidence_hash = final_tx_hash or leg.tx_hash
                 if OrderState.SUBMITTED in path and evidence_hash is not None:
                     # "submitted" needs a recorded transaction reference (database rule)
@@ -1192,16 +1344,16 @@ class OrderLedger:
 
     @classmethod
     def _check_recovery_evidence(cls, evidence: dict, *, leg_id: int, action: str,
-                                 version: int) -> str:
+                                 version: int, now: float) -> str:
         """Structural gate: no code path may apply a correction without evidence from at least
         two distinct sources that names this exact leg version and action. (Whether the evidence
         is TRUE is established by wallet/recovery.py before it ever calls here.)"""
         if not isinstance(evidence, dict):
             raise LedgerRefused("evidence_required", "evidence is required")
-        try:
-            raw = json.dumps(evidence, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
-        except (TypeError, ValueError):
-            raise LedgerRefused("evidence_required", "evidence must be plain JSON") from None
+        try:                              # >= 2 distinct OPERATORS, agreeing, fresh, this chain (F-15)
+            raw = check_chain_evidence(evidence, chain_id=CHAIN, now=now)
+        except EvidenceRefused as exc:
+            raise LedgerRefused("evidence_required", str(exc)) from None
         if len(raw) > cls.MAX_EVIDENCE_BYTES:
             raise LedgerRefused("evidence_required", "evidence is too large")
         srcs, anchor, leg = evidence.get("sources"), evidence.get("anchor"), evidence.get("leg")
@@ -1234,6 +1386,7 @@ class OrderLedger:
                     or ts <= dl + margin):
                 raise LedgerRefused("evidence_required",
                                     "an abandonment needs a passed swap deadline plus margin")
+        cls._check_terminal_facts(action, facts, int(evidence["finality"]))   # shared lock-release rule
         return raw
 
     def apply_leg_recovery(self, actor: Actor, leg_id: int, *, expected_version: int, action: str,
@@ -1256,10 +1409,10 @@ class OrderLedger:
             raise LedgerRefused("invalid_request", "invalid category")
         if type(leg_id) is not int or type(expected_version) is not int:
             raise LedgerRefused("invalid_request", "invalid leg reference")
-        raw = self._check_recovery_evidence(evidence, leg_id=leg_id, action=action,
-                                            version=expected_version)
-        digest = self.evidence_digest(evidence)
         now = float(self.clock())
+        raw = self._check_recovery_evidence(evidence, leg_id=leg_id, action=action,
+                                            version=expected_version, now=now)
+        digest = self.evidence_digest(evidence)
         system = Actor.system()
 
         def go() -> RecoveryResult:
@@ -1424,17 +1577,46 @@ class OrderLedger:
 
     def apply_receipt(self, leg_id: int, *, expected_version: int, state: str,
                       block_number: int, block_hash: str, receipt_status: int, gas_used: int,
-                      gas_cost_wei: int, fill: FillRecord | None, finalize: bool) -> bool:
+                      gas_cost_wei: int, fill: FillRecord | None, finalize: bool,
+                      evidence: dict | None) -> bool:
         """Record a validated receipt (system scope), atomically: the leg, the fill (one row per
         inclusion, so re-applying the same inclusion changes nothing), and the swap order's move
         (submitted/ambiguous/orphaned -> included|reverted [-> finalized]). An approval leg never
-        touches the order and never produces a fill. Optimistic on `expected_version`."""
+        touches the order and never produces a fill. Optimistic on `expected_version`.
+
+        `evidence` is REQUIRED (F-15): the corroborated provenance of the receipt, the inclusion
+        block, the confirmations and any fill. A receipt, a finalization or a `verified` fill that
+        rests on one provider alone is refused here, whatever the caller did. Append-only."""
         if state not in ("included", "reverted") or receipt_status not in (0, 1) or (
                 state == "included") != (receipt_status == 1):
             raise LedgerRefused("invalid_request", "receipt state does not match its status")
         if not TXHASH.fullmatch(block_hash or ""):
             raise LedgerRefused("invalid_request", "malformed block hash")
         now = float(self.clock())
+        raw, facts = self._gate(evidence, leg_id=leg_id, version=expected_version, outcome=state,
+                                now=now)
+        assert isinstance(evidence, dict)
+        if (facts.get("block_number") != block_number or facts.get("block_hash") != block_hash
+                or facts.get("receipt_status") != receipt_status
+                or type(facts.get("confirmations")) is not int or facts["confirmations"] < 1
+                or not TXHASH.fullmatch(str(facts.get("tx_hash", "")))):
+            raise LedgerRefused("evidence_required", "evidence does not match the receipt")
+        if finalize and facts["confirmations"] < int(evidence["finality"]):
+            raise LedgerRefused("evidence_required",
+                                "the corroborated confirmations do not reach the finality depth")
+        method_ok: bool | None = None
+        if fill is not None and fill.verdict == "verified":
+            ef = evidence.get("fill")
+            if (fill.method_agreement is not True or not isinstance(ef, dict)
+                    or ef.get("method_agreement") is not True
+                    or ef.get("inputs_source_agreed") is not True):
+                raise LedgerRefused(
+                    "evidence_required",
+                    "a verified fill needs two on-chain accounting methods that agree AND inputs "
+                    "corroborated by independent RPC sources; these are separate properties")
+            method_ok = True
+        elif fill is not None:
+            method_ok = bool(fill.method_agreement)
         system = Actor.system()
         S_ = OrderState
 
@@ -1449,6 +1631,10 @@ class OrderLedger:
                 leg = _legs.by_id(c, leg_id, lock=True)
                 if leg.version != expected_version or leg.finalized_at is not None:
                     return False
+                if int(leg.chain_id) != int(evidence["chain_id"]) or facts["tx_hash"] not in (
+                        leg.final_tx_hash, leg.tx_hash):
+                    raise LedgerRefused("evidence_required",
+                                        "evidence is for another chain or transaction")
                 is_swap = leg.kind == "swap"
                 try:
                     with c.begin_nested():
@@ -1467,6 +1653,8 @@ class OrderLedger:
                 except IntegrityError as exc:
                     raise LedgerRefused("invalid_transition",
                                         f"leg {leg.state} -> {state} is not allowed") from exc
+                ev_id = self._store_evidence(c, leg, kind="final" if finalize else "inclusion",
+                                             evidence=evidence, raw=raw, method_agreement=method_ok)
                 if is_swap and fill is not None:
                     # an older provisional row for a different block is a rolled-back inclusion
                     c.execute(sa.text(
@@ -1476,16 +1664,16 @@ class OrderLedger:
                     c.execute(sa.text("""
                         INSERT INTO order_fills (order_id, leg_id, user_id, wallet, chain_id, token,
                             side, tx_hash, block_number, block_hash, verdict, native_wei, token_wei,
-                            gas_cost_wei, basis, reason)
+                            gas_cost_wei, basis, reason, evidence_id)
                         VALUES (:o, :l, :u, :w, :c, :tk, :sd, :tx, :bn, :bh, :v, :nw, :tw, :gc,
-                                :b, :r)
+                                :b, :r, :ev)
                         ON CONFLICT (leg_id, block_hash) DO NOTHING"""),
                         {"o": leg.order_id, "l": leg_id, "u": leg.user_id, "w": leg.wallet,
                          "c": leg.chain_id, "tk": fill.token, "sd": fill.side,
                          "tx": leg.final_tx_hash or leg.tx_hash, "bn": block_number,
                          "bh": block_hash, "v": fill.verdict, "nw": fill.native_wei,
                          "tw": fill.token_wei, "gc": fill.gas_cost_wei, "b": fill.basis,
-                         "r": fill.reason})
+                         "r": fill.reason, "ev": ev_id})
                     if finalize:
                         c.execute(sa.text(
                             "UPDATE order_fills SET status = 'final' WHERE leg_id = :l "
@@ -1513,12 +1701,20 @@ class OrderLedger:
                 return True
         return bool(self._run(go))
 
-    def apply_reorg(self, leg_id: int, *, expected_version: int, reason: str) -> bool:
+    def apply_reorg(self, leg_id: int, *, expected_version: int, reason: str,
+                    evidence: dict | None) -> bool:
         """The block that held this leg's transaction is no longer canonical (or the receipt is
         gone): undo the provisional fill, mark the leg and its swap order `orphaned`, and let
         reconciliation find the canonical outcome. Never deletes anything; refuses to touch a
-        finalized order."""
+        finalized order. `evidence` (REQUIRED, F-15) proves the reorg from corroborated sources:
+        one provider's "receipt gone" must not be able to orphan a good inclusion."""
         now = float(self.clock())
+        raw, facts = self._gate(evidence, leg_id=leg_id, version=expected_version,
+                                outcome="reorg", now=now)
+        assert isinstance(evidence, dict)
+        if (not TXHASH.fullmatch(str(facts.get("block_hash", "")))
+                or facts.get("basis") not in ("not_canonical", "absent", "other_block")):
+            raise LedgerRefused("evidence_required", "evidence does not describe a reorg")
         system = Actor.system()
         why = (_check_reason(reason) or "")[:200]
 
@@ -1534,6 +1730,10 @@ class OrderLedger:
                 if (leg.version != expected_version or leg.finalized_at is not None
                         or leg.state not in ("included", "reverted")):
                     return False
+                if facts["block_hash"] != leg.block_hash or int(leg.chain_id) != int(
+                        evidence["chain_id"]):
+                    raise LedgerRefused("evidence_required", "evidence is for another inclusion")
+                self._store_evidence(c, leg, kind="reorg", evidence=evidence, raw=raw)
                 try:
                     with c.begin_nested():
                         c.execute(sa.text(
