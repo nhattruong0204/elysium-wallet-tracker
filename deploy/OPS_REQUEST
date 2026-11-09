@@ -1,2 +1,2 @@
 action=status
-requested=2026-11-09 read-only verification after the tracker-only USDC mute deploy (run 42639770457)
+requested=2026-11-09 second read-only check (cursor progress, suppressed count) after the USDC mute deploy
