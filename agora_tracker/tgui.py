@@ -381,6 +381,19 @@ class IntelBot:
                          f"restarts {m['ingress_restarts']}")
         self._send(chat, "\n\n".join(parts), None)
 
+    def _trading_status(self, chat: int, uid: int, msg: dict) -> None:
+        """Read-only, owner-only, private chat: the EXPLICIT execution state (config switches and
+        the durable ledger controls). Changes nothing; everyone else gets "Not available."."""
+        import html as _h
+
+        from .trading.ledger.runtime import owner_ids
+        owners = self.ledger.owner_ids if self.ledger is not None else owner_ids(self.cfg)
+        if not (uid in owners and chat == uid and msg.get("chat", {}).get("type") == "private"):
+            self._send(chat, "Not available.", None)
+            return
+        self._send(chat, render_trading_status(self.cfg, self.ledger, getattr(self, "liveness", None),
+                                               _h.escape), None)
+
     def _leg_recovery(self, chat: int, uid: int, msg: dict, cmd: str, arg: str) -> None:
         """Owner leg recovery (#95 F-02). Owners only, private chat only; everyone else gets the
         same neutral reply as when the feature is off. Nothing here can sign, broadcast, prompt a
@@ -470,6 +483,9 @@ class IntelBot:
             return
         if trade_cmd == "/wallet_health":
             self._worker_health(chat, uid, msg)
+            return
+        if trade_cmd == "/trading_status":
+            self._trading_status(chat, uid, msg)
             return
         if trade_cmd in ("/wallet_recover", "/wallet_resolve"):
             self._leg_recovery(chat, uid, msg, trade_cmd, trade_arg)
@@ -1025,3 +1041,39 @@ def smoke(bot: IntelBot, owner: int, *, send: bool = True) -> dict[str, Any]:
                   "\nTap a button below or send /menu.", None)
         bot._show(owner, None, *bot._view(owner, owner, "h"))
     return {"results": results, "failed": failed}
+
+
+def render_trading_status(cfg: Config, ledger: Any, liveness: Any, esc: Callable[[str], str]) -> str:
+    """Explicit trading state for owners (#95/#96): what is ON, what is OFF, and why spending is
+    or is not possible. No addresses, ids, URLs or secrets."""
+    t = cfg.trading
+
+    def onoff(v: bool) -> str:
+        return "ON" if v else "off"
+    lines = ["<b>Trading status</b> (read-only)",
+             f"PAPER: {onoff(t.paper_enabled)} · ledger: {onoff(t.ledger_enabled)} · "
+             f"wallet execution (config): {onoff(t.wallet_execution_enabled)} · "
+             f"ingress: {onoff(t.ingress_enabled)}",
+             f"finality: {t.finality_confirmations} confirmations"
+             + (" + finalized tag" if t.finality_require_finalized_tag else " (depth only: REVIEWED DOWNGRADE)")]
+    spend = False
+    if ledger is None:
+        lines.append("ledger controls: n/a (ledger off)")
+    else:
+        try:
+            c = ledger.controls()
+        except Exception as exc:                        # noqa: BLE001 - display only
+            lines.append(f"ledger controls: unavailable ({esc(type(exc).__name__)})")
+        else:
+            lines.append(f"ledger: paused={c.paused}"
+                         + (f" ({esc(str(c.pause_reason or '')[:80])})" if c.paused else "")
+                         + f" · execution flag={onoff(c.execution_enabled)} · policy v{c.policy_version}")
+            spend = (t.wallet_execution_enabled and c.execution_enabled and not c.paused
+                     and t.ingress_enabled)
+    if liveness is not None:
+        m = liveness.snapshot()
+        lines.append(f"alerts active: {esc(', '.join(m['active']) or 'none')}"
+                     + (" · INGRESS DEGRADED" if m["degraded"] else ""))
+    lines.append("<b>Wallet requests possible: " + ("YES" if spend else "NO") + "</b>"
+                 + ("" if spend else " — execution is disabled"))
+    return "\n".join(lines)
