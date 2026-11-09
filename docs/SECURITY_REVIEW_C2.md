@@ -16,6 +16,7 @@
 | #95 F-01 supervised worker lifecycle | #108 | `feat/trading-c2-worker-lifecycle` | `8985c1f` (CI green; head of integration PR #109) |
 | #95 F-16 Mini App / wallet ingress | #110 | `feat/trading-c2-ingress` | `80e12a6` (CI green: docker, lint, test) |
 | #95 F-02 owner-audited leg recovery | #111 | `feat/trading-c2-leg-recovery` | `026277c` (CI green: docker, lint, test; stacked on #110) |
+| #95 F-15 corroborated RPC evidence | #112 | `feat/trading-c2-corroboration` | `e0ed3f0` (CI green: docker, lint, test; stacked on #111; draft) |
 
 Stack base: `feat/trading-c1-unsigned-plans` (auth, plans, ledger) — **`main` contains only #100;
 #101–#103 are not on `main` yet**, so these PRs cannot merge to `main` until that chain does.
