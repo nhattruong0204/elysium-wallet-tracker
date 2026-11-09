@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import re
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 
 import requests
 
@@ -16,10 +16,16 @@ log = logging.getLogger(__name__)
 
 
 class Notifier:
+    SUPPRESSED = "suppressed: not sent (alerts.telegram_mute_tokens)"
+
     def __init__(self, store: Store, cfg: TelegramConfig, dry_run: bool = False,
-                 renderer: Callable[[dict], tuple] | None = None):
+                 renderer: Callable[[dict], tuple] | None = None,
+                 suppress_tokens: Iterable[str] = ()):
         self.store, self.cfg = store, cfg
         self.renderer = renderer
+        # alerts about these tokens (payload["token"], exact address) are never sent, including
+        # ones queued before the mute was configured (closed as 'dead' with SUPPRESSED)
+        self.suppress = frozenset(x.lower() for x in suppress_tokens)
         self.enabled = bool(cfg.bot_token and cfg.chat_id) and not dry_run
         self.session = requests.Session()
         self._last = 0.0
@@ -99,12 +105,20 @@ class Notifier:
         probably down or limiting); a permanent failure dead-letters only that alert."""
         if time.monotonic() < self._blocked_until:
             return 0
+        if self.suppress:
+            n = self.store.suppress_pending_alerts(self.suppress, self.SUPPRESSED)
+            if n:
+                log.info("closed %d queued alert(s) for Telegram-muted tokens without sending", n)
         sent = 0
         for _ in range(max_items):
             with self.store.tx() as c:
                 row = self.store.claim_due_alert(c)
                 if row is None:
                     break
+                tok = str((row.get("payload") or {}).get("token") or "").lower()
+                if tok and tok in self.suppress:      # queued after the bulk pass above
+                    self.store.mark_suppressed(c, row["id"], self.SUPPRESSED)
+                    continue
                 text, markup, preview = self._render(row)
                 ok, err, permanent = self._send(text, markup, preview)
                 if ok:

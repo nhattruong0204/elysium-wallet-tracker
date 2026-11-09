@@ -1,0 +1,309 @@
+{
+  "router": {
+    "artifact_url": "https://unpkg.com/@uniswap/v2-periphery@1.1.0-beta.0/build/UniswapV2Router02.json",
+    "artifact_sha256": "b5d849090faf5255b82bddb2a8a51ad796599fa31bb7a3aa0e0db75226031aaa",
+    "runtime_keccak256": "0xc0f2c8fb93bc0e1215ad188b6d28001b609524a8daa6b97e302ffb1b29bafca7",
+    "abi": [
+      {
+        "inputs": [],
+        "name": "WETH",
+        "outputs": [
+          {
+            "internalType": "address",
+            "name": "",
+            "type": "address"
+          }
+        ],
+        "stateMutability": "view",
+        "type": "function"
+      },
+      {
+        "inputs": [],
+        "name": "factory",
+        "outputs": [
+          {
+            "internalType": "address",
+            "name": "",
+            "type": "address"
+          }
+        ],
+        "stateMutability": "view",
+        "type": "function"
+      },
+      {
+        "inputs": [
+          {
+            "internalType": "uint256",
+            "name": "amountIn",
+            "type": "uint256"
+          },
+          {
+            "internalType": "address[]",
+            "name": "path",
+            "type": "address[]"
+          }
+        ],
+        "name": "getAmountsOut",
+        "outputs": [
+          {
+            "internalType": "uint256[]",
+            "name": "amounts",
+            "type": "uint256[]"
+          }
+        ],
+        "stateMutability": "view",
+        "type": "function"
+      },
+      {
+        "inputs": [
+          {
+            "internalType": "uint256",
+            "name": "amountOutMin",
+            "type": "uint256"
+          },
+          {
+            "internalType": "address[]",
+            "name": "path",
+            "type": "address[]"
+          },
+          {
+            "internalType": "address",
+            "name": "to",
+            "type": "address"
+          },
+          {
+            "internalType": "uint256",
+            "name": "deadline",
+            "type": "uint256"
+          }
+        ],
+        "name": "swapExactETHForTokens",
+        "outputs": [
+          {
+            "internalType": "uint256[]",
+            "name": "amounts",
+            "type": "uint256[]"
+          }
+        ],
+        "stateMutability": "payable",
+        "type": "function"
+      },
+      {
+        "inputs": [
+          {
+            "internalType": "uint256",
+            "name": "amountIn",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "amountOutMin",
+            "type": "uint256"
+          },
+          {
+            "internalType": "address[]",
+            "name": "path",
+            "type": "address[]"
+          },
+          {
+            "internalType": "address",
+            "name": "to",
+            "type": "address"
+          },
+          {
+            "internalType": "uint256",
+            "name": "deadline",
+            "type": "uint256"
+          }
+        ],
+        "name": "swapExactTokensForETH",
+        "outputs": [
+          {
+            "internalType": "uint256[]",
+            "name": "amounts",
+            "type": "uint256[]"
+          }
+        ],
+        "stateMutability": "nonpayable",
+        "type": "function"
+      },
+      {
+        "inputs": [
+          {
+            "internalType": "uint256",
+            "name": "amountOutMin",
+            "type": "uint256"
+          },
+          {
+            "internalType": "address[]",
+            "name": "path",
+            "type": "address[]"
+          },
+          {
+            "internalType": "address",
+            "name": "to",
+            "type": "address"
+          },
+          {
+            "internalType": "uint256",
+            "name": "deadline",
+            "type": "uint256"
+          }
+        ],
+        "name": "swapExactETHForTokensSupportingFeeOnTransferTokens",
+        "outputs": [],
+        "stateMutability": "payable",
+        "type": "function"
+      },
+      {
+        "inputs": [
+          {
+            "internalType": "uint256",
+            "name": "amountIn",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "amountOutMin",
+            "type": "uint256"
+          },
+          {
+            "internalType": "address[]",
+            "name": "path",
+            "type": "address[]"
+          },
+          {
+            "internalType": "address",
+            "name": "to",
+            "type": "address"
+          },
+          {
+            "internalType": "uint256",
+            "name": "deadline",
+            "type": "uint256"
+          }
+        ],
+        "name": "swapExactTokensForETHSupportingFeeOnTransferTokens",
+        "outputs": [],
+        "stateMutability": "nonpayable",
+        "type": "function"
+      }
+    ]
+  },
+  "factory": {
+    "artifact_url": "https://unpkg.com/@uniswap/v2-core@1.0.1/build/UniswapV2Factory.json",
+    "artifact_sha256": "7e666780d3ddf601a17c97dcc6a414dd77f5eae13fb37fce7e0bd282f4f61406",
+    "runtime_keccak256": "0xbab145d02e7005f0d84c6c1639d39b799b0ea16df99ebbdaf5a14d9da820b4e0",
+    "abi": [
+      {
+        "constant": true,
+        "inputs": [
+          {
+            "internalType": "address",
+            "name": "",
+            "type": "address"
+          },
+          {
+            "internalType": "address",
+            "name": "",
+            "type": "address"
+          }
+        ],
+        "name": "getPair",
+        "outputs": [
+          {
+            "internalType": "address",
+            "name": "",
+            "type": "address"
+          }
+        ],
+        "payable": false,
+        "stateMutability": "view",
+        "type": "function"
+      }
+    ]
+  },
+  "pair": {
+    "artifact_url": "https://unpkg.com/@uniswap/v2-core@1.0.1/build/UniswapV2Pair.json",
+    "artifact_sha256": "bb00cb1d64deea4159731b5957eeb8354531a110fb9120b9ef14edbc950e0736",
+    "runtime_keccak256": "0x5b83bdbcc56b2e630f2807bbadd2b0c21619108066b92a58de081261089e9ce5",
+    "abi": [
+      {
+        "constant": true,
+        "inputs": [],
+        "name": "factory",
+        "outputs": [
+          {
+            "internalType": "address",
+            "name": "",
+            "type": "address"
+          }
+        ],
+        "payable": false,
+        "stateMutability": "view",
+        "type": "function"
+      },
+      {
+        "constant": true,
+        "inputs": [],
+        "name": "getReserves",
+        "outputs": [
+          {
+            "internalType": "uint112",
+            "name": "_reserve0",
+            "type": "uint112"
+          },
+          {
+            "internalType": "uint112",
+            "name": "_reserve1",
+            "type": "uint112"
+          },
+          {
+            "internalType": "uint32",
+            "name": "_blockTimestampLast",
+            "type": "uint32"
+          }
+        ],
+        "payable": false,
+        "stateMutability": "view",
+        "type": "function"
+      },
+      {
+        "constant": true,
+        "inputs": [],
+        "name": "token0",
+        "outputs": [
+          {
+            "internalType": "address",
+            "name": "",
+            "type": "address"
+          }
+        ],
+        "payable": false,
+        "stateMutability": "view",
+        "type": "function"
+      },
+      {
+        "constant": true,
+        "inputs": [],
+        "name": "token1",
+        "outputs": [
+          {
+            "internalType": "address",
+            "name": "",
+            "type": "address"
+          }
+        ],
+        "payable": false,
+        "stateMutability": "view",
+        "type": "function"
+      }
+    ]
+  },
+  "chain_id": 99901,
+  "router_address": "0x3c5caa33d02c78935fc682a8eb295f0e67b93ced",
+  "factory_address": "0x7272d37e203f29a55580e9838863c9b5fd2e1422",
+  "wrapped_native": "0xba876237b0f021a6c6d852d6c26e107997cc5e81",
+  "source": "https://docs.agoradex.app/reference/contracts",
+  "scope": "Canonical direct V2 only; no AgoraRouter aggregator ABI is asserted."
+}

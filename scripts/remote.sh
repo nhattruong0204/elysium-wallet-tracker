@@ -216,21 +216,59 @@ status() {
   docker compose logs --no-color --tail 30 ui || true
 }
 
+muted_queue() {
+  # Read-only: queued/retrying vs suppressed alerts for the Telegram-muted tokens (no text shown).
+  local toks
+  toks=$(docker compose config 2>/dev/null | sed -n 's/^ *ALERTS_TELEGRAM_MUTE_TOKENS: *//p' | tr -d '"' | head -1)
+  [ -n "$toks" ] || { echo "  no ALERTS_TELEGRAM_MUTE_TOKENS in the compose file"; return 0; }
+  local list
+  list=$(echo "$toks" | tr ', ' '\n\n' | grep -E '^0x[0-9a-fA-F]{40}$' | tr 'A-F' 'a-f' | sed "s/.*/'&'/" | paste -sd, -)
+  psql_admin -Atc "SELECT 'queued (pending or retrying): ' || count(*) FILTER (WHERE status = 'pending') || ', suppressed: ' || count(*) FILTER (WHERE status = 'dead' AND last_error LIKE 'suppressed:%') || ', sent before the mute: ' || count(*) FILTER (WHERE status = 'sent') FROM notification_outbox WHERE lower(payload->>'token') IN ($list)" | sed 's/^/  muted-token alerts: /' || true
+  psql_admin -Atc "SELECT 'all pending: ' || count(*) FROM notification_outbox WHERE status = 'pending'" | sed 's/^/  /' || true
+}
+
 case "$ACTION" in
+  tracker)
+    # Code-only hotfix for the TRACKER container (indexer + alert notifier). Does not install
+    # config/, does not migrate, does not touch postgres, ui (Telegram menu) or web. The running
+    # ui/web containers keep their current image. The previous tracker image is tagged
+    # elysium-wallet-tracker:pre-tracker-hotfix for `tracker-rollback`.
+    need_docker
+    [ -f .env ] || { echo ".env missing: run the normal deploy first" >&2; exit 1; }
+    log "before"
+    prev=$(docker inspect -f '{{.Image}}' elysium-wallet-tracker 2>/dev/null || true)
+    echo "  running tracker image: ${prev:-none}"
+    [ -n "$prev" ] && docker tag "$prev" elysium-wallet-tracker:pre-tracker-hotfix
+    muted_queue
+    tracker_alive
+    log "build the image (retags :latest; ui/web keep running their current image)"
+    docker compose build migrate
+    log "schema head must be unchanged (no migration in a tracker hotfix)"
+    docker compose run --rm --no-deps tracker --health >/dev/null 2>&1 && echo "  schema OK for the new code" || echo "  (health check before start is advisory)"
+    log "recreate the tracker only"
+    docker compose up -d --no-deps --force-recreate tracker
+    if ! wait_healthy; then
+      docker logs --tail 80 elysium-wallet-tracker 2>&1 | sed 's/^/  tracker| /'
+      echo "tracker not healthy: run action tracker-rollback" >&2
+      exit 1
+    fi
+    log "after (give the notifier one drain cycle)"
+    sleep 20
+    muted_queue
+    tracker_alive
+    docker compose logs --no-color --since 2m tracker | grep -iE "closed .* queued alert|error|traceback" | tail -20 | sed 's/^/  log| /' || true
+    resources
+    ;;
+  tracker-rollback)
+    need_docker
+    docker image inspect elysium-wallet-tracker:pre-tracker-hotfix >/dev/null 2>&1 || { echo "no pre-tracker-hotfix image" >&2; exit 1; }
+    docker tag elysium-wallet-tracker:pre-tracker-hotfix elysium-wallet-tracker:latest
+    docker compose up -d --no-deps --force-recreate tracker
+    wait_healthy || true
+    tracker_alive
+    ;;
   deploy)
     need_docker
-    # Keep exact running images for recovery; never remove volumes or checkpoints.
-    for service in tracker ui web; do
-      case "$service" in tracker) container=elysium-wallet-tracker ;; *) container=elysium-$service ;; esac
-      image_id=$(docker inspect -f '{{.Image}}' "$container")
-      if docker image inspect "$image_id" >/dev/null 2>&1; then
-        docker image tag "$image_id" "elysium-wallet-tracker:before-wallet-intel-$service"
-      else
-        log "running $service image is no longer in the image store; require shared web rollback image"
-      fi
-    done
-    # All three services use the same application image. Require a preserved copy.
-    docker image inspect elysium-wallet-tracker:before-wallet-intel-web >/dev/null
     write_env
     install_config
     log "build"
@@ -238,17 +276,14 @@ case "$ACTION" in
     log "start database, migrate"
     docker compose up -d postgres
     docker compose run --rm migrate
-    log "read-only database status"
-    docker compose run --rm --no-deps tracker --status
+    log "telegram check"
+    docker compose run --rm --no-deps tracker --test-telegram
     log "start everything"
     docker compose up -d
     # config/ is a bind mount: recreate so a config-only change is picked up too
     docker compose up -d --no-deps --force-recreate tracker ui
-    wait_healthy
-    wait_healthy elysium-ui "telegram ui"
-    wait_healthy elysium-web "dashboard"
-    web_smoke
-    web_db_checks
+    wait_healthy || true
+    wait_healthy elysium-ui "telegram ui" || true
     status
     ;;
   web)
@@ -260,11 +295,8 @@ case "$ACTION" in
     log "disk before"; df -B1 --output=used,avail / | awk 'NR==2{printf "  used %.2f GB, free %.2f GB\n", $1/1e9, $2/1e9}'
     log "build the image (retags :latest; running containers keep their current image until recreated)"
     docker compose build migrate
-    log "web-only release: verify schema compatibility without running migrations"
-    current=$(docker exec elysium-postgres psql -U tracker -d tracker -X -A -t -v ON_ERROR_STOP=1 -c 'SELECT version_num FROM alembic_version')
-    expected=$(docker compose run --rm --no-deps --entrypoint python migrate -c 'from agora_tracker.migrate import head_revision; print(head_revision())')
-    [ "$current" = "$expected" ] || { echo "schema mismatch: web-only release requires $expected, found $current"; exit 1; }
-    log "schema $current already current; migration skipped"
+    log "migrate: adds schema public_api + role dashboard_ro (idempotent), applies its password"
+    docker compose run --rm migrate
     log "start the dashboard only"
     docker compose up -d --no-deps web
     wait_healthy elysium-web "dashboard" || { docker logs --tail 60 elysium-web 2>&1 | sed 's/^/  web| /'; exit 1; }

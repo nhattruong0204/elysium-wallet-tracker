@@ -1,3 +1,2 @@
-action=maint
-steps=trade-routing-benchmark
-requested=2026-11-07-issue82-readonly-benchmark
+action=tracker
+requested=2026-11-09 P0 USDC Telegram mute hotfix: PR #118, main f723b77; tracker container only (no config install, no migration, no postgres/ui/web restart)

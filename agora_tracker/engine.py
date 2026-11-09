@@ -52,6 +52,7 @@ class Engine:
         self.store, self.tokens = store, tokens
         self.intel = intel or IntelConfig()
         self._muted = set(alert_cfg.mute_tokens)
+        self._tg_muted = set(alert_cfg.telegram_mute_tokens)   # Telegram-only (signals kept)
         self._bundles_at = float("-inf")
         self._bundles: set[str] = set()
         self.chain_cfg, self.cfg = chain_cfg, alert_cfg
@@ -203,9 +204,10 @@ class Engine:
                     extra["counterparty"] = cp[1]
                 if not self._should_alert(ev, min_wei):
                     continue
-                payload = self._trade_payload(ev, notes, bts, extra)
-                text, _ = cards.render_trade(payload, self.links)
-                self.store.enqueue(c, f"ev:{ev.key}", text, payload=payload)
+                if ev.token not in self._tg_muted:    # the reported token, never the quote asset
+                    payload = self._trade_payload(ev, notes, bts, extra)
+                    text, _ = cards.render_trade(payload, self.links)
+                    self.store.enqueue(c, f"ev:{ev.key}", text, payload=payload)
                 if ev.kind == "BUY" and ev.confidence == "high" and bts is not None:
                     self._maybe_cluster(c, ev, bts, min_wei)
             self.store.set_cursor(c, cursor)
@@ -281,7 +283,7 @@ class Engine:
             details={"wallets": [r[0] for r in rows], "min_hype_wei": str(min_wei),
                      "window_s": window},
             trade_ids=[r[1] for r in rows], cooldown_s=window)
-        if sid is None or not alert or not self.cfg.cluster_alerts:
+        if sid is None or not alert or not self.cfg.cluster_alerts or ev.token in self._tg_muted:
             return  # the signal stays in the database (Smart Money > Clusters)
         sym, _ = self.tokens.get(ev.token)
         payload = {"type": "cluster", "token": ev.token, "symbol": sym,
@@ -316,8 +318,8 @@ class Engine:
                 c, token=ev.token, signal_id=sid, opened_at=bts, block=ev.block,
                 entry_price_hype=entry, n_independent=score["independent"], n_raw=len(rows),
                 details={"tx": ev.tx, "symbol": sym, "wallets": [r[0] for r in rows]})
-        if not self.cfg.cluster_alerts:
-            return True
+        if not self.cfg.cluster_alerts or ev.token in self._tg_muted:
+            return True                  # signal (and paper trade) recorded, nothing sent
         payload = {"type": "cluster", "strong": True, "token": ev.token, "symbol": sym,
                    "min_hype": self.cfg.min_trade_hype, "window_min": ic.independent_window_s // 60,
                    "buyers": [self._wallet_ctx(r[0]) for r in rows], "tx": ev.tx, **score}

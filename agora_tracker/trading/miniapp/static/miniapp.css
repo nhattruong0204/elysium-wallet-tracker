@@ -1,0 +1,214 @@
+:root{
+  color-scheme:dark;
+  --bg:#0b1017;
+  --panel:#141d29;
+  --line:#293748;
+  --text:#f1f6fc;
+  --muted:#adbdce;
+  --accent:#8ce5bd;
+  --warn:#f3ca7d;
+  font:16px/1.5 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  background:var(--bg);
+  color:var(--text)}
+*{
+  box-sizing:border-box}
+body{
+  margin:0;
+  padding:0 max(16px,env(safe-area-inset-right)) max(24px,env(safe-area-inset-bottom)) max(16px,env(safe-area-inset-left))}
+main{
+  max-width:680px;
+  margin:auto}
+header{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:12px;
+  padding:28px 0;
+  border-bottom:1px solid var(--line)}
+.brand{
+  font-weight:800;
+  letter-spacing:.12em;
+  text-decoration:none;
+  color:var(--text);
+  font-size:15px}
+.brand span{
+  display:block;
+  font-size:10px;
+  font-weight:500;
+  letter-spacing:.16em;
+  color:var(--muted)}
+.pill{
+  font-size:11px;
+  letter-spacing:.05em;
+  border:1px solid var(--line);
+  border-radius:99px;
+  padding:6px 9px;
+  white-space:nowrap}
+.intro{
+  padding:28px 0 12px}
+.eyebrow{
+  font-size:11px;
+  font-weight:700;
+  letter-spacing:.16em;
+  color:var(--accent);
+  margin:0 0 8px}
+h1{
+  font-size:clamp(30px,7vw,44px);
+  line-height:1.1;
+  letter-spacing:-.035em;
+  margin:8px 0 16px}
+h2{
+  font-size:18px;
+  margin:0 0 12px}
+.muted{
+  color:var(--muted);
+  font-size:13px}
+.card,#status{
+  border:1px solid var(--line);
+  border-radius:16px;
+  padding:20px;
+  margin:16px 0;
+  background:var(--panel)}
+#status{
+  border-left:3px solid var(--warn);
+  font-size:14px}
+#status p{
+  margin:4px 0 0;
+  color:var(--muted)}
+.notice{
+  color:var(--warn);
+  font-size:13px}
+.section-heading{
+  display:flex;
+  align-items:baseline;
+  justify-content:space-between;
+  gap:12px}
+.side{
+  font-size:12px;
+  font-weight:800;
+  letter-spacing:.13em;
+  color:var(--accent);
+  margin:8px 0}
+code{
+  font:12px/1.6 ui-monospace,SFMono-Regular,Consolas,monospace;
+  display:block;
+  overflow-wrap:anywhere;
+  word-break:break-word;
+  color:var(--text)}
+button,.button{
+  font:inherit;
+  min-height:48px;
+  border:1px solid var(--line);
+  background:#223044;
+  color:var(--text);
+  border-radius:10px;
+  padding:10px 14px;
+  cursor:pointer;
+  text-decoration:none;
+  text-align:center;
+  display:inline-flex;
+  align-items:center;
+  justify-content:center}
+button:disabled{
+  opacity:.5;
+  cursor:not-allowed}
+.primary{
+  background:var(--accent);
+  color:#0c261c;
+  border-color:var(--accent);
+  font-weight:700}
+.secondary{
+  background:transparent}
+.wide{
+  width:100%;
+  margin-top:12px}
+.button-row,.presets{
+  display:flex;
+  gap:8px;
+  flex-wrap:wrap;
+  margin:14px 0}
+.button-row>*{
+  flex:1 1 180px}
+.presets>*{
+  flex:1;
+  min-width:70px}
+.presets button[aria-pressed=true]{
+  border-color:var(--accent);
+  color:var(--accent)}
+label{
+  display:block;
+  margin:16px 0 6px;
+  font-size:13px;
+  color:var(--muted)}
+input,select,textarea{
+  font:inherit;
+  width:100%;
+  min-height:48px;
+  padding:10px 12px;
+  border-radius:10px;
+  background:#0c141e;
+  border:1px solid var(--line);
+  color:var(--text)}
+textarea{
+  font:12px/1.6 ui-monospace,monospace;
+  resize:vertical}
+input:disabled,select:disabled{
+  opacity:.5}
+a{
+  color:var(--accent)}
+dl{
+  margin:12px 0;
+  display:grid;
+  grid-template-columns:minmax(95px,1fr) minmax(0,2fr);
+  gap:12px;
+  font-size:13px}
+dt{
+  color:var(--muted)}
+dd{
+  margin:0;
+  text-align:right;
+  overflow-wrap:anywhere;
+  word-break:break-word}
+.review{
+  border-color:var(--accent)}
+footer{
+  padding:8px 0 24px;
+  text-align:center}
+button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible{
+  outline:3px solid var(--accent);
+  outline-offset:3px}
+[hidden]{
+  display:none!important}
+@media(max-width:380px){
+  .card{
+  padding:16px}
+.section-heading{
+  flex-wrap:wrap}
+.pill{
+  font-size:10px}
+}
+@media(prefers-reduced-motion:no-preference){
+  button{
+  transition:border-color .15s,background-color .15s}
+}
+@media(prefers-color-scheme:light){
+  :root{
+  color-scheme:light;
+  --bg:#eef3f6;
+  --panel:#fff;
+  --line:#cad5de;
+  --text:#152333;
+  --muted:#506578;
+  --accent:#08764c;
+  --warn:#8a5b08}
+input,select,textarea{
+  background:#f6f9fb}
+button,.button{
+  background:#e5edf4;
+  color:var(--text)}
+.primary{
+  background:var(--accent);
+  color:white}
+.secondary{
+  background:transparent}
+}

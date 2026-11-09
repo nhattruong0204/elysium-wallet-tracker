@@ -62,8 +62,8 @@ jobs:
           with psycopg.connect(url, autocommit=True) as conn:
               conn.execute("ALTER DATABASE tracker_test SET jit = off")
           PYTHON
-      - name: Chromium for the Activity browser tests
-        run: python -m playwright install --with-deps chromium
+      - name: Chromium and WebKit for Activity and Mini App browser tests
+        run: python -m playwright install --with-deps chromium webkit
       - run: python -m pytest -v -rs
 
   docker:

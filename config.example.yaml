@@ -62,6 +62,9 @@ alerts:
   hype_dust: 0.0005
   ignore_tokens: []            # e.g. stablecoins or $AGORA if you don't care about them
   mute_tokens: []              # indexed, but no Telegram alert and hidden on the Activity tab
+  telegram_mute_tokens: []     # exact contracts: no Telegram alert (trade/transfer/cluster) only;
+                               # still indexed, in PnL, signals and on the website. Also read from
+                               # ALERTS_TELEGRAM_MUTE_TOKENS (comma-separated) in the environment.
 
 
 links:                         # every alert detail links here (formats verified 2026-11-02)
@@ -142,3 +145,12 @@ scoring:
   min_closes: 5                # measured closing trades needed for the PnL components
   min_snapshots: 12            # accepted lists needed for list persistence
   limited_cap: 50              # a score without measured trade evidence cannot exceed this
+
+# Issue #82 PAPER UI with read-only canonical V2 quotes. No signer or broadcaster.
+# Keep OFF pending review; turning this on never enables real-money execution.
+trading:
+  paper_enabled: false
+  # Required for the read-only quote workflow; parent directory must be owned by UI user, mode 0700.
+  # paper_order_path: /data/private-trading/paper.sqlite
+  # miniapp_url: https://preview.example.com/  # optional private-chat launcher; C1 API denies until #89
+  # paper_rpc_url: https://rpc.agoradex.app  # dedicated read transport, independent of scanner

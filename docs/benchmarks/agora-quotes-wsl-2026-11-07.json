@@ -1,0 +1,187 @@
+{
+  "source": "https://api.agoradex.app/api/v1",
+  "openapi_sha256": "94314f2101c1c4238933b8a2161e87f6b5b58116320b5a02c3287099e22de46f",
+  "location": "WSL2 local network",
+  "quotes": [
+    {
+      "token": "0x5e5df82d563fcf36b6f853c4d09f89e2d18825b4",
+      "side": "buy",
+      "amount_hype": "0.1",
+      "http_status": 200,
+      "amountIn": "100000000000000000",
+      "amountOut": "12084313837595255906399",
+      "minAmountOut": "12023892268407279626867",
+      "venue": "Agora pool \u00b7 0.3% pool",
+      "priceImpact": 3.673753073196728e-05,
+      "feeBps": 0,
+      "venues": [
+        {
+          "venue": "Agora pool \u00b7 0.3% pool",
+          "amountOut": "12084313837595255906399"
+        },
+        {
+          "venue": "Kleos v4",
+          "amountOut": "11961513112876564439576"
+        },
+        {
+          "venue": "ElysPump v4",
+          "amountOut": "9223622651301320498483"
+        }
+      ],
+      "transaction_returned": false,
+      "latency_ms": 282.1,
+      "observed_at": "2026-11-07T07:20:20.028808+00:00"
+    },
+    {
+      "token": "0x5e5df82d563fcf36b6f853c4d09f89e2d18825b4",
+      "side": "buy",
+      "amount_hype": "0.5",
+      "http_status": 200,
+      "amountIn": "500000000000000000",
+      "amountOut": "59759671659920684274605",
+      "minAmountOut": "59460873301621080853231",
+      "venue": "Kleos v4",
+      "priceImpact": 0.011113134474530995,
+      "feeBps": 0,
+      "venues": [
+        {
+          "venue": "Kleos v4",
+          "amountOut": "59759671659920684274605"
+        },
+        {
+          "venue": "Agora pool \u00b7 0.3% pool",
+          "amountOut": "59343580387858826098975"
+        },
+        {
+          "venue": "ElysPump v4",
+          "amountOut": "35517483635090510918389"
+        }
+      ],
+      "transaction_returned": false,
+      "latency_ms": 260.37,
+      "observed_at": "2026-11-07T07:20:22.387038+00:00"
+    },
+    {
+      "token": "0x5e5df82d563fcf36b6f853c4d09f89e2d18825b4",
+      "side": "buy",
+      "amount_hype": "1",
+      "http_status": 200,
+      "amountIn": "1000000000000000000",
+      "amountOut": "119399824081067581289448",
+      "minAmountOut": "118802824960662243383000",
+      "venue": "Kleos v4",
+      "priceImpact": 0.012125258848051823,
+      "feeBps": 0,
+      "venues": [
+        {
+          "venue": "Kleos v4",
+          "amountOut": "119399824081067581289448"
+        },
+        {
+          "venue": "Agora pool \u00b7 0.3% pool",
+          "amountOut": "116098011774565291724551"
+        },
+        {
+          "venue": "ElysPump v4",
+          "amountOut": "55180383165380025981233"
+        }
+      ],
+      "transaction_returned": false,
+      "latency_ms": 1320.76,
+      "observed_at": "2026-11-07T07:20:25.807908+00:00"
+    },
+    {
+      "token": "0xd662d66ec991a3eae4ecbda34327264c53d4cf38",
+      "side": "buy",
+      "amount_hype": "0.1",
+      "http_status": 200,
+      "amountIn": "100000000000000000",
+      "amountOut": "3037661927535194197100",
+      "minAmountOut": "3022473617897518226114",
+      "venue": "Montra",
+      "priceImpact": 0.010176973966473879,
+      "feeBps": 0,
+      "venues": [
+        {
+          "venue": "Montra",
+          "amountOut": "3037661927535194197100"
+        },
+        {
+          "venue": "Agora pool \u00b7 0.3% pool",
+          "amountOut": "594505978533666821632"
+        },
+        {
+          "venue": "ElysPump v4",
+          "amountOut": null
+        }
+      ],
+      "transaction_returned": false,
+      "latency_ms": 277.36,
+      "observed_at": "2026-11-07T07:20:28.183258+00:00"
+    },
+    {
+      "token": "0xd662d66ec991a3eae4ecbda34327264c53d4cf38",
+      "side": "buy",
+      "amount_hype": "0.5",
+      "http_status": 200,
+      "amountIn": "500000000000000000",
+      "amountOut": "15183190551228458927119",
+      "minAmountOut": "15107274598472316632483",
+      "venue": "Montra",
+      "priceImpact": 0.01051756004023563,
+      "feeBps": 0,
+      "venues": [
+        {
+          "venue": "Montra",
+          "amountOut": "15183190551228458927119"
+        },
+        {
+          "venue": "Agora pool \u00b7 0.3% pool",
+          "amountOut": "703867290078182560860"
+        },
+        {
+          "venue": "ElysPump v4",
+          "amountOut": null
+        }
+      ],
+      "transaction_returned": false,
+      "latency_ms": 375.08,
+      "observed_at": "2026-11-07T07:20:30.658434+00:00"
+    },
+    {
+      "token": "0xd662d66ec991a3eae4ecbda34327264c53d4cf38",
+      "side": "buy",
+      "amount_hype": "1",
+      "http_status": 200,
+      "amountIn": "1000000000000000000",
+      "amountOut": "30353593087306347303603",
+      "minAmountOut": "30201825121869815567084",
+      "venue": "Montra",
+      "priceImpact": 0.010943292632437762,
+      "feeBps": 0,
+      "venues": [
+        {
+          "venue": "Montra",
+          "amountOut": "30353593087306347303603"
+        },
+        {
+          "venue": "Agora pool \u00b7 0.3% pool",
+          "amountOut": "720433040687606066693"
+        },
+        {
+          "venue": "ElysPump v4",
+          "amountOut": null
+        }
+      ],
+      "transaction_returned": false,
+      "latency_ms": 276.32,
+      "observed_at": "2026-11-07T07:20:33.040415+00:00"
+    }
+  ],
+  "limitations": [
+    "Indicative provider data, not independently verified swaps.",
+    "No recipient: wallet-specific fee eligibility unknown.",
+    "venues are provider comparisons, not independent direct-router quotes.",
+    "No calldata requested, no simulation, balances, signing or submission."
+  ]
+}

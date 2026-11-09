@@ -64,7 +64,8 @@ class Tracker:
             min_liquidity_hype=ic.launch_min_liquidity_hype, delay_s=ic.launch_delay_s,
         ) if ic.launch_watch else None
         self._next_launch = 0.0
-        self.notifier = Notifier(self.store, cfg.telegram, dry_run, renderer=self.render_alert)
+        self.notifier = Notifier(self.store, cfg.telegram, dry_run, renderer=self.render_alert,
+                                 suppress_tokens=cfg.alerts.telegram_mute_tokens)
         lb = cfg.leaderboard
         self.leaderboard = HttpLeaderboard(lb) if lb.enabled and lb.url else None
         self.tracked: set[str] = set()
@@ -95,7 +96,11 @@ class Tracker:
         if not out:
             return row["text"], None, None
         img = cards.preview_url(self.links, info) if self.cfg.alerts.token_image else None
-        return out[0], out[1], img
+        markup: dict | None = out[1]
+        if self.cfg.trading.paper_enabled and token and payload.get("type") in ("trade", "early", "cluster", "consensus", "launch"):
+            from .trading.telegram import alert_controls
+            markup = alert_controls(markup, token, self.cfg.chain.chain_id)
+        return out[0], markup, img
 
     def run_ascend_index(self) -> None:
         """Ascend launches from the hook's events. Isolated: never touches indexing."""

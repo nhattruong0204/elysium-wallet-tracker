@@ -154,79 +154,6 @@ except Exception: print("reject")')
         echo "  site ${u%$tok}<token> -> $r"
       done
       ;;
-    activity-filter-probe)
-      say "Activity HYPE filter probe (read-only, via the dashboard container's loopback port)"
-      docker exec -i elysium-web python - <<'PY' 2>&1 | sed 's/^/  /'
-import json, urllib.error, urllib.parse, urllib.request
-from decimal import Decimal
-B = "http://127.0.0.1:8100/api/v1/activity"
-def get(**q):
-    try:
-        with urllib.request.urlopen(B + "?" + urllib.parse.urlencode(q), timeout=20) as r:
-            return r.status, json.load(r)
-    except urllib.error.HTTPError as e:
-        return e.code, None
-base = get(range="7d", limit=100)[1]
-print("unfiltered 7d: total", base["total"]["count"], "capped", base["total"].get("capped"))
-for lo, hi in (("0.5", None), ("5", None), ("1", "10"), ("100", None)):
-    q = dict(range="7d", limit=100, min_hype=lo)
-    if hi: q["max_hype"] = hi
-    st, j = get(**q)
-    amts = [Decimal(i["amount_hype"]) for i in j["items"]]
-    ok = all(Decimal(lo) <= a and (hi is None or a <= Decimal(hi)) for a in amts) and \
-         all(i["basis"] in ("verified", "estimated") for i in j["items"])
-    print(f"min={lo} max={hi}: status {st} total {j['total']['count']} page {len(amts)} bounds+basis {'OK' if ok else 'VIOLATION'} echo {j['filters']['min_hype']}/{j['filters']['max_hype']}")
-for bad in ({"min_hype": "-1"}, {"min_hype": "1e3"}, {"min_hype": "10", "max_hype": "5"}, {"max_hype": "x'--"}):
-    print("invalid", bad, "->", get(range="7d", **bad)[0])
-PY
-      ;;
-    tracking-verify)
-      say "tracking verification (read-only): reconciliation report, scan_stats, resources, 429s"
-      docker exec elysium-wallet-tracker python -m agora_tracker --config /config/config.yaml --tracking-report 2>&1 | tail -60
-      docker exec -i elysium-postgres psql -U tracker -d tracker -X -A -F ' | ' <<'SQL' 2>&1 | sed 's/^/  /'
-\echo -- alembic
-SELECT version_num FROM alembic_version;
-\echo -- scan_stats (public aggregate)
-SELECT left(value::text, 900) FROM service_state WHERE key = 'scan_stats';
-\echo -- heartbeat age (s), cursor
-SELECT extract(epoch FROM now() - to_timestamp((value->>'v')::bigint))::int FROM service_state WHERE key = 'heartbeat';
-SELECT block_number, updated_at FROM indexer_checkpoints ORDER BY updated_at DESC LIMIT 1;
-SQL
-      docker stats --no-stream --format '  {{.Name}}: cpu {{.CPUPerc}} mem {{.MemUsage}}' 2>&1 | sort
-      echo "host: $(nproc) vCPU; $(free -m | awk '/Mem:/{printf "%d MB used of %d MB, %d MB available", $3, $2, $7}'); load $(cut -d' ' -f1-3 /proc/loadavg)"
-      echo "tracker log, last 20 min: 429s=$(docker logs --since 20m elysium-wallet-tracker 2>&1 | grep -c '429') warnings=$(docker logs --since 20m elysium-wallet-tracker 2>&1 | grep -c WARNING) errors=$(docker logs --since 20m elysium-wallet-tracker 2>&1 | grep -c ERROR)"
-      docker logs --since 20m elysium-wallet-tracker 2>&1 | grep -E "WARNING|ERROR|scan mode|full scan|tracking " | tail -15 | cut -c1-220
-      ;;
-    trade-routing-benchmark)
-      say "Issue 82: bounded read-only RPC research; no signing or submission"
-      docker exec -i elysium-wallet-tracker python - --config /config/config.yaml \
-        --rpc https://rpc.agoradex.app --rpc https://rpc.eleos.fun \
-        --samples 3 --location production-vps < "$REPO/scripts/trade_rpc_bench.py" || exit 1
-      healthy_bots
-      ;;
-    activity-release-verify)
-      say "Activity web release: read-only bot health checks"
-      healthy_bots
-      docker exec elysium-ui python -m agora_tracker --health-ui
-      for c in elysium-wallet-tracker elysium-ui gmgn-revival-radar-radar-1; do
-        docker inspect "$c" --format '{{.Name}} started={{.State.StartedAt}} restarts={{.RestartCount}}'
-      done
-      ;;
-    wallet-release-verify)
-      say "Wallet Intelligence release verification (read-only)"
-      docker exec -i elysium-postgres psql -U tracker -d tracker -X -v ON_ERROR_STOP=1 <<'SQL'
-SELECT version_num FROM alembic_version;
-SELECT version, quality, count(*), max(as_of) FROM wallet_scores GROUP BY 1,2 ORDER BY 1,2;
-SELECT version, config->>'eligibility' AS eligibility FROM score_versions;
-SELECT count(*) AS historical, count(*) FILTER (WHERE status='active') AS active FROM wallet_enrollment WHERE first_top_at IS NOT NULL;
-SQL
-      docker exec elysium-wallet-tracker python -m agora_tracker --config /config/config.yaml --tracking-report
-      docker logs --since 10m elysium-ui 2>&1 | grep -E 'scores:|scoring|ScoringConfigError' | tail -10
-      docker stats --no-stream --format '{{.Name}} cpu={{.CPUPerc}} memory={{.MemUsage}}'
-      for c in elysium-wallet-tracker elysium-ui elysium-web gmgn-revival-radar-radar-1; do
-        docker inspect "$c" --format '{{.Name}} started={{.State.StartedAt}} restarts={{.RestartCount}}'
-      done
-      ;;
     tracking-baseline)
       say "tracking baseline (read-only): revision, resources, scanner state, snapshot quality"
       for c in elysium-wallet-tracker elysium-ui elysium-web elysium-postgres; do
@@ -240,7 +167,7 @@ SQL
 \echo -- scanner cursor vs newest indexed block, heartbeat age (s)
 SELECT (SELECT block_number FROM indexer_checkpoints WHERE name = 'indexer') cursor_block,
        (SELECT updated_at FROM indexer_checkpoints ORDER BY updated_at DESC LIMIT 1) cursor_updated,
-       (SELECT extract(epoch FROM now() - to_timestamp((value->>'v')::bigint))::int FROM service_state WHERE key = 'heartbeat') heartbeat_age_s;
+       (SELECT extract(epoch FROM now() - to_timestamp((value #>> '{}')::bigint))::int FROM service_state WHERE key = 'heartbeat') heartbeat_age_s;
 \echo -- rpc_heads (hosts only)
 SELECT left(value::text, 400) FROM service_state WHERE key = 'rpc_heads';
 \echo -- leaderboard snapshots by status / completeness

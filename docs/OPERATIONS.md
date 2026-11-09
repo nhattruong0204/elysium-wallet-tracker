@@ -257,3 +257,68 @@ At-least-once. Telegram has no transaction shared with PostgreSQL: if Telegram a
 message but the response is lost, or the process dies before the commit, the alert is sent
 again. Every attempt is recorded in `notification_deliveries`. Losses are not possible
 short of deleting rows; duplicates are possible but rare.
+
+## Telegram-only token mute (USDC, mainnet hotfix 2026-11-09)
+
+`alerts.telegram_mute_tokens` (config) and `ALERTS_TELEGRAM_MUTE_TOKENS` (environment,
+comma-separated, set for the **tracker service only** in `docker-compose.yml`) list exact token
+contracts whose **Telegram alerts** are not sent: BUY, SELL, TRANSFER_IN/OUT, SWAP/MULTI legs
+of that token, and its cluster / independent-buy cards. Everything else is unchanged: the token is
+indexed (trades, raw evidence, positions, PnL, cursor), still part of cluster/smart-money
+**signals** and paper trades, and still shown on the website. A trade of another token that used
+it as the quote asset still alerts (filtering is on the reported token, never `counter_token`),
+and look-alike tokens with the same symbol still alert (exact address match only).
+
+It differs from `mute_tokens` (also hides the token on the Activity tab and keeps it out of
+cluster signals) and from `ignore_tokens` (dropped before indexing). Neither is used for USDC.
+
+**Muted on mainnet:** `0xb47c4c8f73f009cc0c0d3f92b388d13e293f0b65` (`0xb47c4C8F73F009CC0C0d3f92B388d13E293F0B65`)
+— Elysium's bridged USDC (shown as USDC / USDC.e, 6 decimals): the Arbitrum-Orbit-gateway
+representation of Circle's HyperEVM USDC `0xb88339CB7199b77E23DB6E890353E22632Ba630f`.
+Elysium has no native Circle USDC/CCTP. Evidence (2026-11-09):
+
+* Circle's USDC contract list gives HyperEVM USDC = `0xb88339…630f` and does not list Elysium.
+* Hyperlane registry PR #1792 reads on chain (`l1Address()` / both gateways) that the Elysium
+  token for that parent is `0xb47c4C8F…F0B65` (6 decimals).
+* LI.FI data-types PR #287 (`USDC.e`, chain 99901), ShapeShift web PR #12832 ("HyperEVM USDC
+  bridged through the Orbit gateway"), MetaMask contract-metadata PR #2056 (merged icon for
+  `eip155:99901/erc20:0xb47c4C8F…F0B65`).
+* Kinetiq's docs name WHYPE and USDC as the canonical tokens and warn about look-alikes; their
+  contract page had not yet published mainnet addresses when checked.
+
+Operator re-check on the VPS before deploying (read-only):
+
+```bash
+R=https://rpc.elysium.kinetiq.xyz; T=0xb47c4C8F73F009CC0C0d3f92B388d13E293F0B65
+call() { curl -s -H 'content-type: application/json' -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_call\",\"params\":[{\"to\":\"$T\",\"data\":\"$1\"},\"latest\"]}" $R; echo; }
+call 0x95d89b41   # symbol()    -> "USDC" or "USDC.e"
+call 0x313ce567   # decimals()  -> 6
+call 0xc2eeeebd   # l1Address() -> ...b88339cb7199b77e23db6e890353e22632ba630f (Circle HyperEVM USDC)
+```
+
+**Already-queued alerts.** On every drain the notifier closes still-pending (queued or retrying)
+outbox rows whose payload token is muted: `status = 'dead'`, `last_error = 'suppressed: not sent
+(alerts.telegram_mute_tokens)'`, plus a `notification_deliveries` row (`ok = false`, same text).
+Nothing is deleted, nothing is marked `sent`, other rows are untouched, and rows a concurrent
+notifier holds are skipped and caught next time. Private health/`--status` counts them as
+`suppressed`; the public dashboard's message-free view still counts them under "failed" (changing
+that view needs a migration, deliberately not part of a hotfix).
+
+Count them (read-only) on the VPS:
+
+```sql
+SELECT status, last_error LIKE 'suppressed:%' AS suppressed, count(*)
+FROM notification_outbox
+WHERE lower(payload->>'token') = '0xb47c4c8f73f009cc0c0d3f92b388d13e293f0b65'
+GROUP BY 1, 2 ORDER BY 1, 2;
+```
+
+**Deploy only the tracker** (GitHub Actions > deploy > `tracker`, or `deploy/OPS_REQUEST`
+`action=tracker`): uploads the code, rebuilds the image, recreates **only** the tracker
+container (no config install, no migration, no postgres/ui/web restart; their containers keep
+their current image), tags the previous image `elysium-wallet-tracker:pre-tracker-hotfix`, and
+prints the muted queue counts and tracker/ui health before and after.
+
+**Rollback:** action `tracker-rollback` (re-tags the previous image and recreates the tracker).
+Suppressed rows stay closed (they are not re-sent). To stop muting without a rollback, remove the
+address from `ALERTS_TELEGRAM_MUTE_TOKENS` and run `tracker` again.
