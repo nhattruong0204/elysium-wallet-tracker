@@ -17,6 +17,8 @@ jobs:
       - run: pip install -r requirements.txt ruff mypy types-requests types-PyYAML pip-audit
       - run: ruff check .
       - run: mypy agora_tracker
+      - name: Migration graph preflight (single linear head)
+        run: python -m agora_tracker.preflight --graph-only
       - name: Dependency vulnerability scan
         run: pip-audit -r requirements.txt
 
@@ -65,6 +67,53 @@ jobs:
       - name: Chromium and WebKit for Activity and Mini App browser tests
         run: python -m playwright install --with-deps chromium webkit
       - run: python -m pytest -v -rs
+
+  ingress-proxy:
+    # F-17 rehearsal in a DISPOSABLE runner: the nginx template from deploy/nginx in front of the
+    # REAL IngressGuard/IngressServer, verified by scripts/verify_ingress_proxy.py. Nothing here
+    # touches the production proxy.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq nginx
+      - name: Render the template with a throwaway CA and secret
+        run: |
+          set -euo pipefail
+          H=app.example.test
+          openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj "/CN=$H" \
+            -addext "subjectAltName=DNS:$H" -keyout /tmp/key.pem -out /tmp/cert.pem 2>/dev/null
+          sudo install -d -m 0750 /etc/elysium
+          SECRET=$(openssl rand -hex 32)
+          echo "TRADING_INGRESS_SECRET=$SECRET" >> "$GITHUB_ENV"
+          echo "::add-mask::$SECRET"
+          printf 'proxy_set_header X-Elysium-Ingress "%s";\n' "$SECRET" | sudo tee /etc/elysium/ingress-secret.conf >/dev/null
+          sudo chown root:www-data /etc/elysium/ingress-secret.conf && sudo chmod 0640 /etc/elysium/ingress-secret.conf
+          sed -e "s#__ORIGIN_HOST__#$H#g" -e "s#__INGRESS_PORT__#8765#g" deploy/nginx/ingress-proxy.conf.template \
+            | sudo tee /etc/elysium/ingress-proxy.conf >/dev/null
+          sed -e "s#__ORIGIN_HOST__#$H#g" -e "s#__INGRESS_PORT__#8765#g" -e "s#__CERT__#/tmp/cert.pem#" \
+              -e "s#__KEY__#/tmp/key.pem#" deploy/nginx/elysium-trading.conf.template \
+            | sudo tee /etc/nginx/conf.d/elysium-trading.conf >/dev/null
+          sudo rm -f /etc/nginx/sites-enabled/default
+          echo "127.0.0.1 $H" | sudo tee -a /etc/hosts
+          sudo nginx -t
+          sudo systemctl restart nginx
+      - name: Start the real guard behind it
+        run: |
+          nohup python scripts/ci_ingress_upstream.py --origin https://app.example.test > /tmp/upstream.log 2>&1 &
+          for i in $(seq 1 50); do ss -ltn | grep -q '127.0.0.1:8765' && break; sleep 0.2; done
+      - name: Verify the proxy (remote + local checks)
+        run: |
+          sudo -E env "PATH=$PATH" REQUESTS_CA_BUNDLE=/tmp/cert.pem \
+            python scripts/verify_ingress_proxy.py --origin https://app.example.test --burst 60 \
+            --local --ingress-port 8765 --secret-include /etc/elysium/ingress-secret.conf
+      - if: always()
+        run: cat /tmp/upstream.log; sudo tail -50 /var/log/nginx/error.log || true
 
   docker:
     runs-on: ubuntu-latest

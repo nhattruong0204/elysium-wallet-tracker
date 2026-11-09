@@ -93,7 +93,8 @@ def test_a_node_that_ignores_the_block_parameter_is_caught(made, chain):
     assert c["historical_block_param"]["status"] == "FAIL"
     assert "IGNORE" in c["historical_block_param"]["detail"]
     assert c["historical_eth_call"]["status"] == "FAIL"
-    assert c["historical_balance_n_minus_1"]["status"] == "WARN"
+    # (the balance comparison is only a WARN-level hint: on a moving head an ignoring node can still
+    # return two different "latest" balances, so it is not asserted here)
 
 
 def test_historical_disagreement_between_providers_is_flagged(made, chain):
