@@ -1,0 +1,17 @@
+# /etc/elysium/ingress-proxy.conf — included by every proxied location of the trading vhost.
+# Every header is SET (overwritten): a client can never supply Host, X-Forwarded-* or the secret.
+limit_except GET HEAD POST { deny all; }
+proxy_pass http://127.0.0.1:__INGRESS_PORT__;
+proxy_http_version 1.1;
+proxy_set_header Connection "";
+proxy_set_header Host "__ORIGIN_HOST__";
+proxy_set_header X-Forwarded-Proto https;
+proxy_set_header X-Forwarded-For $remote_addr;
+proxy_set_header X-Forwarded-Host "";
+proxy_set_header X-Real-IP "";
+proxy_set_header Forwarded "";
+include /etc/elysium/ingress-secret.conf;     # proxy_set_header X-Elysium-Ingress "<secret>";
+proxy_connect_timeout 5s;
+proxy_read_timeout 35s;                       # > trading.ingress_request_timeout_s (30)
+proxy_send_timeout 35s;
+proxy_redirect off;

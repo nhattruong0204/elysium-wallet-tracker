@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
@@ -796,16 +797,10 @@ def test_concurrent_confirmations_of_one_code_apply_exactly_once(live, node, src
 
     with ThreadPoolExecutor(4) as ex:
         out = list(ex.map(go, range(4)))
-    # The invariant is AT MOST ONCE. Losers are refused (`bad_code`); under heavy contention the
-    # winner's write can lose a database deadlock/lock-timeout to the losers' audit rows and be
-    # refused with the retryable `busy` (the code is single-use, so nothing is applied twice and
-    # the owner simply prepares again). That is safe, so it is accepted, then proven recoverable.
-    assert set(out) - {True} <= {"bad_code", "busy"} and out.count(True) <= 1
-    assert counts(owner_engine)["recoveries"] == out.count(True)
-    if out.count(True) == 0:
-        assert "busy" in out and leg_of(live, oid)["state"] == "ambiguous"
-        again = svc.prepare(OWNER_ACTOR, leg["id"])
-        assert svc.confirm(OWNER_ACTOR, leg["id"], again.code, REASON).applied is True
+    # EXACTLY once. (CI once saw the winner refused `busy`: the losers' refusal audits took the
+    # audit-chain lock before the order row, inverting the ledger's lock order -> deadlock. Fixed
+    # in record_recovery_refusal; test_refusal_audit_and_recovery_never_deadlock pins it.)
+    assert sorted(map(str, out)) == ["True", "bad_code", "bad_code", "bad_code"]
     assert counts(owner_engine)["recoveries"] == 1
     assert leg_of(live, oid)["state"] == "superseded"
     assert raw(owner_engine, "SELECT count(*) FROM trading_private.order_events WHERE order_id = :o "
@@ -1248,3 +1243,85 @@ def test_owner_recovery_never_proposes_supersession_before_the_finalized_tag(
     world.no_finalized_tag = False
     d = svc.diagnose(OWNER_ACTOR, leg["id"])
     assert d.proposal == "superseded" and d.evidence["finalized"] == {"number": HEAD}
+
+
+# ------------------------------------------------------------------ 15. lock order (CI `busy`)
+@pytest.mark.parametrize("path", ["recovery_refusal", "wallet_result"])
+def test_event_writers_take_the_order_row_before_the_audit_chain_lock(
+        live, node, world, owner_engine, path):
+    """A transaction holding the order row (like apply_leg_recovery) and then appending an audit
+    event must never deadlock against a concurrent refusal audit / wallet-result event."""
+    import sqlalchemy as sa
+    oid, leg = provable_superseded(live, node, world)
+    out = {}
+    with owner_engine.connect() as a:
+        tx = a.begin()
+        a.execute(sa.text("SET LOCAL lock_timeout = '10s'"))
+        a.execute(sa.text("SELECT 1 FROM trading_private.orders WHERE id = :o FOR UPDATE"),
+                  {"o": oid})
+
+        def other():
+            try:
+                if path == "recovery_refusal":
+                    out["r"] = live.record_recovery_refusal(
+                        OWNER_ACTOR, leg["id"], request_key="refused-" + "a" * 32,
+                        code="evidence_changed", evidence_digest=None)
+                else:
+                    out["r"] = live.record_wallet_result(
+                        U1, oid, outcome="error", tx_hash=None, reason="timeout",
+                        request_key="wr-" + "b" * 30)
+            except Exception as exc:                     # noqa: BLE001
+                out["r"] = exc
+        t = threading.Thread(target=other)
+        t.start()
+        time.sleep(0.2)                                  # `other` is now waiting somewhere
+        t0 = time.monotonic()
+        a.execute(sa.text(
+            "INSERT INTO trading_private.order_events (order_id, user_id, actor_kind, actor_id, "
+            "kind, request_key, detail, prev_hash, hash) VALUES (:o, :u, 'owner', :a, "
+            "'LEG_RECOVERY_REFUSED', :k, '{}'::jsonb, '', '')"),
+            {"o": oid, "u": U1, "a": OWNER, "k": "holder-" + "c" * 30})   # chain lock, after order
+        waited = time.monotonic() - t0
+        tx.commit()
+        t.join(15)
+    # With the inverted order the holder's event insert blocks on the chain lock until PostgreSQL
+    # detects the deadlock (deadlock_timeout, 1 s) and aborts the other side, which then retries.
+    # With the correct order the other side waits on the ORDER row and the holder never waits.
+    assert waited < 0.4, f"holder waited {waited:.2f}s for the audit-chain lock (deadlock)"
+    assert out["r"] is True
+
+
+def test_a_transient_busy_ledger_keeps_the_confirmation_code_valid(live, node, world, svc,
+                                                                   owner_engine, monkeypatch):
+    oid, leg = provable_superseded(live, node, world)
+    p = svc.prepare(OWNER_ACTOR, leg["id"])
+    real = live.apply_leg_recovery
+    calls = {"n": 0}
+
+    def flaky(*a, **k):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise LedgerRefused("busy", "the ledger is busy; retry with the same key")
+        return real(*a, **k)
+    monkeypatch.setattr(live, "apply_leg_recovery", flaky)
+    with pytest.raises(RecoveryRefused) as e:
+        svc.confirm(OWNER_ACTOR, leg["id"], p.code, REASON)
+    assert e.value.code == "busy" and counts(owner_engine)["recoveries"] == 0
+    assert svc.confirm(OWNER_ACTOR, leg["id"], p.code, REASON).applied is True     # same code
+    assert counts(owner_engine)["recoveries"] == 1
+    with pytest.raises(RecoveryRefused):                                          # now consumed
+        svc.confirm(OWNER_ACTOR, leg["id"], p.code, REASON)
+
+
+def test_any_other_refusal_still_consumes_the_code(live, node, world, svc, monkeypatch):
+    oid, leg = provable_superseded(live, node, world)
+    p = svc.prepare(OWNER_ACTOR, leg["id"])
+
+    def refuse(*a, **k):
+        raise LedgerRefused("stale_version", "changed")
+    monkeypatch.setattr(live, "apply_leg_recovery", refuse)
+    with pytest.raises(RecoveryRefused):
+        svc.confirm(OWNER_ACTOR, leg["id"], p.code, REASON)
+    with pytest.raises(RecoveryRefused) as e:
+        svc.confirm(OWNER_ACTOR, leg["id"], p.code, REASON)
+    assert e.value.code == "bad_code"

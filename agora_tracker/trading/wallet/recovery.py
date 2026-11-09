@@ -173,6 +173,14 @@ class _Codes:
             self._bad.pop(key, None)
             return p
 
+    def give_back(self, p: _Pending) -> None:
+        """Re-arm a code whose confirmation failed for a TRANSIENT database reason (`busy`):
+        nothing was written (the ledger transaction rolled back), so the owner may retry the same
+        code until it expires. Any other refusal keeps the code consumed."""
+        with self._lock:
+            if p.expires_at > float(self.clock()) and len(self._by_digest) < MAX_OUTSTANDING_CODES:
+                self._by_digest.setdefault(p.code_digest, p)
+
 
 # ----------------------------------------------------------------------------- the service
 class LegRecovery:
@@ -205,6 +213,7 @@ class LegRecovery:
         leg = self.ledger.leg_for_recovery(actor, leg_id)       # owner check + existence
         why = self._reason(reason)
         digest_hint: str | None = None
+        pend: _Pending | None = None
         try:
             pend = self._codes.take(int(actor.id or 0), leg_id, code)
             d = self._diagnose(leg)
@@ -223,6 +232,9 @@ class LegRecovery:
             self._audit_refusal(actor, leg_id, code, exc.code, digest_hint)
             raise
         except LedgerRefused as exc:
+            if exc.code == "busy" and pend is not None:
+                self._codes.give_back(pend)      # transient: nothing written; retry is safe
+                log.warning("leg recovery confirmation hit a busy ledger; the code stays valid")
             self._audit_refusal(actor, leg_id, code, exc.code, digest_hint)
             raise RecoveryRefused(exc.code, str(exc)) from None
         return res

@@ -922,7 +922,10 @@ class OrderLedger:
 
         def go():
             with self._tx(user_id) as c:
-                row = c.execute(sa.text("SELECT 1 FROM orders WHERE id = :i"), {"i": oid}).first()
+                # lock order: order row BEFORE the audit-chain lock taken by the event trigger
+                # (the event's foreign key would otherwise take it AFTER, inverting the order)
+                row = c.execute(sa.text("SELECT 1 FROM orders WHERE id = :i FOR KEY SHARE"),
+                                {"i": oid}).first()
                 if row is None:
                     raise LedgerRefused("not_found", "order not found")
                 return self._event(c, kind="WALLET_RESULT", actor=Actor.user(user_id),
@@ -1536,6 +1539,13 @@ class OrderLedger:
                 leg = _legs.by_id(c, leg_id)
                 if leg is None:
                     return False
+                # Lock order (module docstring): the order row BEFORE the audit-chain lock that the
+                # event trigger takes. Without this the event's foreign-key check took the order
+                # row AFTER the chain lock, inverting the order against apply_leg_recovery (order
+                # FOR UPDATE -> chain): a deadlock under concurrent confirmations that surfaced as
+                # a retryable `busy` for the WINNING confirmation (CI, PR #112).
+                c.execute(sa.text("SELECT 1 FROM orders WHERE id = :i FOR KEY SHARE"),
+                          {"i": leg.order_id})
                 return self._event(
                     c, kind="LEG_RECOVERY_REFUSED", actor=actor, order_id=leg.order_id,
                     user_id=int(leg.user_id), request_key=request_key,

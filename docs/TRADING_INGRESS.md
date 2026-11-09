@@ -100,6 +100,30 @@ server {
 }
 ```
 
+### 4a. Template, rehearsal and verification (F-17)
+
+* `deploy/nginx/elysium-trading.conf.template` + `deploy/nginx/ingress-proxy.conf.template`:
+  single-host TLS vhost, catch-all that rejects unknown SNI and closes foreign Hosts (444), HTTP→HTTPS
+  redirect, HSTS, `server_tokens off`, no access log, 16 KiB bodies, header/body timeouts,
+  `limit_req` (10 r/s, burst 20) + `limit_conn` (20), only the application's route prefixes
+  proxied, `GET/HEAD/POST` only, and every forwarded header **set** (Host, `X-Forwarded-Proto
+  https`, `X-Forwarded-For $remote_addr`, `X-Forwarded-Host`/`X-Real-IP`/`Forwarded` cleared, the
+  secret from a root-owned include).
+* `scripts/verify_ingress_proxy.py`: remote checks (TLS, HSTS, version leak, HTTP redirect, foreign
+  Host, spoofed `X-Forwarded-*`, client-supplied secret header, 413 body limit, unknown paths,
+  methods, optional bounded rate-limit burst) and `--local` checks on the VPS (`nginx -T` contains
+  the overwriting directives and no `$proxy_add_x_forwarded_for` / `$http_x_forwarded_proto` /
+  `$http_host`, secret only via include, ingress port on loopback only, secret include and env file
+  root-owned and ≤ 0640). No secret value is printed (`nginx -T` output is redacted first).
+* CI job `ingress-proxy` renders the template on a **disposable** runner with a throwaway
+  certificate and secret, runs `nginx -t`, starts the REAL `IngressGuard`/`IngressServer` behind it
+  (`scripts/ci_ingress_upstream.py`) and runs the verifier with `--burst 60 --local`.
+
+**F-17 stays OPEN** until an operator runs the verifier (remote **and** `--local`) against the real
+VPS proxy and a human reviews `nginx -T` (redacted) against this section. Rotation of the secret
+still needs a service restart (documented in the template header). No production proxy change is
+made by this repository.
+
 ## 5. Lifecycle
 
 Startup order in `run_ui` (all failures are `SystemExit` **before** `getUpdates` starts):
