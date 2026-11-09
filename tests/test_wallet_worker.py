@@ -200,7 +200,7 @@ def test_the_workers_chain_handle_cannot_send_sign_or_call_arbitrary_methods():
     chain = BudgetedChain(FakeInner(), calls_per_min=10)
     methods = {n for n in dir(chain) if not n.startswith("_") and callable(getattr(chain, n))}
     reads = {"head", "transaction", "receipt", "tx_count", "block_transactions", "block_header",
-             "native_balance", "token_balance"}
+             "native_balance", "token_balance", "finalized_head"}
     assert methods == reads | {"take_cycle", "in_window"}      # exact allowlist: nothing else
     assert not hasattr(chain, "rpc") and not hasattr(chain, "call")
 

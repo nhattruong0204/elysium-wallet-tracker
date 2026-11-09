@@ -162,6 +162,9 @@ trading:
   # Confirmations before a receipt is treated as final (docs/TRADING_RECEIPTS.md). An assumption
   # about reorg depth, not a guarantee; fills are provisional until it is reached.
   # finality_confirmations: 12
+  # finality_require_finalized_tag: true   # F-04: final = depth AND every source's `finalized` tag
+  #                                        # (docs/TRADING_FINALITY.md); false is a reviewed downgrade
+  # corroboration_max_head_skew_blocks: 64 # Elysium makes 5-10 blocks/s; lowest head is the anchor
   # RPC corroboration (docs/TRADING_RPC_CORROBORATION.md, #95 F-15; replaces recovery_rpc_urls_env).
   # Receipts, finalization, fills, reorgs, automatic lock release and owner leg recovery
   # (docs/TRADING_LEG_RECOVERY.md) are recorded only on facts that >= 2 endpoints with distinct

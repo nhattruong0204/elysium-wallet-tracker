@@ -31,7 +31,7 @@ and owner recovery. There is no second implementation.
    (registrable domain, or an explicit label), each with declared and verified `chain_id == 99901`.
    Otherwise `sources_not_independent` / `needs_two_independent_sources`.
 2. **Heads**: every source answers; each head is <= 60 s old on the *block clock* (not the local
-   clock) and heads are within 3 blocks of each other (`stale_head`, `heads_diverged`).
+   clock) and heads are within `corroboration_max_head_skew_blocks` (64; Elysium makes 5–10 blocks/s) of each other (`stale_head`, `heads_diverge`).
 3. **Anchor**: the lowest head. Every source must return the **same header hash at the anchor**
    (`sources_disagree_on_chain` otherwise: fork or lying provider).
 4. **Same-state reads**: every fact is read at a block <= anchor, so a provider that is merely
@@ -157,3 +157,12 @@ the canonical evidence. Evidence is only valid for 300 s and only for the leg ve
 * `finality_confirmations` (12) now also gates automatic supersession by the reconciler (a
   consuming transaction must be that deep at the shared anchor); the depth itself is unchanged.
 * F-04, F-17, F-18 and #96 are not part of this change.
+
+## 12. Finality and fast blocks (F-04 / F-07 follow-up)
+
+* Finality is `Session.finality()`: ≥ `finality_confirmations` (12, unchanged) at the anchor AND,
+  by default, at or below the lowest `finalized` tag of every source (`docs/TRADING_FINALITY.md`).
+  Evidence records `finality_policy` and `finalized`; the ledger re-checks both.
+* Head skew tolerance is 64 blocks (was 3, which two honest providers on a 5–10 blocks/s chain
+  exceed all the time, making the system fail closed permanently).
+* Provider measurements and the independence inventory: `docs/TRADING_RPC_DIAGNOSTICS.md`.

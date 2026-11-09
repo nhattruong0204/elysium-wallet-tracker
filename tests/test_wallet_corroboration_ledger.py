@@ -666,3 +666,71 @@ def test_migration_0016_creates_the_guarded_append_only_table_and_round_trips(pg
     upgrade(pg_engine)
     assert raw(pg_engine, "SELECT count(*) FROM information_schema.tables WHERE table_schema = "
                           "'trading_private' AND table_name = 'chain_evidence'")[0][0] == 1
+
+
+# ====================================================================== finality (F-04) in the ledger and workers
+
+def test_the_ledger_refuses_to_finalize_above_the_corroborated_finalized_height(live, node):
+    oid, leg, ch = mined_buy(live, node)
+    row = leg_of(live, oid)
+    for bad in (dict(finalized=999), ):
+        ev = good(live, row, confirmations=50, **bad)
+        with pytest.raises(LedgerRefused, match="finalized height"):
+            apply(live, row, ev, finalize=True)
+    ev = good(live, row, confirmations=50)
+    ev.pop("finalized")
+    with pytest.raises(LedgerRefused, match="finalized height"):
+        apply(live, row, ev, finalize=True)
+    ev = good(live, row, confirmations=50)
+    ev["finality_policy"] = "depth"                          # a caller cannot opt out by itself
+    with pytest.raises(LedgerRefused, match="finalized height"):
+        apply(live, row, ev, finalize=True)
+    ev = good(live, row, confirmations=50, finalized=2001)   # finalized above the anchor: malformed
+    with pytest.raises(LedgerRefused, match="finalized height"):
+        apply(live, row, ev, finalize=True)
+    assert apply(live, row, good(live, row, confirmations=50, finalized=1000), finalize=True) is True
+
+
+def test_a_provisional_inclusion_needs_no_finalized_height(live, node):
+    oid, leg, ch = mined_buy(live, node)
+    row = leg_of(live, oid)
+    ev = good(live, row)
+    ev.pop("finalized")
+    assert apply(live, row, ev) is True and leg_of(live, oid)["finalized_at"] is None
+
+
+def test_a_supersession_needs_the_consuming_tx_at_or_below_the_finalized_height(live, node):
+    oid, plan, leg, _ = errored(live, node)
+    ev = fake_evidence(live.clock, leg, "superseded", finalized=1049, **SUPERSEDED_FACTS)
+    with pytest.raises(LedgerRefused, match="finalized height"):
+        live.resolve_leg(leg["id"], expected_version=leg["version"], to_state="superseded",
+                         resolution="x", nonce=5, final_tx_hash=H2, evidence=ev)
+    assert leg_of(live, oid)["state"] == "ambiguous"
+
+
+def test_the_receipt_worker_keeps_an_inclusion_provisional_until_the_parent_chain_finalizes(live, node):
+    oid, leg, ch = mined_buy(live, node, head=1100)          # 101 confirmations
+    r = rr(live, ch)
+    for p in ch.providers:
+        p.finalized_lag = 150                                # finalized height 950 < block 1000
+    assert r.run_once().counts == {"provisional_included": 1}
+    assert leg_of(live, oid)["finalized_at"] is None
+    assert r.run_once().counts == {"provisional_unchanged": 1}
+    ch.providers[1].finalized_lag = None                     # one node loses the tag: still not final
+    ch.providers[0].finalized_lag = 0
+    assert r.run_once().counts == {"provisional_unchanged": 1}
+    ch.providers[1].finalized_lag = 50                       # finalized height 1050 >= 1000
+    assert r.run_once().counts == {"final_included": 1}
+    final = [e for e in ev_rows(live, oid) if e["kind"] == "final"][0]["evidence"]
+    assert final["finality_policy"] == "finalized_tag+depth" and final["finalized"]["number"] == 1050
+
+
+def test_automatic_supersession_waits_for_the_finalized_tag(live, node):
+    oid, leg = stuck_hash(live, node)
+    node.add(leg, H2, nonce=5, mined=1095, to=leg["wallet"], input="0x", value="0x0")
+    node.head_n = 1120
+    node.finalized_lag = 40                                  # finalized 1080 < consuming block 1095
+    assert rec(live, node).run_once().counts == {"unresolved": 1}
+    assert leg_of(live, oid)["state"] == "hash_reported"
+    node.finalized_lag = 0
+    assert rec(live, node).run_once().counts == {"superseded": 1}

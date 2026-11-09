@@ -126,7 +126,7 @@ class ReceiptReconciler:
             log.error("leg %s receipt does not match the request: %s", leg["id"], problems)
             return "invalid"
         number, block_hash = inc.block_number, inc.block_hash
-        final = inc.confirmations >= self.finality
+        final = sess.is_final(number, inc.confirmations)      # depth AND finalized tag (F-04)
         status = 1 if receipt["status"] == "0x1" else 0
         state = "included" if status else "reverted"
         used, cost = gas_cost(tx, receipt)
@@ -176,7 +176,7 @@ class ReceiptReconciler:
                 # the old provisional one is rolled back by the ledger)
                 return self._record(leg, tx_hash, inc, sess, mark)
             assert inc.confirmations is not None
-            if inc.confirmations < self.finality:
+            if not sess.is_final(inc.block_number or number, inc.confirmations):
                 return "provisional_unchanged"
             # canonical and deep enough: finalize. The fill is re-derived (strictly) and keyed by
             # block hash, so an existing provisional row is promoted, never duplicated or rewritten.

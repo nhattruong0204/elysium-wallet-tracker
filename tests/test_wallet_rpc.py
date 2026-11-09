@@ -265,3 +265,20 @@ def test_metrics_count_outcomes_and_latency_buckets():
         rpc.gas_price()
     m = rpc.metrics()["methods"]["eth_gasPrice"]
     assert m["ok"] == 3 and sum(m["buckets"]) == 3
+
+
+# ------------------------------------------------------------------ F-04: the finalized tag
+
+def test_finalized_head_reads_the_tag_and_treats_an_unsupported_tag_as_absent():
+    blk = {"number": "0x10", "hash": H, "timestamp": hex(int(NOW) - 300)}
+    s = Script(eth_getBlockByNumber=ok(blk))
+    h = make(s).finalized_head()
+    assert (h.number, h.hash) == (16, H)
+    assert s.sent[-1]["params"] == ["finalized", False]
+    s = Script(eth_getBlockByNumber=ok({"error": {"code": -32602, "message": "unknown tag"}}))
+    assert make(s).finalized_head() is None
+    s = Script(eth_getBlockByNumber=ok(None))
+    assert make(s).finalized_head() is None
+    s = Script(eth_getBlockByNumber=ok({"number": "0x10", "hash": "0x12"}))
+    with pytest.raises(RpcUnavailable):
+        make(s).finalized_head()

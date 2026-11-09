@@ -317,6 +317,22 @@ class ExecutionRpc:
             raise RpcUnavailable("execution RPC head is stale or in the future")
         return h
 
+    def finalized_head(self) -> Head | None:
+        """The block the node reports under the `finalized` tag (#95 F-04), or None if the node
+        does not serve the tag. On an Arbitrum Orbit chain this is derived from the parent chain
+        (batch posted and the parent block final), unlike `latest`, which is only the sequencer's
+        soft confirmation. Never trusted alone: the corroboration layer takes the LOWEST
+        finalized height over every source and caps it at the shared anchor."""
+        try:
+            b = self.rpc("eth_getBlockByNumber", ["finalized", False])
+        except RpcError:
+            return None                               # tag not supported by this node
+        if b is None:
+            return None
+        if not isinstance(b, dict) or not isinstance(b.get("hash"), str) or not HASH.fullmatch(b["hash"]):
+            raise RpcUnavailable("malformed finalized block")
+        return Head(_qty(b.get("number")), b["hash"], _qty(b.get("timestamp")))
+
     def call(self, to: str, data: str, block: str, sender: str | None = None) -> str:
         tx: dict[str, str] = {"to": to, "data": data}
         if sender:

@@ -153,6 +153,7 @@ class ChainSource(Protocol):
     def tx_count(self, address: str, tag: str) -> int: ...
     def block_transactions(self, number: int) -> list[dict]: ...
     def block_header(self, number: int) -> dict | None: ...
+    def finalized_head(self) -> Any: ...
     def native_balance(self, address: str, block: int) -> int: ...
     def token_balance(self, token: str, address: str, block: int) -> int: ...
 
@@ -216,6 +217,11 @@ class BudgetedChain:
 
     def native_balance(self, address, block):
         return self._do("native_balance", address, block)
+
+    def finalized_head(self):
+        if not hasattr(self._inner, "finalized_head"):
+            return None                         # a source without the tag: finality fails closed
+        return self._do("finalized_head")
 
     def token_balance(self, token, address, block):
         return self._do("token_balance", token, address, block)
@@ -292,7 +298,8 @@ class WorkerSupervisor:
                  clock: Callable[[], float] = time.time,
                  mono: Callable[[], float] = time.monotonic,
                  leg_reconciler: Any = None, receipt_reconciler: Any = None,
-                 lower_priority: bool = True, corroboration_calls: int = 120) -> None:
+                 lower_priority: bool = True, corroboration_calls: int = 120,
+                 require_finalized_tag: bool = True, max_head_skew: int = 64) -> None:
         self.ledger, self.chain, self.lease = ledger, chain, lease
         self.interval_s, self.idle_interval_s = interval_s, idle_interval_s
         self.max_backoff_s, self.batch = max_backoff_s, batch
@@ -308,7 +315,8 @@ class WorkerSupervisor:
         # ONE corroborator (stateless) shared by both reconcilers: there is a single verification
         # implementation. With fewer than two sources it fails closed (records nothing).
         self.corroborator = Corroborator(members, finality=finality_confirmations, clock=clock,
-                                         mono=mono)
+                                         mono=mono, max_skew=max_head_skew,
+                                         require_finalized_tag=require_finalized_tag)
         self.legs = leg_reconciler or LegReconciler(
             ledger, self.corroborator, clock=clock, rpc_budget=corroboration_calls,
             rpc_seconds=pass_budget_s)
@@ -589,4 +597,6 @@ def build_worker(cfg: Config, ledger: Any, *, stop: threading.Event | None = Non
         pass_budget_s=t.worker_pass_budget_s, standby_retry_s=t.worker_standby_retry_s,
         external_stop=stop, rpc_info=lambda: {"breaker": rpc_ref.breaker.state,
                                               "sources": len(chain.sources)},
-        corroboration_calls=t.corroboration_calls_per_pass)
+        corroboration_calls=t.corroboration_calls_per_pass,
+        require_finalized_tag=t.finality_require_finalized_tag,
+        max_head_skew=t.corroboration_max_head_skew_blocks)

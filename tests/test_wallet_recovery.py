@@ -112,7 +112,8 @@ class World:
 class Src:
     """One RPC provider's view. `host` is distinct per provider, like ExecutionRpc.host."""
 
-    READS = {"head", "transaction", "receipt", "block_header", "block_transactions", "tx_count"}
+    READS = {"head", "transaction", "receipt", "block_header", "block_transactions", "tx_count",
+             "finalized_head"}
     chain_id = 99901
     chain_verified = True
 
@@ -141,6 +142,13 @@ class Src:
     def head(self) -> Head:
         self._go("head")
         return Head(self.n, self._bh(self.n), int(self.clock()) - 2 - self.age)
+
+    def finalized_head(self):
+        self._go("finalized_head")
+        if getattr(self.w, "no_finalized_tag", False):
+            return None
+        n = max(0, self.n - getattr(self.w, "finalized_lag", 0))
+        return Head(n, self._bh(n), int(self.clock()) - 2 - self.age)
 
     def block_header(self, n: int):
         self._go("block_header")
@@ -462,7 +470,7 @@ def test_stale_provider_head_blocks_every_correction(live, node, svc, srcs, worl
 def test_a_provider_lagging_beyond_the_skew_blocks_but_within_it_anchors_on_the_lowest(
         live, node, svc, srcs, world):
     oid, leg = provable_superseded(live, node, world)
-    srcs[1].lag = 5
+    srcs[1].lag = 65                                 # beyond MAX_HEAD_SKEW (64 blocks)
     d = svc.diagnose(OWNER_ACTOR, leg["id"])
     assert d.proposal is None and "heads_diverge" in d.evidence["problems"]
     srcs[1].lag = 2
@@ -1222,3 +1230,21 @@ def test_the_recovery_evidence_passes_the_shared_ledger_gate_with_operators(
     assert d.proposal and d.corroborated is True
     assert sorted(s["operator"] for s in d.evidence["sources"]) == ["rpc-a.example", "rpc-b.example"]
     assert "rpc-a.example" in render_diagnosis(d)
+
+
+# ------------------------------------------------------------------ 14. F-04: finality is more than depth
+def test_owner_recovery_never_proposes_supersession_before_the_finalized_tag(
+        live, node, world, svc, clock, owner_engine):
+    oid, leg = provable_superseded(live, node, world)        # consuming tx at 1050, 51 deep
+    world.finalized_lag = 60                                 # finalized height 1040 < 1050
+    d = svc.diagnose(OWNER_ACTOR, leg["id"])
+    assert d.proposal is None and d.reason == "replacement_not_final_yet"
+    assert "finalized height" in d.detail
+    p = svc.prepare(OWNER_ACTOR, leg["id"])
+    assert p.code is None and locked_legs(owner_engine) == 1
+    world.no_finalized_tag = True                            # a node without the tag: still nothing
+    world.finalized_lag = 0
+    assert svc.diagnose(OWNER_ACTOR, leg["id"]).proposal is None
+    world.no_finalized_tag = False
+    d = svc.diagnose(OWNER_ACTOR, leg["id"])
+    assert d.proposal == "superseded" and d.evidence["finalized"] == {"number": HEAD}

@@ -302,6 +302,17 @@ class TradingConfig:
     # An ASSUMPTION about this chain's reorg depth, not a protocol guarantee: until it is reached a
     # fill is provisional and a reorg can roll it back. Raise it if reorgs deeper than this occur.
     finality_confirmations: int = 12
+    # F-04: Elysium is an Arbitrum Orbit rollup with a single sequencer and ~100-200 ms blocks, so 12
+    # confirmations are ~2 s of the sequencer's own promise, not finality. When true (default) an
+    # inclusion, a supersession or an owner recovery is final only if, IN ADDITION to the depth
+    # above, the block is at or below the `finalized` tag that EVERY corroboration source reports
+    # (derived from the parent chain). A node without the tag => nothing becomes final (fail
+    # closed: fills stay provisional, locks stay held). Setting false is a conscious downgrade
+    # that the security review must accept (docs/TRADING_FINALITY.md).
+    finality_require_finalized_tag: bool = True
+    # Largest head difference (blocks) between corroboration sources; the lowest head is the anchor
+    # so this only bounds freshness. Sized for ~5-10 blocks/s (F-07).
+    corroboration_max_head_skew_blocks: int = 64
     # Supervised reconciliation worker (Stage C2 #95 F-01). It only ever starts when
     # `wallet_execution_enabled` is true. All bounds protect the shared VPS: the worker is one
     # low-priority thread, sequential (one RPC call at a time), and rate-limited.
@@ -340,6 +351,11 @@ class TradingConfig:
         if (type(self.finality_confirmations) is not int
                 or not 1 <= self.finality_confirmations <= 256):
             raise ValueError("trading.finality_confirmations must be an integer in 1..256")
+        if type(self.finality_require_finalized_tag) is not bool:
+            raise ValueError("trading.finality_require_finalized_tag must be a boolean")
+        if (type(self.corroboration_max_head_skew_blocks) is not int
+                or not 1 <= self.corroboration_max_head_skew_blocks <= 10_000):
+            raise ValueError("trading.corroboration_max_head_skew_blocks must be an integer in 1..10000")
         for fname, lo, hi in (("worker_interval_s", 1, 3600), ("worker_idle_interval_s", 1, 3600),
                               ("worker_max_backoff_s", 1, 3600), ("worker_pass_budget_s", 1, 600),
                               ("worker_standby_retry_s", 1, 3600)):

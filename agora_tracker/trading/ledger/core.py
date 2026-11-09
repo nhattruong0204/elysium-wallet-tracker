@@ -236,11 +236,15 @@ def _check_reason(reason: str | None) -> str | None:
 
 class OrderLedger:
     def __init__(self, engine: Engine, *, owner_ids: frozenset[int] | set[int] = frozenset(),
-                 clock: Callable[[], float] = time.time, chain_id: int = CHAIN):
+                 clock: Callable[[], float] = time.time, chain_id: int = CHAIN,
+                 require_finalized_tag: bool = True):
         self.engine = engine
         self.owner_ids = frozenset(owner_ids)
         self.clock = clock
         self.chain_id = chain_id
+        # F-04: finalization and supersession additionally need the block at or below the
+        # corroborated `finalized` height recorded in the evidence (see TRADING_FINALITY.md).
+        self.require_finalized_tag = bool(require_finalized_tag)
 
     # ------------------------------------------------------------------ plumbing
 
@@ -1090,8 +1094,24 @@ class OrderLedger:
                                 "evidence does not name this leg, its version and the outcome")
         return raw, facts
 
+    @staticmethod
+    def _check_finalized(evidence: dict | None, block: Any, required: bool) -> None:
+        """F-04: `block` must be at or below the corroborated `finalized` height the evidence
+        records (and that height at or below the shared anchor)."""
+        if not required:
+            return
+        ev = evidence if isinstance(evidence, dict) else {}
+        fin, anchor = ev.get("finalized"), ev.get("anchor")
+        if (ev.get("finality_policy") != "finalized_tag+depth" or not isinstance(fin, dict)
+                or type(fin.get("number")) is not int or type(block) is not int
+                or not isinstance(anchor, dict) or type(anchor.get("number")) is not int
+                or fin["number"] > anchor["number"] or block > fin["number"]):
+            raise LedgerRefused("evidence_required",
+                                "the block is not at or below the corroborated finalized height")
+
     @classmethod
-    def _check_terminal_facts(cls, outcome: str, facts: dict, finality: int) -> None:
+    def _check_terminal_facts(cls, outcome: str, facts: dict, finality: int,
+                              evidence: dict | None = None, require_tag: bool = False) -> None:
         """What makes a lock-releasing verdict provable (monotone facts only)."""
         def bad(why: str) -> NoReturn:
             raise LedgerRefused("evidence_required", why)
@@ -1104,6 +1124,7 @@ class OrderLedger:
                     or ct["confirmations"] < max(1, finality)
                     or not isinstance(ct.get("mismatches"), list) or not ct["mismatches"]):
                 bad("a supersession needs a different transaction, final on the canonical chain")
+            cls._check_finalized(evidence, ct["block_number"], require_tag)
         elif outcome == "abandoned":
             if facts.get("wallet_queue_empty") is not True:
                 bad("an abandonment needs a corroborated empty wallet queue")
@@ -1216,7 +1237,8 @@ class OrderLedger:
             raw, facts = self._gate(evidence, leg_id=leg_id, version=expected_version,
                                     outcome=to_state, now=now)
             if to_state in self.TERMINAL_STATES:
-                self._check_terminal_facts(to_state, facts, int(evidence["finality"]))  # type: ignore[index]
+                self._check_terminal_facts(to_state, facts, int(evidence["finality"]),  # type: ignore[index]
+                                           evidence, self.require_finalized_tag)
             elif facts.get("final_tx_hash") != final_tx_hash:
                 raise LedgerRefused("evidence_required",
                                     "evidence does not name the recorded transaction")
@@ -1344,7 +1366,7 @@ class OrderLedger:
 
     @classmethod
     def _check_recovery_evidence(cls, evidence: dict, *, leg_id: int, action: str,
-                                 version: int, now: float) -> str:
+                                 version: int, now: float, require_tag: bool = True) -> str:
         """Structural gate: no code path may apply a correction without evidence from at least
         two distinct sources that names this exact leg version and action. (Whether the evidence
         is TRUE is established by wallet/recovery.py before it ever calls here.)"""
@@ -1386,7 +1408,8 @@ class OrderLedger:
                     or ts <= dl + margin):
                 raise LedgerRefused("evidence_required",
                                     "an abandonment needs a passed swap deadline plus margin")
-        cls._check_terminal_facts(action, facts, int(evidence["finality"]))   # shared lock-release rule
+        cls._check_terminal_facts(action, facts, int(evidence["finality"]),   # shared lock-release rule
+                                  evidence, require_tag)
         return raw
 
     def apply_leg_recovery(self, actor: Actor, leg_id: int, *, expected_version: int, action: str,
@@ -1411,7 +1434,8 @@ class OrderLedger:
             raise LedgerRefused("invalid_request", "invalid leg reference")
         now = float(self.clock())
         raw = self._check_recovery_evidence(evidence, leg_id=leg_id, action=action,
-                                            version=expected_version, now=now)
+                                            version=expected_version, now=now,
+                                            require_tag=self.require_finalized_tag)
         digest = self.evidence_digest(evidence)
         system = Actor.system()
 
@@ -1604,6 +1628,8 @@ class OrderLedger:
         if finalize and facts["confirmations"] < int(evidence["finality"]):
             raise LedgerRefused("evidence_required",
                                 "the corroborated confirmations do not reach the finality depth")
+        if finalize:
+            self._check_finalized(evidence, facts["block_number"], self.require_finalized_tag)
         method_ok: bool | None = None
         if fill is not None and fill.verdict == "verified":
             ef = evidence.get("fill")

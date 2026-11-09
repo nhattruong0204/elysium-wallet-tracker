@@ -59,7 +59,7 @@ All of the following, every time, for every correction:
    layer in `docs/TRADING_RPC_CORROBORATION.md`). Fewer, or two hosts of one operator → diagnose
    only. The evidence is also re-checked by the ledger (`check_chain_evidence`) before any write.
 2. **Every** source answers (one outage = no correction), has a head ≤ 60 s old on its own block
-   clock, and the heads are within 3 blocks.
+   clock, and the heads are within 64 blocks (`corroboration_max_head_skew_blocks`; the lowest head is the anchor).
 3. At the **anchor block** (the lowest head) all sources return the **identical header hash** — same
    canonical chain. A fork or disagreement blocks.
 4. Facts are re-read from **each** source and must be identical: the wallet's nonce at the anchor,
