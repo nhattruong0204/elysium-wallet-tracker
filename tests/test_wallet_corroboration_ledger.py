@@ -185,6 +185,16 @@ def test_a_verified_fill_needs_source_agreement_of_its_inputs_in_the_evidence(li
     assert live.get_fills(U1, oid) == []
 
 
+def test_the_fill_record_itself_must_carry_method_agreement_even_if_the_evidence_claims_it(live, node):
+    oid, leg, ch = mined_buy(live, node)
+    row = leg_of(live, oid)
+    liar = FillRecord("verified", "buy", TOKEN, AMT, T, GAS, "x", None, method_agreement=False)
+    ev = good(live, row, fill=verified_fill())          # evidence says: methods agree, inputs agreed
+    with pytest.raises(LedgerRefused, match="separate properties"):
+        apply(live, row, ev, fill=liar)
+    assert live.get_fills(U1, oid) == []
+
+
 def test_a_verified_fill_points_at_the_evidence_that_certified_it(live, node, owner_engine):
     oid, leg, ch = mined_buy(live, node)
     row = leg_of(live, oid)
