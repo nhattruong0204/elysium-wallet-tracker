@@ -86,7 +86,7 @@ def test_buy_card_layout_links_and_buttons():
     assert "<b>Seen</b>: 6d: " in bar and "9.97K HYPE" not in text
     assert f"<code>{TOKEN}</code>" in text and "2m ago" in text
     assert [[b["text"] for b in r] for r in kb["inline_keyboard"]] == [
-        ["⚡ Buy / Sell on BasedBot"], ["⚡ Rabby: BLOB", "⚡ OKX: BLOB"],
+        ["⚡ Quick Buy / Sell · Maestro"], ["⚡ Rabby: BLOB", "⚡ OKX: BLOB"],
         ["🛒 Agora: BLOB", "BOXA: BLOB"], ["Kleos: BLOB", "ElysPump: BLOB"]]
     assert all(b["url"].startswith("https://") for r in kb["inline_keyboard"] for b in r)
     assert cards.preview_url(L, info) == "https://www.agoradex.app/api/img?src=x"
