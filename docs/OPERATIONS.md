@@ -349,7 +349,8 @@ never count as an independent buyer in the strong signal.
 
 - **Rule** (`IntelConfig.bot_*`, defaults in code): in the last 7 days the wallet sent at least
   100 transactions and at least 15% of the gaps between consecutive transactions were under
-  2 seconds. Re-judged every 15 minutes from our own `trades` table, so a wallet that slows down
+  2 seconds. Since 2026-11-11 it must also be transfer-only: at most 5% of its legs decode as a
+  real BUY/SELL (`bot_max_trade_share`), so a fast wallet that really trades keeps alerting. Re-judged every 15 minutes from our own `trades` table, so a wallet that slows down
   alerts again once the fast history ages out. The verdict is logged whenever the set changes
   (`automated-wallet filter: N wallet(s) not alerted: ...`).
 - **Unchanged:** indexing, positions, PnL, the website, cluster signals in the database, the
@@ -364,3 +365,18 @@ never count as an independent buyer in the strong signal.
 Reference case: `0xfffff389…f7d9` (744 transactions, 358 tokens, 26% of gaps under 2 s) trades
 through the private contract `0xf045fae5…296e` together with two sibling `0xffff…` wallets that
 buy on its behalf; none of it decodes as BUY/SELL because the buys are paid by another address.
+
+## Blocked wallets (operator block list, 2026-11-11)
+
+`TRACKING_BLOCKED_WALLETS` on the tracker service (`docker-compose.yml`; also
+`tracking.blocked_wallets`) removes exact addresses from tracking altogether: they leave the
+scan set whatever list they are on (current top, former top, manual, Telegram), get no trade,
+transfer or leaderboard alerts, and are marked `excluded` / `blocked` in `wallet_enrollment` so
+reports show why. Nothing stored is deleted; from then on no new trades, positions or PnL are
+recorded for them, and the website shows their history only.
+
+Blocked on 2026-11-11 (owner decision, the five wallets the automated-wallet dry run flagged):
+`0xf70da978…dbef`, `0xf8fe0956…24e6`, `0x00c18c85…592e`, `0x75d2ae08…4dfb08`, `0xfffff389…f7d9`.
+
+To reinstate one: delete its line, recreate the tracker (`action=tracker`). It is re-enrolled on
+the next leaderboard refresh; the blocks it missed are a recorded coverage gap, not back-filled.

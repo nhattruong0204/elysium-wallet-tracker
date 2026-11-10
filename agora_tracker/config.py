@@ -237,6 +237,12 @@ class TrackingConfig:
     # Wallet count above which a warning is raised (log + health). It is a *signal*, never a
     # cap: nothing is dropped. Set it from measured capacity (scripts/scan_bench.py).
     capacity_warn: int = 1000
+    # Wallets the operator removed from tracking for good (exact addresses). They are dropped
+    # from the scan set whatever list they appear on (leaderboard, history, manual, Telegram),
+    # marked excluded ('blocked') in the registry, and get no leaderboard alerts. Stored history
+    # is kept. Also read from TRACKING_BLOCKED_WALLETS on the tracker service; taking an address
+    # off the list reinstates it on the next leaderboard refresh.
+    blocked_wallets: list[str] = field(default_factory=list)
     # Scanner lag (blocks behind head) that counts as "falling behind" in the health output.
     lag_warn_blocks: int = 3000
 
@@ -264,6 +270,9 @@ class IntelConfig:
     bot_min_txs: int = 100
     bot_fast_gap_s: float = 2.0
     bot_fast_share: float = 0.15
+    # ... and almost none of its legs decode as a real BUY/SELL (transfer-only machines: launch
+    # snipers paid by another address, volume loops). A fast wallet that really trades is kept.
+    bot_max_trade_share: float = 0.05
     bot_refresh_s: float = 900.0
     # forward measurement of the strong signal (no orders are ever placed)
     paper_enabled: bool = True
@@ -395,6 +404,9 @@ def load_config(path: str | Path) -> Config:
     if os.environ.get("ALERTS_BOT_FILTER", "").strip().lower() in ("off", "0", "false", "no"):
         intel.bot_filter = False
     tracking = TrackingConfig(**(raw.get("tracking") or {}))
+    env_blocked = os.environ.get("TRACKING_BLOCKED_WALLETS", "").replace(",", " ").split()
+    tracking.blocked_wallets = sorted({_norm_addr(a) for a in [*tracking.blocked_wallets,
+                                                               *env_blocked]})
     scoring = ScoringConfig(**(raw.get("scoring") or {}))
     intel.wrapped_native = _norm_addr(intel.wrapped_native)
     intel.dd_factories = [_norm_addr(a) for a in intel.dd_factories]

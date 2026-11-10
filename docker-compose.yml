@@ -56,6 +56,14 @@ services:
       # Bridged USDC on Elysium mainnet (HyperEVM USDC 0xb88339cb7199b77e23db6e890353e22632ba630f
       # via the Orbit gateway); evidence in docs/OPERATIONS.md "Telegram-only token mute".
       ALERTS_TELEGRAM_MUTE_TOKENS: "0xb47c4c8f73f009cc0c0d3f92b388d13e293f0b65"
+      # Wallets removed from tracking by the operator (2026-11-10: machines; see
+      # docs/OPERATIONS.md "Blocked wallets"). History is kept; delete an address to reinstate.
+      TRACKING_BLOCKED_WALLETS: >-
+        0xf70da97812cb96acdf810712aa562db8dfa3dbef
+        0xf8fe0956cc3e5c3df0da1085bf40b397318624e6
+        0x00c18c85bf479ba2768d9faa7c02a39f2617592e
+        0x75d2ae0861661ef7479e9229a3e3e2cdd14dfb08
+        0xfffff389f8b090073efb9ac908323b2d5895f7d9
     volumes:
       - ./config:/config:ro        # config.yaml + watchlist.txt
       - tracker-data:/data         # v0.1/v0.2 SQLite file lives here (for --import-sqlite)

@@ -185,6 +185,22 @@ def enrolled_addresses(c: Connection, chain_id: int) -> set[str]:
         e.c.chain_id == chain_id, e.c.status == "active"))}
 
 
+def sync_blocked(c: Connection, chain_id: int, blocked: set[str]) -> tuple[int, int]:
+    """Operator block list (TrackingConfig.blocked_wallets): listed wallets are 'excluded' with
+    reason 'blocked' (whatever they were before); wallets that left the list are reinstated.
+    History rows are never touched. Returns (blocked, reinstated)."""
+    p = {"c": chain_id, "b": sorted(blocked)}
+    ex = c.execute(sa.text(
+        "UPDATE wallet_enrollment SET status = 'excluded', excluded_reason = 'blocked' "
+        "WHERE chain_id = :c AND address = ANY(:b) "
+        "AND excluded_reason IS DISTINCT FROM 'blocked'"), p).rowcount if blocked else 0
+    back = c.execute(sa.text(
+        "UPDATE wallet_enrollment SET status = 'active', excluded_reason = NULL "
+        "WHERE chain_id = :c AND excluded_reason = 'blocked' AND NOT (address = ANY(:b))"),
+        p).rowcount
+    return ex, back
+
+
 def sync_exclusions(c: Connection, chain_id: int, enabled: bool = True) -> tuple[int, int]:
     """Policy: contracts (pools, routers, vaults) are not wallets. They stay in the registry,
     marked 'excluded' with the reason, so the report counts them and nothing is silently
