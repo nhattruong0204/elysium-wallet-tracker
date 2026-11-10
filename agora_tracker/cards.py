@@ -87,36 +87,41 @@ def ago(ts: int | None, now: float | None = None) -> str | None:
     return f"{d}s"
 
 
-# BasedBot (external trading bot, live on Elysium mainnet since 2026-11-09). The button only OPENS
-# its token page: the tracker never trades, signs, or learns what the user did there. Host and
-# chain slug are fixed in code (never taken from config, alert payloads or token metadata).
-BASEDBOT_TOKEN_URL = "https://basedbot.app/token/elysium/"
-BASEDBOT_CHAIN_ID = 99901
-BASEDBOT_LABEL = "⚡ Buy / Sell on BasedBot"
+# Maestro's official @Maestro bot supports Elysium; direct token deep-link behaviour on Elysium
+# needs a real Telegram smoke test. The tracker passes only a public contract address: it never
+# trades, signs, holds wallet keys or learns the user's actions. Maestro can auto-buy on pasted
+# tokens depending on user settings; this link is NOT guaranteed to be view-only.
+MAESTRO_TOKEN_URL = "https://t.me/Maestro?start="
+MAESTRO_CHAIN_ID = 99901
+MAESTRO_LABEL = "⚡ Quick Buy / Sell · Maestro"
 _TOKEN_ADDRESS = re.compile(r"0x[0-9a-f]{40}")
 
 
 class Links:
-    def __init__(self, cfg: LinksConfig, chain_id: int = BASEDBOT_CHAIN_ID):
+    def __init__(self, cfg: LinksConfig, chain_id: int = MAESTRO_CHAIN_ID):
         self.c = cfg
         self.chain_id = chain_id
-        # operator off-switch for the tracker container: BASEDBOT_BUTTON=off (no config change)
-        self.basedbot_on = os.environ.get("BASEDBOT_BUTTON", "on").strip().lower() not in (
+        # Operator off-switch: MAESTRO_BUTTON=off; disable unverified deep links via
+        # MAESTRO_DEEPLINK=off to open @Maestro without a token start payload.
+        self.maestro_on = os.environ.get("MAESTRO_BUTTON", "on").strip().lower() not in (
+            "off", "0", "false", "no")
+        # Off = open @Maestro chat without a start payload; the user can paste the CA.
+        self.maestro_deeplink = os.environ.get("MAESTRO_DEEPLINK", "on").strip().lower() not in (
             "off", "0", "false", "no")
 
-    def basedbot_token(self, t: object) -> str | None:
-        """BasedBot's page for one Elysium token, or None (then no button is shown). Only an
-        exact 20-byte contract address on chain 99901 qualifies; never a symbol or a name."""
-        if not self.basedbot_on or self.chain_id != BASEDBOT_CHAIN_ID or not isinstance(t, str):
+    def maestro_token(self, t: object) -> str | None:
+        """Open official @Maestro with a token start payload (or generic chat fallback).
+        Only a public 20-byte Elysium token contract may be passed, never a symbol."""
+        if not self.maestro_on or self.chain_id != MAESTRO_CHAIN_ID or not isinstance(t, str):
             return None
         addr = t.strip().lower()
         if not _TOKEN_ADDRESS.fullmatch(addr) or int(addr, 16) == 0:
             return None
-        return BASEDBOT_TOKEN_URL + addr
+        return MAESTRO_TOKEN_URL + addr if self.maestro_deeplink else "https://t.me/Maestro"
 
-    def basedbot_row(self, t: object) -> list[dict]:
-        url = self.basedbot_token(t)
-        return [{"text": BASEDBOT_LABEL, "url": url}] if url else []
+    def maestro_row(self, t: object) -> list[dict]:
+        url = self.maestro_token(t)
+        return [{"text": MAESTRO_LABEL, "url": url}] if url else []
 
     def tx(self, h: str) -> str:
         return f"{self.c.explorer}/tx/{h}"
@@ -337,7 +342,7 @@ def keyboard(L: Links, token: str, symbol: str, info: TokenInfo | None,
              tx: str | None, wallet: str | None = None, dd: Any = None,
              force_unknown: bool = False) -> dict:
     s = (symbol or token[:6])[:12]
-    quick = [r for r in (L.basedbot_row(token),) if r]        # first row: one tap to BasedBot
+    quick = [r for r in (L.maestro_row(token),) if r]        # first row: one tap to Maestro
     if force_unknown or unknown_venue(info, dd):
         return {"inline_keyboard": quick + _venue_rows(L, token, s, tx, dd)}
     rows = quick + [r for r in (L.wallet_buttons(token, s),) if r]
