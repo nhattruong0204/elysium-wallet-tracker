@@ -55,6 +55,8 @@ class Engine:
         self._tg_muted = set(alert_cfg.telegram_mute_tokens)   # Telegram-only (signals kept)
         self._bundles_at = float("-inf")
         self._bundles: set[str] = set()
+        self._bots_at = float("-inf")
+        self._bots: set[str] = set()
         self.chain_cfg, self.cfg = chain_cfg, alert_cfg
         self.labels = labels
         self.value_unit = value_unit
@@ -171,6 +173,7 @@ class Engine:
         checkpoint in ONE transaction. Returns the number of new trades."""
         min_wei = int(Decimal(str(self.cfg.min_trade_hype)) * WEI)
         new = 0
+        bots = self.automated_wallets()
         # counterparty of each (tx, token, wallet) transfer leg, for "sent to 0x…" lines
         counter: dict[tuple[str, str, str], tuple[int, str]] = {}
         for tr in result.transfers:
@@ -204,7 +207,8 @@ class Engine:
                     extra["counterparty"] = cp[1]
                 if not self._should_alert(ev, min_wei):
                     continue
-                if ev.token not in self._tg_muted:    # the reported token, never the quote asset
+                if ev.token not in self._tg_muted and ev.wallet not in bots:
+                    # (_tg_muted: the reported token, never the quote asset)
                     payload = self._trade_payload(ev, notes, bts, extra)
                     text, _ = cards.render_trade(payload, self.links)
                     self.store.enqueue(c, f"ev:{ev.key}", text, payload=payload)
@@ -255,6 +259,28 @@ class Engine:
                 log.exception("bundle wallet refresh failed; keeping %d known", len(self._bundles))
         return self._bundles
 
+    def automated_wallets(self) -> set[str]:
+        """Wallets judged automated by their transaction timing (IntelConfig.bot_*); refreshed
+        every bot_refresh_s. Their trades are indexed as usual; only alerts treat them apart."""
+        ic = self.intel
+        if not ic.bot_filter:
+            return set()
+        if time.monotonic() - self._bots_at >= ic.bot_refresh_s:
+            self._bots_at = time.monotonic()         # also on failure: retry next interval
+            try:
+                found = self.store.automated_wallets(
+                    lookback_days=ic.bot_lookback_days, min_txs=ic.bot_min_txs,
+                    fast_gap_s=ic.bot_fast_gap_s, fast_share=ic.bot_fast_share)
+                if set(found) != self._bots:
+                    log.info("automated-wallet filter: %d wallet(s) not alerted: %s", len(found),
+                             ", ".join(f"{w} ({v['txs']} txs, {v['fast_share']:.0%} under "
+                                       f"{ic.bot_fast_gap_s:g}s, {v['tokens']} tokens)"
+                                       for w, v in sorted(found.items())) or "none")
+                self._bots = set(found)
+            except Exception:  # noqa: BLE001 - a filter must never block indexing
+                log.exception("automated-wallet refresh failed; keeping %d known", len(self._bots))
+        return self._bots
+
     def _maybe_cluster(self, c, ev: TradeEvent, bts: int, min_wei: int) -> None:
         window = self.cfg.cluster_window_s
         rows = self.store.recent_buyer_blocks(c, ev.token, bts - window, min_wei)
@@ -270,7 +296,8 @@ class Engine:
             self._raw_cluster(c, ev, bts, min_wei, rows, alert=not strong)
 
     def _score(self, rows: list[tuple[str, int, int, int]], window_s: int) -> dict:
-        n = count_independent([(w, blk) for w, _, blk, _ in rows], self.bundle_wallets())
+        n = count_independent([(w, blk) for w, _, blk, _ in rows],
+                              self.bundle_wallets() | self.automated_wallets())
         return {"independent": n, "n_raw": len(rows),
                 "tier": tier_label(n, len(rows), window_s, self.intel.independent_min)}
 
