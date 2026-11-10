@@ -322,3 +322,21 @@ prints the muted queue counts and tracker/ui health before and after.
 **Rollback:** action `tracker-rollback` (re-tags the previous image and recreates the tracker).
 Suppressed rows stay closed (they are not re-sent). To stop muting without a rollback, remove the
 address from `ALERTS_TELEGRAM_MUTE_TOKENS` and run `tracker` again.
+
+## BasedBot quick-trade button (2026-11-10)
+
+Token alerts (trade, cluster / strong signal, new DEX pool) carry a first-row button
+`⚡ Buy / Sell on BasedBot` that opens `https://basedbot.app/token/elysium/<token address>`.
+
+- It is a **link only**. The tracker does not trade, sign, hold keys, pass any user data or a
+  referral code, or learn what happens on BasedBot. Opening the page is not a trade.
+- The host and the `elysium` slug are constants in `agora_tracker/cards.py`; the address must be
+  one exact 20-byte contract on chain 99901, otherwise no button is added. Symbols are never used.
+- Not added to: the multi-token "new launchpad" alert, operational alerts, fallback-text alerts.
+- Off switch without a config change: `BASEDBOT_BUTTON=off` in the tracker's environment, then
+  recreate the tracker only. Alerts already sent keep their buttons.
+- Alerts are rendered when they are sent, so only the **tracker** needs the new image
+  (`action=tracker`); the Telegram menu (ui) shows the button after its next normal deploy.
+- BasedBot is a third-party custodial bot: the alert is intelligence, not a safety check.
+- Not verified from the build environment (site blocked there): the exact URL format and any
+  `t.me/based_eth_bot?start=` deep link. The owner confirms the link on a phone after deploy.
