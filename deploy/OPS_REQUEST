@@ -1,2 +1,3 @@
-action=wallet-probe
-requested=2026-11-10 owner: five flagged wallets vs one token, last hour (read-only)
+action=tracker
+commit=c1ae218 (PR #123, merged) + 952c297 (PR #125) on the deployed ops tree
+requested=2026-11-11 owner: "Deploy the new version" - block five wallets, transfer-only bot rule; tracker container only, no migration
