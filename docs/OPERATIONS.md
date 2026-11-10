@@ -349,11 +349,20 @@ parameters are passed.
   share-link shape `https://fomo.family/coin?address=<lowercase_CA>&chainId=99901`
   (no referral or other parameters). Fomo's official docs confirm Elysium support and
   describe opening shared coin links in the iOS app. The precise Elysium token-address link
-  on iPhone is **not yet verified**; test it manually with an unfunded/no-trade session.
+  on iPhone was **confirmed by the owner** using the Montra Elysium link (2026-11-11);
+  this is confirmation of the handoff only, not execution approval.
   If Fomo opens the wrong asset, a generic page, or fails to hand off to iOS, set
   `FOMO_BUTTON=off` in the tracker service and recreate **only** tracker.
   The token contract is always visible in the original Telegram alert and can be copied
   into Fomo Search manually as a fallback.
+- The web Activity tab includes a **Fomo** column immediately after Launchpad. It links to the
+  same Elysium coin URL in both server-rendered rows and live/incremental Activity rows.
+  The link is constructed only from an exact Elysium contract address, never a token symbol.
+  No changes to market analytics, pagination, alert suppression, DB schema or trading flags.
+- Trade alert cards now show **💰 MC** immediately below the BUY/SELL headline, reusing the
+  existing Agora market cap and HYPE/USD conversion. If no market cap exists, show unavailable;
+  do not invent $0. The original MC in the lower link bar is omitted on BUY/SELL alerts to
+  avoid duplication; other alert types retain their existing layout.
 - Fomo uses its own account/wallet/balance; it does **not** share Maestro's funded wallet.
   The scanner never has access to either wallet and does not execute trades.
 - Alerts are rendered at send-time. USDC Telegram suppression and all other alert,
