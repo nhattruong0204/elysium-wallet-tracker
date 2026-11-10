@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import html
 import math
+import os
 import re
 import time
 from typing import Any
@@ -86,9 +87,36 @@ def ago(ts: int | None, now: float | None = None) -> str | None:
     return f"{d}s"
 
 
+# BasedBot (external trading bot, live on Elysium mainnet since 2026-11-09). The button only OPENS
+# its token page: the tracker never trades, signs, or learns what the user did there. Host and
+# chain slug are fixed in code (never taken from config, alert payloads or token metadata).
+BASEDBOT_TOKEN_URL = "https://basedbot.app/token/elysium/"
+BASEDBOT_CHAIN_ID = 99901
+BASEDBOT_LABEL = "⚡ Buy / Sell on BasedBot"
+_TOKEN_ADDRESS = re.compile(r"0x[0-9a-f]{40}")
+
+
 class Links:
-    def __init__(self, cfg: LinksConfig):
+    def __init__(self, cfg: LinksConfig, chain_id: int = BASEDBOT_CHAIN_ID):
         self.c = cfg
+        self.chain_id = chain_id
+        # operator off-switch for the tracker container: BASEDBOT_BUTTON=off (no config change)
+        self.basedbot_on = os.environ.get("BASEDBOT_BUTTON", "on").strip().lower() not in (
+            "off", "0", "false", "no")
+
+    def basedbot_token(self, t: object) -> str | None:
+        """BasedBot's page for one Elysium token, or None (then no button is shown). Only an
+        exact 20-byte contract address on chain 99901 qualifies; never a symbol or a name."""
+        if not self.basedbot_on or self.chain_id != BASEDBOT_CHAIN_ID or not isinstance(t, str):
+            return None
+        addr = t.strip().lower()
+        if not _TOKEN_ADDRESS.fullmatch(addr) or int(addr, 16) == 0:
+            return None
+        return BASEDBOT_TOKEN_URL + addr
+
+    def basedbot_row(self, t: object) -> list[dict]:
+        url = self.basedbot_token(t)
+        return [{"text": BASEDBOT_LABEL, "url": url}] if url else []
 
     def tx(self, h: str) -> str:
         return f"{self.c.explorer}/tx/{h}"
@@ -309,9 +337,10 @@ def keyboard(L: Links, token: str, symbol: str, info: TokenInfo | None,
              tx: str | None, wallet: str | None = None, dd: Any = None,
              force_unknown: bool = False) -> dict:
     s = (symbol or token[:6])[:12]
+    quick = [r for r in (L.basedbot_row(token),) if r]        # first row: one tap to BasedBot
     if force_unknown or unknown_venue(info, dd):
-        return {"inline_keyboard": _venue_rows(L, token, s, tx, dd)}
-    rows = [r for r in (L.wallet_buttons(token, s),) if r]
+        return {"inline_keyboard": quick + _venue_rows(L, token, s, tx, dd)}
+    rows = quick + [r for r in (L.wallet_buttons(token, s),) if r]
     rows += [[{"text": f"🛒 Agora: {s}", "url": L.agora_token(token)},
              {"text": f"BOXA: {s}", "url": L.boxa_token(token)}]]
     row2 = [{"text": f"Kleos: {s}", "url": L.kleos_token(token)}]
