@@ -1,2 +1,3 @@
-action=status
-requested=2026-11-09 second read-only check (cursor progress, suppressed count) after the USDC mute deploy
+action=web-hotfix
+commit=951f5c8 (PR #120, hotfix/onchainflow-mute-usdc-activity) on main f723b77 + b2943fa (PR #119 ops tooling)
+requested=2026-11-10 P0 web-only USDC Activity hotfix: recreate the web container only, no migration
