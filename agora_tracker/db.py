@@ -571,6 +571,34 @@ class Store:
         return find_bundle_wallets(((int(b), tok, w) for b, tok, w in rows),
                                    min_wallets=min_wallets, min_hits=min_hits)
 
+    def automated_wallets(self, *, lookback_days: int, min_txs: int, fast_gap_s: float,
+                          fast_share: float) -> dict[str, dict[str, Any]]:
+        """Wallets whose recent transaction timing is machine-like: at least `min_txs` distinct
+        transactions in the lookback and at least `fast_share` of the gaps between consecutive
+        ones under `fast_gap_s`. Read-only; returns {wallet: {"txs", "fast_share", "tokens"}}."""
+        since = utc(int(datetime.now(timezone.utc).timestamp() - lookback_days * 86400))
+        with self.engine.connect() as c:
+            rows = c.execute(sa.text("""
+                WITH tx AS (SELECT wallet, tx_hash, min(block_time) AS bt
+                              FROM trades
+                             WHERE chain_id = :c AND block_time >= :since
+                             GROUP BY wallet, tx_hash),
+                     g AS (SELECT wallet, EXTRACT(EPOCH FROM bt - lag(bt) OVER
+                                                  (PARTITION BY wallet ORDER BY bt, tx_hash)) AS s
+                             FROM tx),
+                     a AS (SELECT wallet, count(*) + 1 AS txs,
+                                  avg(CASE WHEN s < :gap THEN 1.0 ELSE 0.0 END) AS fast
+                             FROM g WHERE s IS NOT NULL GROUP BY wallet)
+                SELECT a.wallet, a.txs, a.fast,
+                       (SELECT count(DISTINCT token) FROM trades t
+                         WHERE t.chain_id = :c AND t.wallet = a.wallet
+                           AND t.block_time >= :since) AS tokens
+                  FROM a WHERE a.txs >= :min_txs AND a.fast >= :share"""),
+                {"c": self.chain_id, "since": since, "gap": float(fast_gap_s),
+                 "min_txs": int(min_txs), "share": float(fast_share)}).all()
+        return {r.wallet: {"txs": int(r.txs), "fast_share": round(float(r.fast), 3),
+                           "tokens": int(r.tokens)} for r in rows}
+
     def record_paper_trade(self, c: Connection, *, token: str, signal_id: int | None,
                            opened_at: int, block: int | None, entry_price_hype: Decimal | None,
                            n_independent: int, n_raw: int, details: dict) -> bool:
