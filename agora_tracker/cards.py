@@ -94,6 +94,10 @@ def ago(ts: int | None, now: float | None = None) -> str | None:
 MAESTRO_TOKEN_URL = "https://t.me/Maestro?start="
 MAESTRO_CHAIN_ID = 99901
 MAESTRO_LABEL = "⚡ Quick Buy / Sell · Maestro"
+# Fomo uses public /coin share links with address and chainId. The Elysium iOS handoff
+# still requires user confirmation on a physical device; this is a link, not a trade.
+FOMO_COIN_URL = "https://fomo.family/coin?address="
+FOMO_LABEL = "📱 Open in Fomo"
 _TOKEN_ADDRESS = re.compile(r"0x[0-9a-f]{40}")
 
 
@@ -107,6 +111,9 @@ class Links:
             "off", "0", "false", "no")
         # Off = open @Maestro chat without a start payload; the user can paste the CA.
         self.maestro_deeplink = os.environ.get("MAESTRO_DEEPLINK", "on").strip().lower() not in (
+            "off", "0", "false", "no")
+        # Independent Fomo button off-switch, without changing Maestro or the scanner.
+        self.fomo_on = os.environ.get("FOMO_BUTTON", "on").strip().lower() not in (
             "off", "0", "false", "no")
 
     def maestro_token(self, t: object) -> str | None:
@@ -122,6 +129,22 @@ class Links:
     def maestro_row(self, t: object) -> list[dict]:
         url = self.maestro_token(t)
         return [{"text": MAESTRO_LABEL, "url": url}] if url else []
+
+    def fomo_token(self, t: object) -> str | None:
+        """Open a public Elysium contract share link in Fomo (browser or iOS app).
+
+        No wallet ID, user data, referral codes, or auth credentials enter this URL.
+        """
+        if not self.fomo_on or self.chain_id != MAESTRO_CHAIN_ID or not isinstance(t, str):
+            return None
+        addr = t.strip().lower()
+        if not _TOKEN_ADDRESS.fullmatch(addr) or int(addr, 16) == 0:
+            return None
+        return f"{FOMO_COIN_URL}{addr}&chainId={MAESTRO_CHAIN_ID}"
+
+    def fomo_row(self, t: object) -> list[dict]:
+        url = self.fomo_token(t)
+        return [{"text": FOMO_LABEL, "url": url}] if url else []
 
     def tx(self, h: str) -> str:
         return f"{self.c.explorer}/tx/{h}"
@@ -342,7 +365,7 @@ def keyboard(L: Links, token: str, symbol: str, info: TokenInfo | None,
              tx: str | None, wallet: str | None = None, dd: Any = None,
              force_unknown: bool = False) -> dict:
     s = (symbol or token[:6])[:12]
-    quick = [r for r in (L.maestro_row(token),) if r]        # first row: one tap to Maestro
+    quick = [r for r in (L.maestro_row(token), L.fomo_row(token)) if r]  # two direct apps
     if force_unknown or unknown_venue(info, dd):
         return {"inline_keyboard": quick + _venue_rows(L, token, s, tx, dd)}
     rows = quick + [r for r in (L.wallet_buttons(token, s),) if r]
