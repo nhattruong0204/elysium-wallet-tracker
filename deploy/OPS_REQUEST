@@ -1,3 +1,2 @@
-action=web-hotfix-check
-commit=7e68fe4 (PR #120)
-requested=2026-11-10 read-only follow-up after the web-only USDC hotfix: postgres error messages, visibility, bots
+action=status
+requested=2026-11-10 read-only status: measure indexer lag and per-cycle scan cost
