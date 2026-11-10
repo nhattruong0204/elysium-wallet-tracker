@@ -44,7 +44,7 @@ def test_only_machine_like_timing_is_flagged(store):
     seed(store, NEWBIE, 30, 0.5)          # fast, but too little history to judge
     got = judged(store)
     assert set(got) == {BOT}
-    assert got[BOT] == {"txs": 150, "fast_share": 1.0, "tokens": 50}
+    assert got[BOT] == {"txs": 150, "fast_share": 1.0, "tokens": 50, "trade_share": 0.0}
     # thresholds are what decides, not the address
     assert set(judged(store, min_txs=20)) == {BOT, NEWBIE}
     assert judged(store, fast_gap_s=0.5) == {}

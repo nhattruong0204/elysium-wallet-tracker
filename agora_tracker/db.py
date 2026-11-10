@@ -323,6 +323,11 @@ class Store:
         with self.engine.begin() as c:
             return tracking.sync_exclusions(c, self.chain_id, enabled)
 
+    def sync_blocked(self, blocked: set[str]) -> tuple[int, int]:
+        from . import tracking
+        with self.engine.begin() as c:
+            return tracking.sync_blocked(c, self.chain_id, blocked)
+
     def sync_coverage(self, tracked: set[str], cursor: int) -> tuple[int, int]:
         from . import tracking
         with self.engine.begin() as c:
@@ -572,10 +577,12 @@ class Store:
                                    min_wallets=min_wallets, min_hits=min_hits)
 
     def automated_wallets(self, *, lookback_days: int, min_txs: int, fast_gap_s: float,
-                          fast_share: float) -> dict[str, dict[str, Any]]:
+                          fast_share: float, max_trade_share: float = 1.0
+                          ) -> dict[str, dict[str, Any]]:
         """Wallets whose recent transaction timing is machine-like: at least `min_txs` distinct
-        transactions in the lookback and at least `fast_share` of the gaps between consecutive
-        ones under `fast_gap_s`. Read-only; returns {wallet: {"txs", "fast_share", "tokens"}}."""
+        transactions in the lookback, at least `fast_share` of the gaps between consecutive ones
+        under `fast_gap_s`, and at most `max_trade_share` of their legs decoded as BUY/SELL.
+        Read-only; returns {wallet: {"txs", "fast_share", "tokens", "trade_share"}}."""
         since = utc(int(datetime.now(timezone.utc).timestamp() - lookback_days * 86400))
         with self.engine.connect() as c:
             rows = c.execute(sa.text("""
@@ -589,15 +596,21 @@ class Store:
                      a AS (SELECT wallet, count(*) + 1 AS txs,
                                   avg(CASE WHEN s < :gap THEN 1.0 ELSE 0.0 END) AS fast
                              FROM g WHERE s IS NOT NULL GROUP BY wallet)
-                SELECT a.wallet, a.txs, a.fast,
-                       (SELECT count(DISTINCT token) FROM trades t
-                         WHERE t.chain_id = :c AND t.wallet = a.wallet
-                           AND t.block_time >= :since) AS tokens
-                  FROM a WHERE a.txs >= :min_txs AND a.fast >= :share"""),
+                SELECT a.wallet, a.txs, a.fast, k.tokens, k.trade_share
+                  FROM a JOIN LATERAL (
+                       SELECT count(DISTINCT token) AS tokens,
+                              avg(CASE WHEN kind IN ('BUY', 'SELL') THEN 1.0 ELSE 0.0 END)
+                                  AS trade_share
+                         FROM trades t
+                        WHERE t.chain_id = :c AND t.wallet = a.wallet
+                          AND t.block_time >= :since) k ON true
+                 WHERE a.txs >= :min_txs AND a.fast >= :share AND k.trade_share <= :trade"""),
                 {"c": self.chain_id, "since": since, "gap": float(fast_gap_s),
-                 "min_txs": int(min_txs), "share": float(fast_share)}).all()
+                 "min_txs": int(min_txs), "share": float(fast_share),
+                 "trade": float(max_trade_share)}).all()
         return {r.wallet: {"txs": int(r.txs), "fast_share": round(float(r.fast), 3),
-                           "tokens": int(r.tokens)} for r in rows}
+                           "tokens": int(r.tokens),
+                           "trade_share": round(float(r.trade_share), 3)} for r in rows}
 
     def record_paper_trade(self, c: Connection, *, token: str, signal_id: int | None,
                            opened_at: int, block: int | None, entry_price_hype: Decimal | None,

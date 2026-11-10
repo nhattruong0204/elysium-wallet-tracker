@@ -203,6 +203,7 @@ class Tracker:
         self._next_lb = time.monotonic() + self.cfg.leaderboard.refresh_s
         prev = self.store.top_traders()
         top: set[str] = set(prev)
+        blocked = set(self.cfg.tracking.blocked_wallets)
         lb = self.leaderboard
         if lb is not None:
             try:
@@ -229,6 +230,7 @@ class Tracker:
                                                rank_change=self.cfg.alerts.rank_change,
                                                pnl_change=self.cfg.alerts.pnl_change,
                                                unit=self.cfg.leaderboard.value_unit)
+                    changes = [ch for ch in changes if ch[2].address not in blocked]
                     if self.cfg.alerts.leaderboard_alerts and changes:
                         self.engine.leaderboard_alerts(changes)
                     top = {t.address for t in traders}
@@ -266,8 +268,17 @@ class Tracker:
         except Exception as e:  # noqa: BLE001 - never let the bot's list block tracking
             log.warning("telegram watchlist unavailable: %s", e)
             via_bot = set()
+        if blocked:
+            try:                                  # registry first, so reports say why
+                n_ex, n_back = self.store.sync_blocked(blocked)
+                if n_ex or n_back:
+                    log.info("operator block list: %d wallet(s) blocked, %d reinstated",
+                             n_ex, n_back)
+            except Exception as e:  # noqa: BLE001 - the in-memory filter below still applies
+                log.warning("recording blocked wallets failed: %s", e)
+            top, hist, via_bot = top - blocked, hist - blocked, via_bot - blocked
         self.tracked_leaderboard = top | hist
-        new_set = top | hist | set(self.watchlist) | via_bot
+        new_set = (top | hist | set(self.watchlist) | via_bot) - blocked
         added, removed = new_set - self.tracked, self.tracked - new_set
         if added or removed:
             log.info("tracking %d wallets (+%d / -%d): %d current top, %d ever in top, "

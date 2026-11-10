@@ -270,7 +270,8 @@ class Engine:
             try:
                 found = self.store.automated_wallets(
                     lookback_days=ic.bot_lookback_days, min_txs=ic.bot_min_txs,
-                    fast_gap_s=ic.bot_fast_gap_s, fast_share=ic.bot_fast_share)
+                    fast_gap_s=ic.bot_fast_gap_s, fast_share=ic.bot_fast_share,
+                    max_trade_share=ic.bot_max_trade_share)
                 if set(found) != self._bots:
                     log.info("automated-wallet filter: %d wallet(s) not alerted: %s", len(found),
                              ", ".join(f"{w} ({v['txs']} txs, {v['fast_share']:.0%} under "
