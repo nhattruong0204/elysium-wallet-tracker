@@ -21,7 +21,12 @@ def test_web_has_no_secrets_other_than_its_own_db_credentials():
     w = web()
     assert "env_file" not in w                      # no TG_* / POSTGRES_PASSWORD inside this container
     env = w["environment"]
-    assert list(env) == ["DATABASE_URL"]
+    # DATABASE_URL plus, at most, the public list of hidden Activity tokens: literal 0x
+    # addresses only (no ${...} interpolation), so it can never carry a secret.
+    assert set(env) <= {"DATABASE_URL", "WEB_ACTIVITY_HIDDEN_TOKENS"} and "DATABASE_URL" in env
+    if "WEB_ACTIVITY_HIDDEN_TOKENS" in env:
+        assert re.fullmatch(r"0x[0-9a-f]{40}([ ,]+0x[0-9a-f]{40})*",
+                            env["WEB_ACTIVITY_HIDDEN_TOKENS"])
     assert env["DATABASE_URL"].startswith("postgresql+psycopg://dashboard_ro:${DASHBOARD_DB_PASSWORD")
     assert "POSTGRES_PASSWORD" not in str(w) and "TG_" not in str(w)
 
