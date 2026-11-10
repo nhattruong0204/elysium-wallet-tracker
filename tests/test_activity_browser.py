@@ -499,7 +499,11 @@ def test_fomo_column_ssr_matches_live_rows_and_never_links_wrong_chain(kinds, ma
     assert original.locator('td:nth-child(5) a.fomo').get_attribute('href') == expected
     assert original.locator('td:nth-child(5) a.fomo').get_attribute('rel') == 'noopener noreferrer'
     client = page.evaluate('(it) => ActivityMonitor.renderRow(it).outerHTML', item)
-    assert f'href="{expected}"' in client
+    # outerHTML serialises "&" in an attribute as "&amp;": compare the serialised form, and the
+    # attribute itself, so the check holds for the real href the browser would follow
+    assert f'href="{expected.replace("&", "&amp;")}"' in client
+    assert page.evaluate("(it) => ActivityMonitor.renderRow(it).querySelector('a.fomo').href",
+                         item) == expected
     forged = {**item, 'fomo_url': 'https://evil.example/redirect'}
     forged_row = page.evaluate('(it) => ActivityMonitor.renderRow(it).outerHTML', forged)
     assert 'evil.example' not in forged_row
