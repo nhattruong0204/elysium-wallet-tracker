@@ -487,6 +487,40 @@ def test_launchpad_ssr_live_parity(kinds, make_live, ctx):
     assert links.nth(0).get_attribute('rel') == 'noopener noreferrer'
 
 
+def test_fomo_column_ssr_matches_live_rows_and_never_links_wrong_chain(kinds, make_live, ctx):
+    lv = live(make_live)
+    page = open_activity(ctx, lv)
+    assert page.locator('#act-table thead th').all_inner_texts().count('Fomo') == 1
+    api = page.request.get(page.url.replace('/activity?', '/api/v1/activity?')).json()
+    item = api['items'][0]
+    expected = f"https://fomo.family/coin?address={item['token']}&chainId=99901"
+    assert item['fomo_url'] == expected
+    original = page.locator('#act-body tr[data-id]').first
+    assert original.locator('td:nth-child(5) a.fomo').get_attribute('href') == expected
+    assert original.locator('td:nth-child(5) a.fomo').get_attribute('rel') == 'noopener noreferrer'
+    client = page.evaluate('(it) => ActivityMonitor.renderRow(it).outerHTML', item)
+    # outerHTML serialises "&" in an attribute as "&amp;": compare the serialised form, and the
+    # attribute itself, so the check holds for the real href the browser would follow
+    assert f'href="{expected.replace("&", "&amp;")}"' in client
+    assert page.evaluate("(it) => ActivityMonitor.renderRow(it).querySelector('a.fomo').href",
+                         item) == expected
+    forged = {**item, 'fomo_url': 'https://evil.example/redirect'}
+    forged_row = page.evaluate('(it) => ActivityMonitor.renderRow(it).outerHTML', forged)
+    assert 'evil.example' not in forged_row
+    assert '<td><span class="faint">–</span></td>' in forged_row
+
+
+def test_fomo_link_carries_into_incremental_activity_api(kinds, make_live):
+    lv = live(make_live)
+    all_items = lv.get('/api/v1/activity', params={'range': 'all'}).json()['items']
+    assert all_items
+    data = lv.get('/api/v1/activity', params={'range': 'all', 'since_id': 0}).json()
+    assert data['items']
+    assert all(it['fomo_url'] ==
+               f"https://fomo.family/coin?address={it['token']}&chainId=99901"
+               for it in data['items'])
+
+
 def test_duplicate_poll_payload_and_stale_response_do_not_notify(kinds, make_live, ctx):
     page = open_activity(ctx, live(make_live))
     original = page.title()

@@ -87,36 +87,64 @@ def ago(ts: int | None, now: float | None = None) -> str | None:
     return f"{d}s"
 
 
-# BasedBot (external trading bot, live on Elysium mainnet since 2026-11-09). The button only OPENS
-# its token page: the tracker never trades, signs, or learns what the user did there. Host and
-# chain slug are fixed in code (never taken from config, alert payloads or token metadata).
-BASEDBOT_TOKEN_URL = "https://basedbot.app/token/elysium/"
-BASEDBOT_CHAIN_ID = 99901
-BASEDBOT_LABEL = "⚡ Buy / Sell on BasedBot"
+# Maestro's official @Maestro bot supports Elysium; direct token deep-link behaviour on Elysium
+# needs a real Telegram smoke test. The tracker passes only a public contract address: it never
+# trades, signs, holds wallet keys or learns the user's actions. Maestro can auto-buy on pasted
+# tokens depending on user settings; this link is NOT guaranteed to be view-only.
+MAESTRO_TOKEN_URL = "https://t.me/Maestro?start="
+MAESTRO_CHAIN_ID = 99901
+MAESTRO_LABEL = "⚡ Quick Buy / Sell · Maestro"
+# Fomo uses public /coin share links with address and chainId. The Elysium iOS handoff
+# still requires user confirmation on a physical device; this is a link, not a trade.
+FOMO_COIN_URL = "https://fomo.family/coin?address="
+FOMO_LABEL = "📱 Open in Fomo"
 _TOKEN_ADDRESS = re.compile(r"0x[0-9a-f]{40}")
 
 
 class Links:
-    def __init__(self, cfg: LinksConfig, chain_id: int = BASEDBOT_CHAIN_ID):
+    def __init__(self, cfg: LinksConfig, chain_id: int = MAESTRO_CHAIN_ID):
         self.c = cfg
         self.chain_id = chain_id
-        # operator off-switch for the tracker container: BASEDBOT_BUTTON=off (no config change)
-        self.basedbot_on = os.environ.get("BASEDBOT_BUTTON", "on").strip().lower() not in (
+        # Operator off-switch: MAESTRO_BUTTON=off; disable unverified deep links via
+        # MAESTRO_DEEPLINK=off to open @Maestro without a token start payload.
+        self.maestro_on = os.environ.get("MAESTRO_BUTTON", "on").strip().lower() not in (
+            "off", "0", "false", "no")
+        # Off = open @Maestro chat without a start payload; the user can paste the CA.
+        self.maestro_deeplink = os.environ.get("MAESTRO_DEEPLINK", "on").strip().lower() not in (
+            "off", "0", "false", "no")
+        # Independent Fomo button off-switch, without changing Maestro or the scanner.
+        self.fomo_on = os.environ.get("FOMO_BUTTON", "on").strip().lower() not in (
             "off", "0", "false", "no")
 
-    def basedbot_token(self, t: object) -> str | None:
-        """BasedBot's page for one Elysium token, or None (then no button is shown). Only an
-        exact 20-byte contract address on chain 99901 qualifies; never a symbol or a name."""
-        if not self.basedbot_on or self.chain_id != BASEDBOT_CHAIN_ID or not isinstance(t, str):
+    def maestro_token(self, t: object) -> str | None:
+        """Open official @Maestro with a token start payload (or generic chat fallback).
+        Only a public 20-byte Elysium token contract may be passed, never a symbol."""
+        if not self.maestro_on or self.chain_id != MAESTRO_CHAIN_ID or not isinstance(t, str):
             return None
         addr = t.strip().lower()
         if not _TOKEN_ADDRESS.fullmatch(addr) or int(addr, 16) == 0:
             return None
-        return BASEDBOT_TOKEN_URL + addr
+        return MAESTRO_TOKEN_URL + addr if self.maestro_deeplink else "https://t.me/Maestro"
 
-    def basedbot_row(self, t: object) -> list[dict]:
-        url = self.basedbot_token(t)
-        return [{"text": BASEDBOT_LABEL, "url": url}] if url else []
+    def maestro_row(self, t: object) -> list[dict]:
+        url = self.maestro_token(t)
+        return [{"text": MAESTRO_LABEL, "url": url}] if url else []
+
+    def fomo_token(self, t: object) -> str | None:
+        """Open a public Elysium contract share link in Fomo (browser or iOS app).
+
+        No wallet ID, user data, referral codes, or auth credentials enter this URL.
+        """
+        if not self.fomo_on or self.chain_id != MAESTRO_CHAIN_ID or not isinstance(t, str):
+            return None
+        addr = t.strip().lower()
+        if not _TOKEN_ADDRESS.fullmatch(addr) or int(addr, 16) == 0:
+            return None
+        return f"{FOMO_COIN_URL}{addr}&chainId={MAESTRO_CHAIN_ID}"
+
+    def fomo_row(self, t: object) -> list[dict]:
+        url = self.fomo_token(t)
+        return [{"text": FOMO_LABEL, "url": url}] if url else []
 
     def tx(self, h: str) -> str:
         return f"{self.c.explorer}/tx/{h}"
@@ -300,8 +328,17 @@ def market_line(info: TokenInfo | None, hype_usd: float | None) -> str | None:
     return "📊 " + " · ".join(parts) if parts else None
 
 
+def market_cap_label(info: TokenInfo | None, hype_usd: float | None) -> str | None:
+    """The same market-cap value for the headline and legacy link bars."""
+    if info is None or info.mcap_hype is None:
+        return None
+    return (f"<b>MC</b>: {usd(info.mcap_hype * hype_usd)}" if hype_usd
+            else f"<b>MC</b>: {human(info.mcap_hype)} HYPE")
+
+
 def link_bar(L: Links, token: str, symbol: str, info: TokenInfo | None,
-             hype_usd: float | None, now: float | None = None, venue_pages: bool = True) -> str:
+             hype_usd: float | None, now: float | None = None, venue_pages: bool = True,
+             show_market_cap: bool = True) -> str:
     """🔗 #BOZO (𝕏) | MC: $6.96K | Seen: 3d: Agora | Kleos | BOXA | ElysPump | 🔎𝕏"""
     tag = hashtag((info.symbol if info and info.symbol else None) or symbol)
     head = tag or esc(symbol)
@@ -315,9 +352,8 @@ def link_bar(L: Links, token: str, symbol: str, info: TokenInfo | None,
     if socials:
         head += " ( " + " · ".join(socials) + " )"
     segs = [head]
-    if info is not None and info.mcap_hype is not None:
-        segs.append(f"<b>MC</b>: {usd(info.mcap_hype * hype_usd)}" if hype_usd
-                    else f"<b>MC</b>: {human(info.mcap_hype)} HYPE")
+    if show_market_cap and (mc := market_cap_label(info, hype_usd)) is not None:
+        segs.append(mc)
     venues = [a(L.agora_token(token), "Agora")]
     if venue_pages:
         venues += [a(L.kleos_token(token), "Kleos"), a(L.boxa_token(token), "BOXA")]
@@ -337,7 +373,7 @@ def keyboard(L: Links, token: str, symbol: str, info: TokenInfo | None,
              tx: str | None, wallet: str | None = None, dd: Any = None,
              force_unknown: bool = False) -> dict:
     s = (symbol or token[:6])[:12]
-    quick = [r for r in (L.basedbot_row(token),) if r]        # first row: one tap to BasedBot
+    quick = [r for r in (L.maestro_row(token), L.fomo_row(token)) if r]  # two direct apps
     if force_unknown or unknown_venue(info, dd):
         return {"inline_keyboard": quick + _venue_rows(L, token, s, tx, dd)}
     rows = quick + [r for r in (L.wallet_buttons(token, s),) if r]
@@ -509,7 +545,10 @@ def render_trade(p: dict, L: Links, info: TokenInfo | None = None,
     qty = int(p["qty"]) / 10 ** dec
     approx = conf != "high"
     me = name_of(p)
-    lines = [_header(p, L, info, sym), who(L, p, hype_usd), ""]
+    lines = [_header(p, L, info, sym)]
+    if kind in ("BUY", "SELL"):
+        lines.append(f"💰 {market_cap_label(info, hype_usd) or '<b>MC</b>: unavailable'}")
+    lines += [who(L, p, hype_usd), ""]
     hype_wei = int(p["hype_wei"]) if p.get("hype_wei") else None
     tok = a(L.agora_token(token), esc(sym))
     mkt_px = info.price_hype if info else None
@@ -573,7 +612,8 @@ def render_trade(p: dict, L: Links, info: TokenInfo | None = None,
     if (m := market_line(info, hype_usd)) is not None:
         lines.append(m)
     lines.append(link_bar(L, token, sym, info, hype_usd, now,
-                          venue_pages=not unknown_venue(info, dd)))
+                          venue_pages=not unknown_venue(info, dd),
+                          show_market_cap=kind not in ("BUY", "SELL")))
     lines.append(f"<code>{esc(token)}</code>")
     when = ago(p.get("ts"), now)
     lines.append(f"🧾 {a(L.tx(p['tx']), 'Tx')}" + (f" · {when} ago" if when else ""))

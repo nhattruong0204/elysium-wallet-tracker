@@ -131,6 +131,16 @@
     else { var nl = el('span', 'faint', '–'); nl.setAttribute('title', 'Agora has no launchpad profile for this token'); td.appendChild(nl); }
     tr.appendChild(td);
 
+    td = el('td');
+    var fomoUrl = 'https://fomo.family/coin?address=' + it.token + '&chainId=99901';
+    if (isAddr(it.token) && it.fomo_url === fomoUrl) {
+      var fl = el('a', 'fomo', 'Fomo ↗');
+      fl.setAttribute('href', fomoUrl); fl.setAttribute('target', '_blank');
+      fl.setAttribute('rel', 'noopener noreferrer'); fl.setAttribute('title', 'Open Elysium token in Fomo');
+      td.appendChild(fl);
+    } else td.appendChild(el('span', 'faint', '–'));
+    tr.appendChild(td);
+
     td = el('td'); td.appendChild(el('span', 'act act-' + it.action, ACTIONS[it.action] || it.action)); tr.appendChild(td);
 
     td = el('td', 'r');
