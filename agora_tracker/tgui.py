@@ -34,7 +34,7 @@ from collections import defaultdict
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
 import requests
@@ -50,6 +50,9 @@ from .export import EXPORT_ERRORS, Exporter
 from .market import AgoraMarket
 from .reports import Reports
 from .timerange import PRESETS, RangeError, TimeRange, custom_range, from_pref, parse_local
+
+if TYPE_CHECKING:
+    from .trading.ledger import OrderLedger
 
 UTC = timezone.utc
 log = logging.getLogger(__name__)
@@ -155,9 +158,14 @@ class Sessions:
 
 
 class IntelBot:
+    ledger: OrderLedger | None = None     # class defaults keep partially built test bots valid
+    worker: Any = None                    # wallet reconciliation supervisor (None: off)
+    _paper_broken = False
+
     def __init__(self, cfg: Config, api: TelegramApi, store: Store, reports: Reports,
                  market: AgoraMarket | None = None,
-                 now: Callable[[], datetime] = lambda: datetime.now(UTC)):
+                 now: Callable[[], datetime] = lambda: datetime.now(UTC),
+                 ledger: OrderLedger | None = None):
         self.cfg, self.api, self.store, self.reports = cfg, api, store, reports
         self.market = market
         self.now = now
@@ -166,6 +174,8 @@ class IntelBot:
         self.allowed = set(cfg.ui.admin_ids)
         from .trading.paper import PaperFlow
         self.paper_trades = PaperFlow(self.allowed)
+        self.ledger = ledger                  # durable pause + private order ledger (None: off)
+        self._paper_broken = False
         self.paper_market = None
         if cfg.trading.paper_enabled:
             from .trading.agora import AgoraV1
@@ -180,8 +190,10 @@ class IntelBot:
                     self.paper_trades.provider = DirectV2Provider(ReadRpc(cfg.trading.paper_rpc_url), agora=AgoraV1())
                     self.paper_trades.routes = frozenset({DIRECT_ROUTE})
                 except (OSError, ValueError):
+                    self._paper_broken = True
                     self.paper_trades.paused = True
                     log.error("Private PAPER journal unavailable; paper actions paused")
+        self._sync_pause()
         self.sessions = Sessions(store)
         self.exporter = Exporter(reports, self.tz, max_rows=cfg.ui.report_max_rows,
                                  max_bytes=cfg.ui.report_max_bytes)
@@ -195,6 +207,47 @@ class IntelBot:
         self._exp_lock = threading.Lock()
         self._user_locks: dict[int, threading.Lock] = defaultdict(threading.Lock)
         self._refused: dict[int, float] = {}
+
+    def _sync_pause(self) -> None:
+        """The durable ledger flag is the source of truth for the pause (it survives restarts and
+        is shared by every process); unreadable state counts as paused."""
+        if self.ledger is not None:
+            self.paper_trades.paused = self._paper_broken or self.ledger.is_paused()
+
+    def _pause_command(self, chat: int, uid: int) -> None:
+        if self.ledger is None:
+            self.paper_trades.paused = True
+            self._send(chat, "Paper trading paused until process restart. Live execution is unavailable.", None)
+            return
+        from .trading.ledger import Actor
+        # any authorized operator may stop trading in an emergency; only an owner may resume
+        actor = Actor.owner(uid) if uid in self.ledger.owner_ids else Actor.system()
+        self.paper_trades.paused = True
+        try:
+            self.ledger.pause(actor, f"Telegram /pause_trading by {uid}")
+            self._send(chat, "Trading paused. The pause is saved and survives restarts; "
+                             "receipt reconciliation continues. An owner can /resume_trading. "
+                             "Live execution is unavailable.", None)
+        except Exception:   # noqa: BLE001 - the in-memory pause above still protects this process
+            log.exception("could not persist the trading pause")
+            self._send(chat, "Paused for now, but the pause could NOT be saved and will not "
+                             "survive a restart.", None)
+
+    def _resume_command(self, chat: int, uid: int) -> None:
+        if self.ledger is None:
+            self._send(chat, "The durable ledger is disabled; paper trading resumes at restart.", None)
+            return
+        from .trading.ledger import Actor, LedgerRefused
+        try:
+            self.ledger.resume(Actor.owner(uid), f"Telegram /resume_trading by {uid}")
+        except LedgerRefused as e:
+            self._send(chat, "Only an owner can resume trading." if e.code == "actor_not_permitted"
+                       else f"Could not resume: {e.message}", None)
+            return
+        self._sync_pause()
+        self._send(chat, "Trading resumed." if not self.paper_trades.paused
+                   else "The ledger pause is cleared, but paper trading is still unavailable "
+                        "(see the logs).", None)
 
     # --- lifecycle -------------------------------------------------------------------------
     def setup(self) -> None:
@@ -297,6 +350,39 @@ class IntelBot:
                        "the owner can add it to TG_ADMIN_IDS.", None)
         return False
 
+    def _worker_health(self, chat: int, uid: int, msg: dict) -> None:
+        """Private health of the wallet reconciliation worker: ledger owners, private chat only.
+        Everyone else gets the same neutral reply as when the worker is off."""
+        owner = self.ledger is not None and uid in self.ledger.owner_ids
+        if not (owner and self.worker is not None and chat == uid
+                and msg.get("chat", {}).get("type") == "private"):
+            self._send(chat, "Not available.", None)
+            return
+        import html as _h
+
+        from .trading.wallet.supervisor import render_text
+        self._send(chat, render_text(self.worker.snapshot(), _h.escape), None)
+
+    def _wallet_section(self, uid: int, *, positions: bool) -> str:
+        """Wallet-managed orders / verified positions, appended to the PAPER text. Empty when the
+        ledger is off or has nothing for this user; never raises into the command handler."""
+        if self.ledger is None:
+            return ""
+        try:
+            import html as _h
+
+            from .trading.wallet.status import positions as _pos
+            from .trading.wallet.status import render_text, wallet_overview
+            items = wallet_overview(self.ledger, uid, self.L)
+            if not items:
+                return ""
+            pos = _pos(self.ledger.get_fills(uid)) if positions else []
+            body = render_text(items[:5], pos, _h.escape)
+            return "\n\n<b>Wallet-managed orders (on-chain evidence only)</b>\n" + body
+        except Exception:                                  # noqa: BLE001 - status is best-effort
+            log.warning("wallet status section unavailable", exc_info=True)
+            return ""
+
     def on_message(self, msg: dict) -> None:
         uid, chat = msg.get("from", {}).get("id"), msg.get("chat", {}).get("id")
         text = (msg.get("text") or "").strip()
@@ -314,13 +400,18 @@ class IntelBot:
             from .trading.telegram import custom_amount
             custom_amount(self, msg, trade_arg)
             return
-        if trade_cmd in ("/trade", "/pause_trading", "/orders", "/positions"):
+        if trade_cmd == "/wallet_health":
+            self._worker_health(chat, uid, msg)
+            return
+        if trade_cmd in ("/trade", "/pause_trading", "/resume_trading", "/orders", "/positions"):
             if chat != uid or msg.get("chat", {}).get("type") != "private":
                 self._send(chat, "Open a private chat for paper trade actions.", None)
                 return
+            self._sync_pause()
             if trade_cmd == "/pause_trading":
-                self.paper_trades.paused = True
-                self._send(chat, "Paper trading paused until process restart. Live execution is unavailable.", None)
+                self._pause_command(chat, uid)
+            elif trade_cmd == "/resume_trading":
+                self._resume_command(chat, uid)
             elif trade_cmd == "/orders":
                 from .trading.paper import TradeRefused
                 try:
@@ -328,9 +419,10 @@ class IntelBot:
                     text = order_history(self.paper_trades, uid, chat)
                 except TradeRefused as e:
                     text = str(e)
-                self._send(chat, text, None)
+                self._send(chat, text + self._wallet_section(uid, positions=False), None)
             elif trade_cmd != "/trade":
-                self._send(chat, "PAPER records are hypothetical scenarios. Use /paper_balances TOKEN for an on-chain watch-wallet snapshot; no live positions or receipts are created.", None)
+                self._send(chat, "PAPER records are hypothetical scenarios. Use /paper_balances TOKEN for an on-chain watch-wallet snapshot; no live positions or receipts are created."
+                           + self._wallet_section(uid, positions=True), None)
             else:
                 from .trading.telegram import callback
                 parts = trade_arg.split()
@@ -404,6 +496,7 @@ class IntelBot:
             return
         if data.split("|", 1)[0] in ("tp", "ps", "pr", "pc", "pf", "pa", "pq"):
             from .trading.telegram import callback
+            self._sync_pause()
             callback(self, cq)
             return
         if data == "n":

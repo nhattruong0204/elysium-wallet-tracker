@@ -284,9 +284,57 @@ class TradingConfig:
     paper_order_path: str | None = None
     paper_rpc_url: str = 'https://rpc.agoradex.app'
     miniapp_url: str | None = None
+    # Private order ledger (Stage C2). OFF by default; enabling it never enables execution, which
+    # has its own durable, owner-only flag (also OFF). The URL must log in as `trading_rw`.
+    ledger_enabled: bool = False
+    # Wallet-managed Buy/Sell prompts (Stage C2). OFF by default and meaningless without the ledger
+    # and the (also OFF, owner-only) durable execution flag. The server never signs or broadcasts.
+    wallet_execution_enabled: bool = False
+    ledger_db_url_env: str = 'TRADING_DB_URL'
+    # Dedicated execution RPC (Stage C2 #93): a SECRET url (may embed an API key), read from this
+    # environment variable only, never from config files. Separate from the scanner's RPC.
+    execution_rpc_url_env: str = 'TRADING_EXEC_RPC_URL'
+    ledger_owner_ids_env: str = 'TRADING_OWNER_IDS'   # extra owner ids; TG_CHAT_ID is always one
+    # Receipt finality (Stage C2 #94): confirmations after which an inclusion is treated as final.
+    # An ASSUMPTION about this chain's reorg depth, not a protocol guarantee: until it is reached a
+    # fill is provisional and a reorg can roll it back. Raise it if reorgs deeper than this occur.
+    finality_confirmations: int = 12
+    # Supervised reconciliation worker (Stage C2 #95 F-01). It only ever starts when
+    # `wallet_execution_enabled` is true. All bounds protect the shared VPS: the worker is one
+    # low-priority thread, sequential (one RPC call at a time), and rate-limited.
+    worker_interval_s: float = 10.0          # pause between cycles while there is work
+    worker_idle_interval_s: float = 30.0     # pause between cycles when the queue is empty
+    worker_max_backoff_s: float = 300.0      # ceiling for consecutive-failure backoff
+    worker_batch: int = 50                   # legs per pass per reconciler
+    worker_pass_budget_s: float = 20.0       # wall-clock cap of one cycle
+    worker_rpc_calls_per_min: int = 240      # hard ceiling on execution-RPC calls per minute
+    worker_standby_retry_s: float = 15.0     # how often a standby worker retries the lease
 
     def __post_init__(self) -> None:
+        import re as _re
         from urllib.parse import urlsplit
+        if type(self.ledger_enabled) is not bool:
+            raise ValueError("trading.ledger_enabled must be a boolean")
+        if type(self.wallet_execution_enabled) is not bool:
+            raise ValueError("trading.wallet_execution_enabled must be a boolean")
+        if self.wallet_execution_enabled and not self.ledger_enabled:
+            raise ValueError("trading.wallet_execution_enabled requires trading.ledger_enabled")
+        if (type(self.finality_confirmations) is not int
+                or not 1 <= self.finality_confirmations <= 256):
+            raise ValueError("trading.finality_confirmations must be an integer in 1..256")
+        for fname, lo, hi in (("worker_interval_s", 1, 3600), ("worker_idle_interval_s", 1, 3600),
+                              ("worker_max_backoff_s", 1, 3600), ("worker_pass_budget_s", 1, 600),
+                              ("worker_standby_retry_s", 1, 3600)):
+            v = getattr(self, fname)
+            if type(v) not in (int, float) or not lo <= v <= hi:
+                raise ValueError(f"trading.{fname} must be a number in {lo}..{hi}")
+        for fname, lo, hi in (("worker_batch", 1, 500), ("worker_rpc_calls_per_min", 10, 6000)):
+            v = getattr(self, fname)
+            if type(v) is not int or not lo <= v <= hi:
+                raise ValueError(f"trading.{fname} must be an integer in {lo}..{hi}")
+        for name in (self.ledger_db_url_env, self.ledger_owner_ids_env, self.execution_rpc_url_env):
+            if not isinstance(name, str) or not _re.fullmatch(r'[A-Z][A-Z0-9_]{2,63}', name):
+                raise ValueError("trading ledger environment variable names must be UPPER_SNAKE_CASE")
         if not isinstance(self.paper_rpc_url, str) or urlsplit(self.paper_rpc_url).scheme != 'https':
             raise ValueError('paper_rpc_url must use HTTPS')
         if self.paper_order_path is not None and (not isinstance(self.paper_order_path, str) or not self.paper_order_path.strip()):

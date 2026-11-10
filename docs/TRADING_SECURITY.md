@@ -1,9 +1,37 @@
 # Trading security — independent review required
 
-Live execution is absent. There is no private-key input, signer, approval sender,
+Live execution is absent. There is no private-key input, transaction signer, approval sender,
 signed-byte endpoint or transaction broadcaster. `PaperFlow.broadcast` always refuses.
 `trading.paper_enabled` defaults false and has no corresponding live-enable setting.
 PAPER data is never exposed through the dashboard or public PostgreSQL views.
+
+## Optional C1 authentication — independent review still pending
+
+Issue #89 adds private HTTPS Telegram/SIWE ownership proof for read-only preview
+access. See [TRADING_AUTH.md](TRADING_AUTH.md) for cryptography, replay, storage,
+cookie/CSRF, revocation and trust assumptions. The factory still defaults to deny;
+no production startup or spending authorization was added. Ownership proof is
+separate from transaction signing. Independent approval is still required.
+
+## Exact C1 unsigned plans — review is not execution
+
+Issue #90 adds immutable, ownership-session-bound V2 plans and fresh pinned-state/
+exact-payload simulation. See [TRADING_UNSIGNED_PLANS.md](TRADING_UNSIGNED_PLANS.md)
+for API restrictions, runtime evidence, gas/allowance/expiry bounds, race protection
+and remaining trust assumptions. No transaction signing or approval/broadcast API
+exists. Conditional SELL is not a successful simulation or fill. Independent
+security review and separate owner authorization remain required before spending.
+
+## Private order ledger, budgets and durable pause — review is not execution
+
+Issue #91 adds a private PostgreSQL ledger (schema `trading_private`, role `trading_rw`) with a
+database-enforced state machine, immutable reviewed-intent columns, a hash-chained append-only
+audit log, row-level owner isolation, per-trade/daily budgets and a **durable** emergency pause.
+Both its switches (`trading.ledger_enabled`, `controls.execution_enabled`) default OFF. It stores
+references (nonces, hashes) only: no key, signature, raw transaction or credential, and no fill or
+PnL field. See [TRADING_ORDER_LEDGER.md](TRADING_ORDER_LEDGER.md) for authorization boundaries,
+recovery, backup/restore/rollback and the assumptions a reviewer must confirm. No signing,
+approval, broadcast, funds, deployment or public exposure were added.
 
 ## Implemented PAPER boundaries
 

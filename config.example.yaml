@@ -154,3 +154,23 @@ trading:
   # paper_order_path: /data/private-trading/paper.sqlite
   # miniapp_url: https://preview.example.com/  # optional private-chat launcher; C1 API denies until #89
   # paper_rpc_url: https://rpc.agoradex.app  # dedicated read transport, independent of scanner
+  # Private order ledger (docs/TRADING_ORDER_LEDGER.md). Needs migration 0011, TRADING_DB_PASSWORD
+  # at --migrate time and TRADING_DB_URL (user trading_rw) in the ui service. Enabling it makes
+  # /pause_trading durable; wallet requests stay disabled until an owner sets the execution flag.
+  # ledger_enabled: false
+  # Wallet-managed Buy/Sell prompts (docs/TRADING_WALLET_APPROVALS.md). OFF; needs ledger_enabled,
+  # the owner-only execution flag, migrations 0012/0013 and TRADING_EXEC_RPC_URL (a SECRET,
+  # dedicated RPC url: never the scanner's). The server never signs or broadcasts.
+  # wallet_execution_enabled: false
+  # Confirmations before a receipt is treated as final (docs/TRADING_RECEIPTS.md). An assumption
+  # about reorg depth, not a guarantee; fills are provisional until it is reached.
+  # finality_confirmations: 12
+  # Supervised reconciliation worker (docs/TRADING_WORKER_LIFECYCLE.md). Starts ONLY when
+  # wallet_execution_enabled is true (then a missing ledger / TRADING_EXEC_RPC_URL is fatal).
+  # worker_interval_s: 10            # between cycles while there is work
+  # worker_idle_interval_s: 30       # between cycles when idle (an idle cycle makes no RPC calls)
+  # worker_max_backoff_s: 300        # ceiling for failure backoff
+  # worker_batch: 50                 # legs per pass per reconciler
+  # worker_pass_budget_s: 20         # wall-clock cap of one cycle
+  # worker_rpc_calls_per_min: 240    # hard cap on execution-RPC calls per minute
+  # worker_standby_retry_s: 15       # standby retries the one-worker lease this often
