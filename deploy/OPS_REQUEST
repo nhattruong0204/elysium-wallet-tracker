@@ -1,3 +1,2 @@
-action=tracker
-commit=b3c2853 (PR #122, merged to main as 1c6e7eb) on the deployed ops tree (PR #119 + PR #120)
-requested=2026-11-10 owner: "merged, now deploy" - tracker container only, no migration
+action=wallet-probe
+requested=2026-11-10 owner: read-only behaviour profile of one wallet

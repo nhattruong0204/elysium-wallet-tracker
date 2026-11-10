@@ -334,6 +334,28 @@ case "$ACTION" in
     tracker_alive
     resources
     ;;
+  wallet-probe)
+    # Read-only: behaviour profile of ONE wallet (public on-chain data only), ops branch only.
+    need_docker
+    W=0xfffff389f8b090073efb9ac908323b2d5895f7d9
+    q() { echo "--- $1"; psql_admin -P pager=off -c "$2" 2>&1 | sed 's/^/  /' || true; }
+    q "identity" "SELECT w.is_contract, w.first_seen_at FROM wallets w WHERE w.address='$W'"
+    q "watchlist" "SELECT source,status,label,reason,added_at,removed_at FROM wallet_watchlist WHERE address='$W'"
+    q "leaderboard (latest 3 snapshots)" "SELECT e.snapshot_id, e.rank, round(e.pnl_usd::numeric,0) pnl_usd, round(e.worth_usd::numeric,0) worth_usd, round(e.volume_usd::numeric,0) vol_usd, e.trades FROM leaderboard_snapshot_entries e WHERE e.address='$W' ORDER BY e.snapshot_id DESC LIMIT 3"
+    q "coverage" "SELECT from_block,to_block,basis,created_at,closed_at FROM wallet_scan_coverage WHERE address='$W' ORDER BY id"
+    q "totals" "SELECT count(*) legs, count(DISTINCT tx_hash) txs, count(DISTINCT token) tokens, min(block_time) first_t, max(block_time) last_t, count(DISTINCT date_trunc('hour',block_time)) active_hours, round(extract(epoch from max(block_time)-min(block_time))/3600) span_h FROM trades WHERE wallet='$W'"
+    q "by kind" "SELECT kind, confidence, count(*), round(sum(hype_wei)/1e18,2) hype FROM trades WHERE wallet='$W' GROUP BY 1,2 ORDER BY 3 DESC"
+    q "hour of day UTC (legs)" "SELECT extract(hour from block_time)::int h, count(*) FROM trades WHERE wallet='$W' GROUP BY 1 ORDER BY 1"
+    q "gap between consecutive txs (seconds)" "WITH t AS (SELECT DISTINCT tx_hash, block_time FROM trades WHERE wallet='$W'), g AS (SELECT extract(epoch from block_time - lag(block_time) OVER (ORDER BY block_time)) s FROM t) SELECT count(*) n, round(min(s)::numeric,1) min, round((percentile_cont(0.1) WITHIN GROUP (ORDER BY s))::numeric,1) p10, round((percentile_cont(0.5) WITHIN GROUP (ORDER BY s))::numeric,1) p50, round((percentile_cont(0.9) WITHIN GROUP (ORDER BY s))::numeric,1) p90, count(*) FILTER (WHERE s < 2) under_2s, count(*) FILTER (WHERE s < 10) under_10s FROM g WHERE s IS NOT NULL"
+    q "txs per block (max burst)" "SELECT max(n) max_txs_in_one_block, count(*) FILTER (WHERE n>1) blocks_with_multiple FROM (SELECT block_number, count(DISTINCT tx_hash) n FROM trades WHERE wallet='$W' GROUP BY 1) x"
+    q "buy -> first sell hold time per token (seconds)" "WITH b AS (SELECT token, min(block_time) t FROM trades WHERE wallet='$W' AND kind='BUY' GROUP BY 1), s AS (SELECT tr.token, min(tr.block_time) t FROM trades tr JOIN b ON b.token=tr.token AND tr.block_time>=b.t WHERE tr.wallet='$W' AND tr.kind='SELL' GROUP BY 1), h AS (SELECT extract(epoch from s.t-b.t) s FROM b JOIN s USING(token)) SELECT count(*) round_trips, round(min(s)::numeric,1) min, round((percentile_cont(0.5) WITHIN GROUP (ORDER BY s))::numeric,1) p50, round((percentile_cont(0.9) WITHIN GROUP (ORDER BY s))::numeric,1) p90, count(*) FILTER (WHERE s<5) under_5s, count(*) FILTER (WHERE s<60) under_60s FROM h"
+    q "buy sizes (HYPE): repeated exact amounts" "SELECT round(hype_wei/1e18,4) hype, count(*) FROM trades WHERE wallet='$W' AND kind='BUY' AND hype_wei IS NOT NULL GROUP BY 1 ORDER BY 2 DESC LIMIT 8"
+    q "top tokens" "SELECT t.token, p.symbol, count(*) legs, count(*) FILTER (WHERE kind='BUY') buys, count(*) FILTER (WHERE kind='SELL') sells, round(sum(hype_wei) FILTER (WHERE kind='BUY')/1e18,2) buy_hype, round(sum(hype_wei) FILTER (WHERE kind='SELL')/1e18,2) sell_hype FROM trades t LEFT JOIN token_profiles p ON p.chain_id=t.chain_id AND p.address=t.token WHERE t.wallet='$W' GROUP BY 1,2 ORDER BY 3 DESC LIMIT 10"
+    q "tx targets, gas, nonce" "SELECT x.to_address, count(*) txs, round(avg(x.gas_used)) avg_gas, round(avg(x.effective_gas_price)/1e9,4) avg_gwei, count(DISTINCT x.effective_gas_price) distinct_gas_prices, min(x.nonce) min_nonce, max(x.nonce) max_nonce, count(*) FILTER (WHERE x.status=0) failed FROM transactions x WHERE x.tx_hash IN (SELECT tx_hash FROM trades WHERE wallet='$W') GROUP BY 1 ORDER BY 2 DESC LIMIT 8"
+    q "sender of those txs" "SELECT x.from_address = '$W' AS sent_by_wallet, count(*) FROM transactions x WHERE x.tx_hash IN (SELECT tx_hash FROM trades WHERE wallet='$W') GROUP BY 1"
+    q "realized pnl" "SELECT status, count(*), round(sum(pnl_wei)/1e18,2) pnl_hype, count(*) FILTER (WHERE pnl_wei>0) wins FROM realized_pnl WHERE wallet='$W' GROUP BY 1"
+    q "last 15 legs" "SELECT to_char(block_time,'MM-DD HH24:MI:SS') t, block_number b, kind, left(token,10) tok, round(hype_wei/1e18,4) hype, left(tx_hash,12) tx FROM trades WHERE wallet='$W' ORDER BY block_time DESC, id DESC LIMIT 15"
+    ;;
   web-hotfix-rollback)
     need_docker
     log "before"; web_state
