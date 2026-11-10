@@ -335,18 +335,19 @@ case "$ACTION" in
     resources
     ;;
   wallet-probe)
-    # Read-only: did the five flagged wallets touch token T in the last hour?
+    # Read-only: are the five blocked wallets out of tracking, and is everything else still flowing?
     need_docker
-    T=0xb0ae33c9a05608a2d6cad984a5dae9c5ba67dcca
     FIVE="'0xf70da97812cb96acdf810712aa562db8dfa3dbef','0xf8fe0956cc3e5c3df0da1085bf40b397318624e6','0x00c18c85bf479ba2768d9faa7c02a39f2617592e','0x75d2ae0861661ef7479e9229a3e3e2cdd14dfb08','0xfffff389f8b090073efb9ac908323b2d5895f7d9'"
     q() { echo "--- $1"; psql_admin -P pager=off -c "$2" 2>&1 | sed 's/^/  /' || true; }
-    q "now / newest indexed trade" "SELECT to_char(now() at time zone 'utc','MM-DD HH24:MI:SS') now_utc, to_char(max(block_time) at time zone 'utc','MM-DD HH24:MI:SS') newest_trade_utc, round(extract(epoch from now()-max(block_time))) lag_s FROM trades"
-    q "token" "SELECT p.symbol, p.name, p.launchpad, p.version, p.launched_at, p.first_seen_at FROM token_profiles p WHERE p.address='$T'"
-    q "five wallets x token, last hour" "SELECT w.wallet, count(t.id) legs_1h, count(t.id) FILTER (WHERE t.kind='BUY') buys, count(t.id) FILTER (WHERE t.kind='SELL') sells, count(t.id) FILTER (WHERE t.kind LIKE 'TRANSFER%') transfers, round(coalesce(sum(t.hype_wei) FILTER (WHERE t.kind='BUY'),0)/1e18,4) buy_hype, round(coalesce(sum(t.hype_wei) FILTER (WHERE t.kind='SELL'),0)/1e18,4) sell_hype, to_char(max(t.block_time) at time zone 'utc','HH24:MI:SS') last_utc FROM (SELECT unnest(ARRAY[$FIVE]) wallet) w LEFT JOIN trades t ON t.wallet=w.wallet AND t.token='$T' AND t.block_time >= now() - interval '1 hour' GROUP BY 1 ORDER BY 2 DESC"
-    q "five wallets x token, all time" "SELECT wallet, count(*) legs, min(block_time) first_t, max(block_time) last_t FROM trades WHERE token='$T' AND wallet IN ($FIVE) GROUP BY 1"
-    q "five wallets: any activity in the last hour" "SELECT wallet, count(*) legs_1h, count(DISTINCT token) tokens FROM trades WHERE wallet IN ($FIVE) AND block_time >= now() - interval '1 hour' GROUP BY 1 ORDER BY 2 DESC"
-    q "token: all tracked wallets, last hour" "SELECT count(*) legs, count(DISTINCT wallet) wallets, count(*) FILTER (WHERE kind='BUY') buys, count(*) FILTER (WHERE kind='SELL') sells, round(coalesce(sum(hype_wei) FILTER (WHERE kind='BUY'),0)/1e18,3) buy_hype, round(coalesce(sum(hype_wei) FILTER (WHERE kind='SELL'),0)/1e18,3) sell_hype, min(block_time) first_t FROM trades WHERE token='$T' AND block_time >= now() - interval '1 hour'"
-    q "token: wallets in the last hour" "SELECT t.wallet, e.last_rank, count(*) legs, count(*) FILTER (WHERE kind='BUY') buys, count(*) FILTER (WHERE kind='SELL') sells, round(coalesce(sum(hype_wei) FILTER (WHERE kind='BUY'),0)/1e18,3) buy_hype, round(coalesce(sum(hype_wei) FILTER (WHERE kind='SELL'),0)/1e18,3) sell_hype, to_char(min(block_time) at time zone 'utc','HH24:MI:SS') first_utc FROM trades t LEFT JOIN wallet_enrollment e ON e.address=t.wallet WHERE t.token='$T' AND t.block_time >= now() - interval '1 hour' GROUP BY 1,2 ORDER BY min(block_time) LIMIT 15"
+    echo "  tracker started: $(docker inspect -f '{{.State.StartedAt}}' elysium-wallet-tracker)  now: $(date -u +%FT%TZ)"
+    echo "  tracker env: $(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' elysium-wallet-tracker | grep -cE '^TRACKING_BLOCKED_WALLETS=') block-list variable(s), $(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' elysium-wallet-tracker | grep -E '^TRACKING_BLOCKED_WALLETS=' | grep -oE '0x[0-9a-f]{40}' | wc -l) address(es)"
+    docker logs elysium-wallet-tracker 2>&1 | grep -E "operator block list|automated-wallet filter|tracking [0-9]+ wallets|Traceback|ERROR" | cut -c1-600 | tail -8 | sed 's/^/  log| /'
+    q "registry status of the five" "SELECT address, status, excluded_reason, in_top, last_rank FROM wallet_enrollment WHERE address IN ($FIVE) ORDER BY 1"
+    q "excluded reasons overall" "SELECT status, excluded_reason, count(*) FROM wallet_enrollment GROUP BY 1,2 ORDER BY 3 DESC"
+    q "trades since the tracker restarted: the five vs everyone else" "SELECT (wallet IN ($FIVE)) AS one_of_the_five, count(*) legs, count(DISTINCT wallet) wallets, to_char(max(block_time) at time zone 'utc','HH24:MI:SS') newest_utc FROM trades WHERE block_time >= (SELECT '$(docker inspect -f '{{.State.StartedAt}}' elysium-wallet-tracker)'::timestamptz + interval '30 seconds') GROUP BY 1"
+    q "alerts queued since the restart" "SELECT (payload->>'wallet' IN ($FIVE)) AS one_of_the_five, status, count(*) FROM notification_outbox WHERE created_at >= '$(docker inspect -f '{{.State.StartedAt}}' elysium-wallet-tracker)'::timestamptz + interval '30 seconds' GROUP BY 1,2 ORDER BY 3 DESC"
+    q "open scan coverage of the five" "SELECT address, from_block, to_block, closed_at FROM wallet_scan_coverage WHERE address IN ($FIVE) AND to_block IS NULL"
+    tracker_alive
     ;;
   web-hotfix-rollback)
     need_docker
