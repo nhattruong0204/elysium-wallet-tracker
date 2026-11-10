@@ -317,6 +317,23 @@ case "$ACTION" in
     tracker_alive
     resources
     ;;
+  web-hotfix-check)
+    # Read-only follow-up after web-hotfix: visibility, database errors, bots, resources.
+    # Postgres lines are reduced to their ERROR/FATAL message (no STATEMENT/DETAIL text, which
+    # could quote query parameters): the Actions log of this public repository is public.
+    need_docker
+    hid="$(web_hidden_tokens)"
+    web_state
+    python3 scripts/web_activity_check.py --base https://onchainflow.app --hidden "$hid" --expect-hidden 2>&1 | sed 's/^/  /' || true
+    db_stats
+    log "postgres ERROR/FATAL messages, last 60 min (UTC time, message only)"
+    docker logs --since 60m elysium-postgres 2>&1 | grep -E ' (ERROR|FATAL): ' | sed -E 's/^([0-9-]+ [0-9:]+)[^ ]* [A-Z]+ \[[0-9]+\] /\1 /' | cut -c1-160 | sed 's/^/  pg| /' | tail -40 || true
+    log "web errors, last 60 min"
+    docker logs --since 60m elysium-web 2>&1 | grep -iE 'traceback|error' | grep -vE '" [23][0-9][0-9] ' | cut -c1-200 | tail -20 | sed 's/^/  web| /' || true
+    curl -s -m 20 http://127.0.0.1:8100/api/v1/health | python3 -c 'import json,sys; d=json.load(sys.stdin).get("health", {}); print("  health:", d.get("status"), d.get("reasons"))' 2>&1 || true
+    tracker_alive
+    resources
+    ;;
   web-hotfix-rollback)
     need_docker
     log "before"; web_state
