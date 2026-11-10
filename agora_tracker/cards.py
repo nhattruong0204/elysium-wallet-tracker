@@ -328,8 +328,17 @@ def market_line(info: TokenInfo | None, hype_usd: float | None) -> str | None:
     return "📊 " + " · ".join(parts) if parts else None
 
 
+def market_cap_label(info: TokenInfo | None, hype_usd: float | None) -> str | None:
+    """The same market-cap value for the headline and legacy link bars."""
+    if info is None or info.mcap_hype is None:
+        return None
+    return (f"<b>MC</b>: {usd(info.mcap_hype * hype_usd)}" if hype_usd
+            else f"<b>MC</b>: {human(info.mcap_hype)} HYPE")
+
+
 def link_bar(L: Links, token: str, symbol: str, info: TokenInfo | None,
-             hype_usd: float | None, now: float | None = None, venue_pages: bool = True) -> str:
+             hype_usd: float | None, now: float | None = None, venue_pages: bool = True,
+             show_market_cap: bool = True) -> str:
     """🔗 #BOZO (𝕏) | MC: $6.96K | Seen: 3d: Agora | Kleos | BOXA | ElysPump | 🔎𝕏"""
     tag = hashtag((info.symbol if info and info.symbol else None) or symbol)
     head = tag or esc(symbol)
@@ -343,9 +352,8 @@ def link_bar(L: Links, token: str, symbol: str, info: TokenInfo | None,
     if socials:
         head += " ( " + " · ".join(socials) + " )"
     segs = [head]
-    if info is not None and info.mcap_hype is not None:
-        segs.append(f"<b>MC</b>: {usd(info.mcap_hype * hype_usd)}" if hype_usd
-                    else f"<b>MC</b>: {human(info.mcap_hype)} HYPE")
+    if show_market_cap and (mc := market_cap_label(info, hype_usd)) is not None:
+        segs.append(mc)
     venues = [a(L.agora_token(token), "Agora")]
     if venue_pages:
         venues += [a(L.kleos_token(token), "Kleos"), a(L.boxa_token(token), "BOXA")]
@@ -537,7 +545,10 @@ def render_trade(p: dict, L: Links, info: TokenInfo | None = None,
     qty = int(p["qty"]) / 10 ** dec
     approx = conf != "high"
     me = name_of(p)
-    lines = [_header(p, L, info, sym), who(L, p, hype_usd), ""]
+    lines = [_header(p, L, info, sym)]
+    if kind in ("BUY", "SELL"):
+        lines.append(f"💰 {market_cap_label(info, hype_usd) or '<b>MC</b>: unavailable'}")
+    lines += [who(L, p, hype_usd), ""]
     hype_wei = int(p["hype_wei"]) if p.get("hype_wei") else None
     tok = a(L.agora_token(token), esc(sym))
     mkt_px = info.price_hype if info else None
@@ -601,7 +612,8 @@ def render_trade(p: dict, L: Links, info: TokenInfo | None = None,
     if (m := market_line(info, hype_usd)) is not None:
         lines.append(m)
     lines.append(link_bar(L, token, sym, info, hype_usd, now,
-                          venue_pages=not unknown_venue(info, dd)))
+                          venue_pages=not unknown_venue(info, dd),
+                          show_market_cap=kind not in ("BUY", "SELL")))
     lines.append(f"<code>{esc(token)}</code>")
     when = ago(p.get("ts"), now)
     lines.append(f"🧾 {a(L.tx(p['tx']), 'Tx')}" + (f" · {when} ago" if when else ""))
