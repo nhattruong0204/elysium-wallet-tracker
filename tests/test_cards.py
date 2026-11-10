@@ -86,7 +86,7 @@ def test_buy_card_layout_links_and_buttons():
     assert "<b>Seen</b>: 6d: " in bar and "9.97K HYPE" not in text
     assert f"<code>{TOKEN}</code>" in text and "2m ago" in text
     assert [[b["text"] for b in r] for r in kb["inline_keyboard"]] == [
-        ["⚡ Rabby: BLOB", "⚡ OKX: BLOB"],
+        ["⚡ Buy / Sell on BasedBot"], ["⚡ Rabby: BLOB", "⚡ OKX: BLOB"],
         ["🛒 Agora: BLOB", "BOXA: BLOB"], ["Kleos: BLOB", "ElysPump: BLOB"]]
     assert all(b["url"].startswith("https://") for r in kb["inline_keyboard"] for b in r)
     assert cards.preview_url(L, info) == "https://www.agoradex.app/api/img?src=x"
@@ -124,8 +124,8 @@ def test_card_without_market_data_still_has_all_links():
     assert f"https://boxa.club/token?address={TOKEN}" in hrefs
     assert f"https://elyscan.live/tx/{TX}" in hrefs
     assert "📊" not in text and "MC" not in text and "@$" not in text
-    assert [b["text"] for b in kb["inline_keyboard"][1]] == ["🛒 Agora: BLOB", "BOXA: BLOB"]
-    assert kb["inline_keyboard"][2][1]["text"] == "🧾 Tx"
+    assert [b["text"] for b in kb["inline_keyboard"][2]] == ["🛒 Agora: BLOB", "BOXA: BLOB"]
+    assert kb["inline_keyboard"][3][1]["text"] == "🧾 Tx"
     assert cards.preview_url(L, None) is None
 
 
@@ -160,7 +160,7 @@ def test_cluster_card_links_each_wallet():
     hrefs = parse(text).hrefs
     assert f"https://elyscan.live/address/0x{'ab' * 20}" in hrefs
     assert "2 tracked wallets" in text and "<b>MC</b>: $856.64K" in text
-    assert len(kb["inline_keyboard"]) == 3
+    assert len(kb["inline_keyboard"]) == 4
 
 
 class FakeResp:
@@ -191,7 +191,7 @@ def test_notifier_sends_buttons_and_falls_back_when_rendering_breaks(store):
     n.session.post = lambda url, json, timeout: (sent.append(json), FakeResp(200))[1]
     store.enqueue_now("a", "fallback text", payload=payload())
     assert n.drain() == 1
-    assert sent[0]["reply_markup"]["inline_keyboard"][1][0]["text"] == "🛒 Agora: BLOB"
+    assert sent[0]["reply_markup"]["inline_keyboard"][2][0]["text"] == "🛒 Agora: BLOB"
     assert sent[0]["parse_mode"] == "HTML"
     assert sent[0]["link_preview_options"] == {          # token picture above the card
         "url": "https://www.agoradex.app/api/img?src=x", "prefer_large_media": True,
@@ -225,7 +225,7 @@ def test_test_card_sends_latest_trade(store, monkeypatch):
     sent = []
     monkeypatch.setattr(cli.Notifier, "_send", lambda self, t, kb=None, img=None: (sent.append((t, kb)) or (True, "", False)))
     assert cli.test_card(cfg) == 0
-    assert "Test card" in sent[0][0] and sent[0][1]["inline_keyboard"][1][0]["text"].startswith("🛒 Agora")
+    assert "Test card" in sent[0][0] and sent[0][1]["inline_keyboard"][2][0]["text"].startswith("🛒 Agora")
 
 
 def test_market_cap_falls_back_to_hype_without_a_usd_rate():

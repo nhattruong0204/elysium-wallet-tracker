@@ -45,7 +45,7 @@ class Tracker:
                                       set(cfg.alerts.ignore_tokens))
         self.watchlist = load_watchlist(cfg.watchlist_file)
         self.store.sync_manual_watchlist(self.watchlist)
-        self.links = Links(cfg.links)
+        self.links = Links(cfg.links, c.chain_id)
         self.market = AgoraMarket(cfg.market)
         self.engine = Engine(self.store, self.follower.tokens, c, cfg.alerts, self.watchlist,
                              value_unit=cfg.leaderboard.value_unit, links=self.links,
