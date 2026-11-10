@@ -74,12 +74,12 @@
 
   {% if d['items'] %}
   <div class="tw"><table id="act-table">
-    <thead><tr><th title="Click a time to open the transaction">Time (UTC)</th><th>Wallet</th><th>Token</th><th>Launchpad</th><th>Action</th><th class="r">HYPE</th><th class="r" title="Market cap in USD at the time of the transaction">MC (USD)</th><th>Basis</th><th class="r">Block</th></tr></thead>
+    <thead><tr><th title="Click a time to open the transaction">Time (UTC)</th><th>Wallet</th><th>Token</th><th>Launchpad</th><th title="Open this Elysium token in Fomo">Fomo</th><th>Action</th><th class="r">HYPE</th><th class="r" title="Market cap in USD at the time of the transaction">MC (USD)</th><th>Basis</th><th class="r">Block</th></tr></thead>
     <tbody id="act-body">{% for t in d['items'] %}{{ act_row(t) }}{% endfor %}</tbody>
   </table></div>
   {% else %}
   <div id="act-empty">{{ empty('No matching activity', 'Nothing matched these filters in this range. Widen the range or clear the search.') }}</div>
-  <div class="tw" hidden><table id="act-table"><thead><tr><th title="Click a time to open the transaction">Time (UTC)</th><th>Wallet</th><th>Token</th><th>Launchpad</th><th>Action</th><th class="r">HYPE</th><th class="r" title="Market cap in USD at the time of the transaction">MC (USD)</th><th>Basis</th><th class="r">Block</th></tr></thead><tbody id="act-body"></tbody></table></div>
+  <div class="tw" hidden><table id="act-table"><thead><tr><th title="Click a time to open the transaction">Time (UTC)</th><th>Wallet</th><th>Token</th><th>Launchpad</th><th title="Open this Elysium token in Fomo">Fomo</th><th>Action</th><th class="r">HYPE</th><th class="r" title="Market cap in USD at the time of the transaction">MC (USD)</th><th>Basis</th><th class="r">Block</th></tr></thead><tbody id="act-body"></tbody></table></div>
   {% endif %}
 
   <div class="pager">

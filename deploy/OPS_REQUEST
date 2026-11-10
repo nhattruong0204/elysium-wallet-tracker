@@ -1,2 +1,3 @@
-action=wallet-probe
-requested=2026-11-11 read-only check after blocking five wallets
+action=tracker
+commit=PR #124 (merged to main as b3b5167) applied on the deployed ops tree
+requested=2026-11-11 owner: review, merge and deploy PR #124 - tracker container, no migration

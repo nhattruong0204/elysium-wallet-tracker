@@ -342,8 +342,10 @@ class Dashboard:
         out = {k: v for k, v in item.items() if not k.startswith("_")}
         from ..cards import Links as CardLinks
         from ..cards import activity_launchpad_link
+        card_links = CardLinks(self.cfg.links, self.rep.chain_id)
         out["launchpad_url"], out["launchpad_url_kind"] = activity_launchpad_link(
-            self.rep.chain_id, item.get("launchpad"), item["token"], CardLinks(self.cfg.links))
+            self.rep.chain_id, item.get("launchpad"), item["token"], card_links)
+        out["fomo_url"] = card_links.fomo_token(item["token"])
         if self.links is not None:
             out["tx_url"] = self.links.tx(item["tx_hash"])
         return out
