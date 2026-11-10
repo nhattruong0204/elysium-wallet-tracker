@@ -122,7 +122,7 @@ class Dashboard:
                 "concentration_top3": o["concentration_top3"],
                 "coverage": self.rep.coverage(tr, now),
                 "health": public_health(self.rep.health(now), self.w),
-                "recent": self.rep.trades(tr, limit=15),
+                "recent": self.rep.trades(tr, limit=15, hidden=self.rep.hidden_tokens),
             }
         hit = self._cached(("overview", range_key(tr)), build)
         return {**hit.value, "meta": self._meta(hit, tr, now)}
@@ -178,7 +178,9 @@ class Dashboard:
 
     def _trades(self, tr: TimeRange, page: int, **kw: Any) -> dict[str, Any]:
         size = self.w.page_size
-        rows = self.rep.trades(tr, limit=size + 1, offset=(page - 1) * size, **kw)
+        # same default visibility as Activity; a token page (token=...) still lists that token
+        rows = self.rep.trades(tr, limit=size + 1, offset=(page - 1) * size,
+                               hidden=self.rep.hidden_tokens, **kw)
         return {"items": rows[:size], "page": page, "has_next": len(rows) > size, "size": size}
 
     # --- smart money ------------------------------------------------------------------------------------
