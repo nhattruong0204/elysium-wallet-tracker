@@ -332,11 +332,10 @@ parameters are passed.
 
 - The tracker **does not** place a trade, sign, broadcast, import keys or read Maestro's balance.
   Maestro independently owns its wallet setup, HYPE funding, buy presets and sell controls.
-- Normal link: `https://t.me/Maestro?start=<contract-address>`. Maestro has historically
-  documented this Telegram `start=<address>` pattern on @MaestroSniperBot, but its behaviour
-  for the current official @Maestro account **on Elysium must be checked in a real Telegram
-  client before relying on the handoff**. An EVM contract address is not chain-specific: users
-  must select **Elysium** in Maestro and verify the displayed token contract.
+- Normal link: `https://t.me/Maestro?start=<contract-address>`. The owner confirmed
+  on a physical iPhone that the official @Maestro token link opens the expected Elysium
+  Montra token (2026-11-11). This is a manual smoke test of token handoff, not a full
+  security or trading approval. Users should verify the selected chain and contract.
 - IMPORTANT: Maestro may automatically buy a pasted/deep-linked token if auto-buy is enabled
   in that wallet's settings. Validate the link first with auto-buy **disabled** and a
   non-funded/small test account. No user funds or transaction can be accessed by our tracker.
