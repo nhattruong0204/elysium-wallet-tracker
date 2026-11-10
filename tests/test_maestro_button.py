@@ -63,10 +63,10 @@ def test_only_elysium_mainnet_and_an_operator_off_switch(monkeypatch):
 
 def test_deeplink_off_opens_the_existing_maestro_chat_without_a_token_payload(monkeypatch):
     monkeypatch.setenv("MAESTRO_DEEPLINK", "off")
-    l = Links(LinksConfig())
-    assert l.maestro_token(TOKEN) == "https://t.me/Maestro"
-    assert l.maestro_row(TOKEN) == [{"text": MAESTRO_LABEL, "url": "https://t.me/Maestro"}]
-    assert l.maestro_token("USDC") is None
+    links = Links(LinksConfig())
+    assert links.maestro_token(TOKEN) == "https://t.me/Maestro"
+    assert links.maestro_row(TOKEN) == [{"text": MAESTRO_LABEL, "url": "https://t.me/Maestro"}]
+    assert links.maestro_token("USDC") is None
 
 
 @pytest.mark.parametrize("kind", ["BUY", "SELL", "SWAP", "TRANSFER_IN", "TRANSFER_OUT", "MULTI"])
