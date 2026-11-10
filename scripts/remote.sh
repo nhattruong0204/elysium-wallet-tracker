@@ -335,18 +335,19 @@ case "$ACTION" in
     resources
     ;;
   wallet-probe)
-    # Read-only: are the five blocked wallets out of tracking, and is everything else still flowing?
+    # Read-only: is the Fomo column live, and do fresh alerts carry the new buttons?
     need_docker
-    FIVE="'0xf70da97812cb96acdf810712aa562db8dfa3dbef','0xf8fe0956cc3e5c3df0da1085bf40b397318624e6','0x00c18c85bf479ba2768d9faa7c02a39f2617592e','0x75d2ae0861661ef7479e9229a3e3e2cdd14dfb08','0xfffff389f8b090073efb9ac908323b2d5895f7d9'"
-    q() { echo "--- $1"; psql_admin -P pager=off -c "$2" 2>&1 | sed 's/^/  /' || true; }
-    echo "  tracker started: $(docker inspect -f '{{.State.StartedAt}}' elysium-wallet-tracker)  now: $(date -u +%FT%TZ)"
-    echo "  tracker env: $(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' elysium-wallet-tracker | grep -cE '^TRACKING_BLOCKED_WALLETS=') block-list variable(s), $(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' elysium-wallet-tracker | grep -E '^TRACKING_BLOCKED_WALLETS=' | grep -oE '0x[0-9a-f]{40}' | wc -l) address(es)"
-    docker logs elysium-wallet-tracker 2>&1 | grep -E "operator block list|automated-wallet filter|tracking [0-9]+ wallets|Traceback|ERROR" | cut -c1-600 | tail -8 | sed 's/^/  log| /'
-    q "registry status of the five" "SELECT address, status, excluded_reason, in_top, last_rank FROM wallet_enrollment WHERE address IN ($FIVE) ORDER BY 1"
-    q "excluded reasons overall" "SELECT status, excluded_reason, count(*) FROM wallet_enrollment GROUP BY 1,2 ORDER BY 3 DESC"
-    q "trades since the tracker restarted: the five vs everyone else" "SELECT (wallet IN ($FIVE)) AS one_of_the_five, count(*) legs, count(DISTINCT wallet) wallets, to_char(max(block_time) at time zone 'utc','HH24:MI:SS') newest_utc FROM trades WHERE block_time >= (SELECT '$(docker inspect -f '{{.State.StartedAt}}' elysium-wallet-tracker)'::timestamptz + interval '30 seconds') GROUP BY 1"
-    q "alerts queued since the restart" "SELECT (payload->>'wallet' IN ($FIVE)) AS one_of_the_five, status, count(*) FROM notification_outbox WHERE created_at >= '$(docker inspect -f '{{.State.StartedAt}}' elysium-wallet-tracker)'::timestamptz + interval '30 seconds' GROUP BY 1,2 ORDER BY 3 DESC"
-    q "open scan coverage of the five" "SELECT address, from_block, to_block, closed_at FROM wallet_scan_coverage WHERE address IN ($FIVE) AND to_block IS NULL"
+    H=$(curl -s -m 20 "https://onchainflow.app/activity?_cb=$(date +%s)")
+    echo "  /activity: Fomo header $(printf '%s' "$H" | grep -c '>Fomo</th>'), Fomo links $(printf '%s' "$H" | grep -o 'class="fomo"' | wc -l), rows $(printf '%s' "$H" | grep -o '<tr data-id=' | wc -l)"
+    curl -s -m 20 "https://onchainflow.app/api/v1/activity?limit=5&_cb=$(date +%s)" | python3 -c 'import json,sys; d=json.load(sys.stdin); [print("  api:", i["token"], i.get("fomo_url")) for i in d["items"][:3]]'
+    psql_admin -P pager=off -Atc "SELECT '  alerts since tracker start: ' || count(*) || ' sent, with Maestro button ' || count(*) FILTER (WHERE true) FROM notification_outbox WHERE status='sent' AND payload->>'type'='trade' AND sent_at >= '$(docker inspect -f '{{.State.StartedAt}}' elysium-wallet-tracker)'::timestamptz" 2>&1 || true
+    docker exec elysium-wallet-tracker python -c "
+from agora_tracker.cards import Links, keyboard
+from agora_tracker.config import LinksConfig
+kb = keyboard(Links(LinksConfig()), '0xb0ae33c9a05608a2d6cad984a5dae9c5ba67dcca', 'PURRK', None, '0x' + '1' * 64)
+for row in kb['inline_keyboard'][:2]:
+    print('  tracker renders:', [(b['text'], b['url']) for b in row])
+" 2>&1 | head -4
     tracker_alive
     ;;
   web-hotfix-rollback)

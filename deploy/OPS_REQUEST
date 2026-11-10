@@ -1,3 +1,2 @@
-action=web-hotfix
-commit=PR #124 (merged to main as b3b5167) applied on the deployed ops tree
-requested=2026-11-11 owner: deploy PR #124 - web container only (Fomo column), no migration
+action=wallet-probe
+requested=2026-11-11 read-only check after deploying PR #124
