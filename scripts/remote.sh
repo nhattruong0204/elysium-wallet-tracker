@@ -335,26 +335,34 @@ case "$ACTION" in
     resources
     ;;
   wallet-probe)
-    # Read-only: behaviour profile of ONE wallet (public on-chain data only), ops branch only.
+    # Read-only: what is contract C, as used by wallet W (public on-chain data only). ops branch only.
     need_docker
     W=0xfffff389f8b090073efb9ac908323b2d5895f7d9
+    C=0xf045fae560da353f3cce305f9456ea47a7fb296e
+    RPC=https://rpc.elysium.kinetiq.xyz
     q() { echo "--- $1"; psql_admin -P pager=off -c "$2" 2>&1 | sed 's/^/  /' || true; }
-    q "identity" "SELECT w.is_contract, w.first_seen_at FROM wallets w WHERE w.address='$W'"
-    q "watchlist" "SELECT source,status,label,reason,added_at,removed_at FROM wallet_watchlist WHERE address='$W'"
-    q "leaderboard (latest 3 snapshots)" "SELECT e.snapshot_id, e.rank, round(e.pnl_usd::numeric,0) pnl_usd, round(e.worth_usd::numeric,0) worth_usd, round(e.volume_usd::numeric,0) vol_usd, e.trades FROM leaderboard_snapshot_entries e WHERE e.address='$W' ORDER BY e.snapshot_id DESC LIMIT 3"
-    q "coverage" "SELECT from_block,to_block,basis,created_at,closed_at FROM wallet_scan_coverage WHERE address='$W' ORDER BY id"
-    q "totals" "SELECT count(*) legs, count(DISTINCT tx_hash) txs, count(DISTINCT token) tokens, min(block_time) first_t, max(block_time) last_t, count(DISTINCT date_trunc('hour',block_time)) active_hours, round(extract(epoch from max(block_time)-min(block_time))/3600) span_h FROM trades WHERE wallet='$W'"
-    q "by kind" "SELECT kind, confidence, count(*), round(sum(hype_wei)/1e18,2) hype FROM trades WHERE wallet='$W' GROUP BY 1,2 ORDER BY 3 DESC"
-    q "hour of day UTC (legs)" "SELECT extract(hour from block_time)::int h, count(*) FROM trades WHERE wallet='$W' GROUP BY 1 ORDER BY 1"
-    q "gap between consecutive txs (seconds)" "WITH t AS (SELECT DISTINCT tx_hash, block_time FROM trades WHERE wallet='$W'), g AS (SELECT extract(epoch from block_time - lag(block_time) OVER (ORDER BY block_time)) s FROM t) SELECT count(*) n, round(min(s)::numeric,1) min, round((percentile_cont(0.1) WITHIN GROUP (ORDER BY s))::numeric,1) p10, round((percentile_cont(0.5) WITHIN GROUP (ORDER BY s))::numeric,1) p50, round((percentile_cont(0.9) WITHIN GROUP (ORDER BY s))::numeric,1) p90, count(*) FILTER (WHERE s < 2) under_2s, count(*) FILTER (WHERE s < 10) under_10s FROM g WHERE s IS NOT NULL"
-    q "txs per block (max burst)" "SELECT max(n) max_txs_in_one_block, count(*) FILTER (WHERE n>1) blocks_with_multiple FROM (SELECT block_number, count(DISTINCT tx_hash) n FROM trades WHERE wallet='$W' GROUP BY 1) x"
-    q "buy -> first sell hold time per token (seconds)" "WITH b AS (SELECT token, min(block_time) t FROM trades WHERE wallet='$W' AND kind='BUY' GROUP BY 1), s AS (SELECT tr.token, min(tr.block_time) t FROM trades tr JOIN b ON b.token=tr.token AND tr.block_time>=b.t WHERE tr.wallet='$W' AND tr.kind='SELL' GROUP BY 1), h AS (SELECT extract(epoch from s.t-b.t) s FROM b JOIN s USING(token)) SELECT count(*) round_trips, round(min(s)::numeric,1) min, round((percentile_cont(0.5) WITHIN GROUP (ORDER BY s))::numeric,1) p50, round((percentile_cont(0.9) WITHIN GROUP (ORDER BY s))::numeric,1) p90, count(*) FILTER (WHERE s<5) under_5s, count(*) FILTER (WHERE s<60) under_60s FROM h"
-    q "buy sizes (HYPE): repeated exact amounts" "SELECT round(hype_wei/1e18,4) hype, count(*) FROM trades WHERE wallet='$W' AND kind='BUY' AND hype_wei IS NOT NULL GROUP BY 1 ORDER BY 2 DESC LIMIT 8"
-    q "top tokens" "SELECT t.token, p.symbol, count(*) legs, count(*) FILTER (WHERE kind='BUY') buys, count(*) FILTER (WHERE kind='SELL') sells, round(sum(hype_wei) FILTER (WHERE kind='BUY')/1e18,2) buy_hype, round(sum(hype_wei) FILTER (WHERE kind='SELL')/1e18,2) sell_hype FROM trades t LEFT JOIN token_profiles p ON p.chain_id=t.chain_id AND p.address=t.token WHERE t.wallet='$W' GROUP BY 1,2 ORDER BY 3 DESC LIMIT 10"
-    q "tx targets, gas, nonce" "SELECT x.to_address, count(*) txs, round(avg(x.gas_used)) avg_gas, round(avg(x.effective_gas_price)/1e9,4) avg_gwei, count(DISTINCT x.effective_gas_price) distinct_gas_prices, min(x.nonce) min_nonce, max(x.nonce) max_nonce, count(*) FILTER (WHERE x.status=0) failed FROM transactions x WHERE x.tx_hash IN (SELECT tx_hash FROM trades WHERE wallet='$W') GROUP BY 1 ORDER BY 2 DESC LIMIT 8"
-    q "sender of those txs" "SELECT x.from_address = '$W' AS sent_by_wallet, count(*) FROM transactions x WHERE x.tx_hash IN (SELECT tx_hash FROM trades WHERE wallet='$W') GROUP BY 1"
-    q "realized pnl" "SELECT status, count(*), round(sum(pnl_wei)/1e18,2) pnl_hype, count(*) FILTER (WHERE pnl_wei>0) wins FROM realized_pnl WHERE wallet='$W' GROUP BY 1"
-    q "last 15 legs" "SELECT to_char(block_time,'MM-DD HH24:MI:SS') t, block_number b, kind, left(token,10) tok, round(hype_wei/1e18,4) hype, left(tx_hash,12) tx FROM trades WHERE wallet='$W' ORDER BY block_time DESC, id DESC LIMIT 15"
+    rpc() { curl -s -m 20 -H 'content-type: application/json' -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"$1\",\"params\":$2}" "$RPC"; }
+    q "contract usage in our db" "SELECT count(*) txs, count(DISTINCT from_address) senders, min(block_number) first_block, max(block_number) last_block, count(*) FILTER (WHERE value_wei > 0) with_value, round(avg(value_wei) FILTER (WHERE value_wei>0)/1e18,4) avg_value_hype FROM transactions WHERE to_address='$C'"
+    q "top senders to the contract" "SELECT from_address, count(*) txs, round(sum(value_wei)/1e18,3) value_hype FROM transactions WHERE to_address='$C' GROUP BY 1 ORDER BY 2 DESC LIMIT 8"
+    q "who sends the txs that deliver tokens to W" "SELECT x.from_address, count(*) txs, round(sum(x.value_wei)/1e18,4) value_hype FROM transactions x JOIN trades t ON t.tx_hash=x.tx_hash WHERE t.wallet='$W' AND t.kind='TRANSFER_IN' GROUP BY 1 ORDER BY 2 DESC LIMIT 6"
+    q "value W attaches to its own txs" "SELECT count(*) txs, count(*) FILTER (WHERE x.value_wei>0) with_value, round(sum(x.value_wei)/1e18,4) value_hype FROM transactions x JOIN trades t ON t.tx_hash=x.tx_hash WHERE t.wallet='$W' AND x.from_address='$W'"
+    q "launchpad of W's tokens" "SELECT p.launchpad, p.version, p.source, count(DISTINCT t.token) tokens FROM trades t LEFT JOIN token_profiles p ON p.chain_id=t.chain_id AND p.address=t.token WHERE t.wallet='$W' GROUP BY 1,2,3 ORDER BY 4 DESC"
+    q "W's tokens in ascend_launches" "SELECT count(*) tokens, count(*) FILTER (WHERE a.creator='$W') created_by_w, count(*) FILTER (WHERE a.recipient='$W') w_is_recipient, count(DISTINCT a.creator) creators, count(DISTINCT a.escrow) escrows FROM ascend_launches a WHERE a.token IN (SELECT token FROM trades WHERE wallet='$W')"
+    q "ascend roles of the contract" "SELECT count(*) FILTER (WHERE creator='$C') as_creator, count(*) FILTER (WHERE escrow='$C') as_escrow, count(*) FILTER (WHERE recipient='$C') as_recipient, count(*) total FROM ascend_launches"
+    q "launch venues mentioning it" "SELECT key, kind, first_seen_at FROM launch_venues WHERE key ILIKE '%f045fae5%' OR details::text ILIKE '%f045fae5%' LIMIT 5"
+    q "delay from token launch to W receiving it (s)" "SELECT count(*) n, round(min(d)::numeric,1) min, round((percentile_cont(0.5) WITHIN GROUP (ORDER BY d))::numeric,1) p50, round((percentile_cont(0.9) WITHIN GROUP (ORDER BY d))::numeric,1) p90, count(*) FILTER (WHERE d<=1) same_second FROM (SELECT extract(epoch from min(t.block_time)-a.launched_at) d FROM trades t JOIN ascend_launches a ON a.token=t.token WHERE t.wallet='$W' AND t.kind='TRANSFER_IN' GROUP BY a.token, a.launched_at) x"
+    q "in -> out hold per token (s)" "WITH i AS (SELECT token, min(block_time) t FROM trades WHERE wallet='$W' AND kind='TRANSFER_IN' GROUP BY 1), o AS (SELECT token, min(block_time) t FROM trades WHERE wallet='$W' AND kind='TRANSFER_OUT' GROUP BY 1), h AS (SELECT extract(epoch from o.t-i.t) s FROM i JOIN o USING(token)) SELECT count(*) n, round(min(s)::numeric) min, round((percentile_cont(0.5) WITHIN GROUP (ORDER BY s))::numeric) p50, round((percentile_cont(0.9) WITHIN GROUP (ORDER BY s))::numeric) p90, count(*) FILTER (WHERE s<60) under_60s FROM h"
+    IN_TX=$(psql_admin -Atc "SELECT t.tx_hash FROM trades t WHERE t.wallet='$W' AND t.kind='TRANSFER_IN' ORDER BY t.block_time DESC LIMIT 1")
+    OUT_TX=$(psql_admin -Atc "SELECT t.tx_hash FROM trades t WHERE t.wallet='$W' AND t.kind='TRANSFER_OUT' ORDER BY t.block_time DESC LIMIT 1")
+    for tx in "$IN_TX" "$OUT_TX"; do
+      q "token transfers in $tx" "SELECT log_index i, left(token,12) token, left(from_address,12) frm, left(to_address,12) dst, amount FROM token_transfers WHERE tx_hash='$tx' ORDER BY log_index LIMIT 14"
+      echo "--- on-chain tx $tx"
+      rpc eth_getTransactionByHash "[\"$tx\"]" | python3 -c 'import json,sys; t=json.load(sys.stdin)["result"]; i=t["input"]; print("  from",t["from"],"to",t["to"],"value",int(t["value"],16)/1e18,"selector",i[:10],"input bytes",(len(i)-2)//2); print("  input words:",[i[10+64*k:10+64*(k+1)].lstrip("0")[:40] or "0" for k in range(min(8,(len(i)-10)//64))])' 2>&1 || true
+      rpc eth_getTransactionReceipt "[\"$tx\"]" | python3 -c 'import json,sys; r=json.load(sys.stdin)["result"]; print("  status",r["status"],"gas",int(r["gasUsed"],16),"logs",len(r["logs"])); [print("   log",l["address"],l["topics"][0][:18],"topics",len(l["topics"])) for l in r["logs"][:14]]' 2>&1 || true
+    done
+    echo "--- contract code"
+    rpc eth_getCode "[\"$C\",\"latest\"]" | python3 -c 'import json,sys; c=json.load(sys.stdin)["result"]; print("  bytes",(len(c)-2)//2,"starts",c[:60]); import re; print("  selectors (PUSH4 ... EQ):", sorted(set(re.findall(r"63([0-9a-f]{8})14", c)))[:60])' 2>&1 || true
+    for sig in 0x06fdde03 0x8da5cb5b 0xc45a0155 0xad5c4648 0x3fc8cef3; do echo "  call $sig -> $(rpc eth_call "[{\"to\":\"$C\",\"data\":\"$sig\"},\"latest\"]" | cut -c1-240)"; done
     ;;
   web-hotfix-rollback)
     need_docker

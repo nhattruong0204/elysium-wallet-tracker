@@ -1,2 +1,2 @@
 action=wallet-probe
-requested=2026-11-10 owner: read-only behaviour profile of one wallet
+requested=2026-11-10 owner: identify contract 0xf045 as used by one wallet (read-only)
