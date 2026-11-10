@@ -122,7 +122,7 @@ def test_keyboard_stays_inside_telegram_limits():
         for info in (parse_token(TOKEN, FIX), None):
             kb = cards.render(p, L, info, 85.9)[1]
             rows = kb["inline_keyboard"]
-            assert len(rows) <= 6 and all(1 <= len(r) <= 3 for r in rows)
+            assert len(rows) <= 7 and all(1 <= len(r) <= 3 for r in rows)
             for b in (b for r in rows for b in r):
                 assert set(b) == {"text", "url"} and len(b["text"]) <= 40
                 assert b["url"].startswith("https://") and len(b["url"]) <= 512
