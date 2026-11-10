@@ -346,6 +346,17 @@ parameters are passed.
 - `MAESTRO_BUTTON=off` removes the external-trade button altogether after recreating tracker.
   Existing already-delivered Telegram messages keep their old BasedBot buttons; no sent
   message is retroactively edited.
+- The **second row** on the same token alerts is **📱 Open in Fomo**. It uses the public Fomo
+  share-link shape `https://fomo.family/coin?address=<lowercase_CA>&chainId=99901`
+  (no referral or other parameters). Fomo's official docs confirm Elysium support and
+  describe opening shared coin links in the iOS app. The precise Elysium token-address link
+  on iPhone is **not yet verified**; test it manually with an unfunded/no-trade session.
+  If Fomo opens the wrong asset, a generic page, or fails to hand off to iOS, set
+  `FOMO_BUTTON=off` in the tracker service and recreate **only** tracker.
+  The token contract is always visible in the original Telegram alert and can be copied
+  into Fomo Search manually as a fallback.
+- Fomo uses its own account/wallet/balance; it does **not** share Maestro's funded wallet.
+  The scanner never has access to either wallet and does not execute trades.
 - Alerts are rendered at send-time. USDC Telegram suppression and all other alert,
   indexing, cursor and outbox behavior are unchanged. No Stage C execution flags change.
 - Manual iPhone acceptance: tap a fresh tracker alert, confirm official @Maestro opens,
