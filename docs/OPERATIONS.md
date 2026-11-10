@@ -323,23 +323,35 @@ prints the muted queue counts and tracker/ui health before and after.
 Suppressed rows stay closed (they are not re-sent). To stop muting without a rollback, remove the
 address from `ALERTS_TELEGRAM_MUTE_TOKENS` and run `tracker` again.
 
-## BasedBot quick-trade button (2026-11-10)
+## Maestro quick-trade handoff (2026-11-11)
 
-Token alerts (trade, cluster / strong signal, new DEX pool) carry a first-row button
-`⚡ Buy / Sell on BasedBot` that opens `https://basedbot.app/token/elysium/<token address>`.
+The first row of eligible token alerts is **⚡ Quick Buy / Sell · Maestro**, pointing to the
+official [@Maestro](https://t.me/Maestro) Telegram bot. Contract addresses are public and
+normalized to lowercase; no tracked-wallet identity, owner details, credentials, or referral
+parameters are passed.
 
-- It is a **link only**. The tracker does not trade, sign, hold keys, pass any user data or a
-  referral code, or learn what happens on BasedBot. Opening the page is not a trade.
-- The host and the `elysium` slug are constants in `agora_tracker/cards.py`; the address must be
-  one exact 20-byte contract on chain 99901, otherwise no button is added. Symbols are never used.
-- Not added to: the multi-token "new launchpad" alert, operational alerts, fallback-text alerts.
-- Off switch without a config change: `BASEDBOT_BUTTON=off` in the tracker's environment, then
-  recreate the tracker only. Alerts already sent keep their buttons.
-- Alerts are rendered when they are sent, so only the **tracker** needs the new image
-  (`action=tracker`); the Telegram menu (ui) shows the button after its next normal deploy.
-- BasedBot is a third-party custodial bot: the alert is intelligence, not a safety check.
-- Not verified from the build environment (site blocked there): the exact URL format and any
-  `t.me/based_eth_bot?start=` deep link. The owner confirms the link on a phone after deploy.
+- The tracker **does not** place a trade, sign, broadcast, import keys or read Maestro's balance.
+  Maestro independently owns its wallet setup, HYPE funding, buy presets and sell controls.
+- Normal link: `https://t.me/Maestro?start=<contract-address>`. Maestro has historically
+  documented this Telegram `start=<address>` pattern on @MaestroSniperBot, but its behaviour
+  for the current official @Maestro account **on Elysium must be checked in a real Telegram
+  client before relying on the handoff**. An EVM contract address is not chain-specific: users
+  must select **Elysium** in Maestro and verify the displayed token contract.
+- IMPORTANT: Maestro may automatically buy a pasted/deep-linked token if auto-buy is enabled
+  in that wallet's settings. Validate the link first with auto-buy **disabled** and a
+  non-funded/small test account. No user funds or transaction can be accessed by our tracker.
+- If the start payload opens the wrong token, wrong chain, or only the generic bot menu:
+  set `MAESTRO_DEEPLINK=off` **on the tracker service** and recreate only tracker. This
+  opens the official Maestro chat, where the user manually pastes the CA shown in the alert.
+- `MAESTRO_BUTTON=off` removes the external-trade button altogether after recreating tracker.
+  Existing already-delivered Telegram messages keep their old BasedBot buttons; no sent
+  message is retroactively edited.
+- Alerts are rendered at send-time. USDC Telegram suppression and all other alert,
+  indexing, cursor and outbox behavior are unchanged. No Stage C execution flags change.
+- Manual iPhone acceptance: tap a fresh tracker alert, confirm official @Maestro opens,
+  Elysium chain is selected, exact contract is resolved, expected funded Maestro wallet
+  appears, and BUY presets / SELL controls are available. Do not execute a funded trade as
+  part of the handoff acceptance.
 
 ## Automated-wallet filter (2026-11-10)
 
