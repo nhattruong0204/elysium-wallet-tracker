@@ -340,3 +340,27 @@ Token alerts (trade, cluster / strong signal, new DEX pool) carry a first-row bu
 - BasedBot is a third-party custodial bot: the alert is intelligence, not a safety check.
 - Not verified from the build environment (site blocked there): the exact URL format and any
   `t.me/based_eth_bot?start=` deep link. The owner confirms the link on a phone after deploy.
+
+## Automated-wallet filter (2026-11-10)
+
+Some leaderboard wallets are machines (launch snipers, volume farms, arbitrage loops). They are
+indexed like any wallet, but their own Telegram trade / transfer alerts are not sent, and they
+never count as an independent buyer in the strong signal.
+
+- **Rule** (`IntelConfig.bot_*`, defaults in code): in the last 7 days the wallet sent at least
+  100 transactions and at least 15% of the gaps between consecutive transactions were under
+  2 seconds. Re-judged every 15 minutes from our own `trades` table, so a wallet that slows down
+  alerts again once the fast history ages out. The verdict is logged whenever the set changes
+  (`automated-wallet filter: N wallet(s) not alerted: ...`).
+- **Unchanged:** indexing, positions, PnL, the website, cluster signals in the database, the
+  USDC mutes. Cluster alerts for a token still fire; a flagged wallet just counts as "one
+  operator" together with bundle wallets.
+- **Dry run on production, 2026-11-10:** 5 of 381 wallets flagged (fast share 26-73%); the next
+  wallet with enough history sits at 13%. Those 5 produced 4,259 of 25,089 trade alerts in 7 days.
+- **Off switch:** `ALERTS_BOT_FILTER=off` in the tracker's environment, then recreate the tracker.
+- **Limits:** timing only. A slow bot is not caught; a person firing many transactions through a
+  trading bot in bursts could be. Two of the five flagged wallets do make real buys and sells.
+
+Reference case: `0xfffff389…f7d9` (744 transactions, 358 tokens, 26% of gaps under 2 s) trades
+through the private contract `0xf045fae5…296e` together with two sibling `0xffff…` wallets that
+buy on its behalf; none of it decodes as BUY/SELL because the buys are paid by another address.

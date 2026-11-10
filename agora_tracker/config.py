@@ -259,6 +259,19 @@ class IntelConfig:
     bundle_min_wallets: int = 3         # distinct wallets buying one token in one block
     bundle_min_hits: int = 5            # such blocks a wallet must take part in
     bundle_refresh_s: float = 1800.0
+    # Automated wallets (launch snipers, volume farms): a wallet that sent at least
+    # `bot_min_txs` transactions in the lookback, with at least `bot_fast_share` of the gaps
+    # between consecutive transactions shorter than `bot_fast_gap_s`, is judged a machine. Its
+    # trades are still indexed (positions, PnL, website, signals); only its own Telegram trade /
+    # transfer alerts are not sent, and it never counts as an independent buyer. Re-judged every
+    # `bot_refresh_s`, so a wallet that slows down alerts again. Off: ALERTS_BOT_FILTER=off on the
+    # tracker (kept out of config.yaml: older ui/web images reject unknown keys).
+    bot_filter: bool = True
+    bot_lookback_days: int = 7
+    bot_min_txs: int = 100
+    bot_fast_gap_s: float = 2.0
+    bot_fast_share: float = 0.15
+    bot_refresh_s: float = 900.0
     # forward measurement of the strong signal (no orders are ever placed)
     paper_enabled: bool = True
     paper_slippage_pct: float = 10.0
@@ -389,6 +402,8 @@ def load_config(path: str | Path) -> Config:
     web.activity_hidden_tokens = sorted({_norm_addr(t) for t in [*web.activity_hidden_tokens,
                                                                  *env_hidden]})
     intel = IntelConfig(**(raw.get("intel") or {}))
+    if os.environ.get("ALERTS_BOT_FILTER", "").strip().lower() in ("off", "0", "false", "no"):
+        intel.bot_filter = False
     tracking = TrackingConfig(**(raw.get("tracking") or {}))
     scoring = ScoringConfig(**(raw.get("scoring") or {}))
     intel.wrapped_native = _norm_addr(intel.wrapped_native)
