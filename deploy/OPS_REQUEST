@@ -1,3 +1,3 @@
-action=tracker
+action=web-hotfix
 commit=PR #124 (merged to main as b3b5167) applied on the deployed ops tree
-requested=2026-11-11 owner: review, merge and deploy PR #124 - tracker container, no migration
+requested=2026-11-11 owner: deploy PR #124 - web container only (Fomo column), no migration
