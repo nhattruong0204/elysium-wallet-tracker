@@ -1,17 +1,16 @@
 """Isolated Consensus group sender, durable web settings and public/privileged boundary."""
 from __future__ import annotations
 
-import json
 from datetime import datetime, timedelta, timezone
 
 import pytest
 import sqlalchemy as sa
-from sqlalchemy import exc as sa_exc
-
 from conftest import TEST_URL
+from sqlalchemy import exc as sa_exc
 from test_dashboard_db import TOK_PUB
 from test_web import make_live  # noqa: F401
 
+from agora_tracker.config import LinksConfig
 from agora_tracker.consensus_delivery import (
     ConsensusSender,
     ConsensusSettingsStore,
@@ -21,7 +20,6 @@ from agora_tracker.consensus_delivery import (
 )
 from agora_tracker.migrate import set_consensus_password
 from agora_tracker.web.format import Links
-from agora_tracker.config import LinksConfig
 
 NOW = datetime.now(timezone.utc)
 DB_PASSWORD = "consensus-test-password-abcdefgh12345"
