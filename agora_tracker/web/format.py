@@ -8,6 +8,7 @@ from typing import Any
 
 from markupsafe import Markup, escape
 
+from ..cards import Links as AlertLinks
 from ..config import LinksConfig
 from .activity import ACTION_LABELS
 from .usd import format_usd
@@ -139,6 +140,10 @@ class Links:
         return {"Elyscan": f"{self.c.explorer}/token/{a}", "Agora": f"{self.c.agora}/token/{a}",
                 "Kleos": f"{self.c.kleos}/token/{a}", "BOXA": f"{self.c.boxa}/token?address={a}",
                 "ElysPump": f"{self.c.elyspump}/#/token/{a}"}
+
+    def fomo_token(self, a: str) -> str | None:
+        """Use the same validated Elysium token link as Telegram and the Activity page."""
+        return AlertLinks(self.c).fomo_token(a)
 
     def trader(self, a: str) -> dict[str, str]:
         return {"Elyscan": self.address(a), "Agora": f"{self.c.agora}/trader/{a}"}
