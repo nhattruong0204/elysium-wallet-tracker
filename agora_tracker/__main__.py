@@ -626,7 +626,34 @@ def migrate() -> int:
         from .migrate import set_dashboard_password
         set_dashboard_password(engine, pw)
         log.info("dashboard_ro password set from DASHBOARD_DB_PASSWORD")
+    pw = os.environ.get("TRADING_DB_PASSWORD")
+    if pw:
+        from .migrate import set_trading_password
+        set_trading_password(engine, pw)
+        log.info("trading_rw password set from TRADING_DB_PASSWORD")
     return 0
+
+
+def build_liveness(cfg: Config, bot, *, ingress, worker):
+    """F-18 push alerts: only when the private worker or ingress actually runs, and enabled."""
+    t = cfg.trading
+    if not t.liveness_alerts_enabled or (ingress is None and worker is None):
+        return None
+    from .trading.ledger.runtime import owner_ids
+    from .trading.liveness import LivenessMonitor, Thresholds, telegram_sender
+    owners = bot.ledger.owner_ids if getattr(bot, "ledger", None) is not None else owner_ids(cfg)
+    if not owners:
+        log.warning("liveness alerts enabled but no owner id is configured; alerts go to the log")
+    api = getattr(bot, "api", None)
+
+    def log_only(chat_id: int, text: str) -> None:
+        log.warning("liveness alert (no Telegram API): %s", text)
+    return LivenessMonitor(send=telegram_sender(api) if api is not None else log_only,
+                           owners=owners, ingress=ingress,
+                           worker=worker,
+                           thresholds=Thresholds(interval_s=t.liveness_interval_s,
+                                                 cooldown_s=t.liveness_cooldown_s,
+                                                 ingress_max_restarts=t.liveness_ingress_max_restarts))
 
 
 def run_ui(cfg: Config) -> None:
@@ -649,8 +676,15 @@ def run_ui(cfg: Config) -> None:
     market = AgoraMarket(cfg.market)
     reports = Reports(engine, cfg.chain.chain_id, cfg.ui, value_unit=cfg.leaderboard.value_unit,
                       market=market, collector_interval_s=cfg.collector.interval_s)
+    ledger = None
+    if cfg.trading.ledger_enabled:       # default OFF; a misconfigured ledger is fatal, not "no limits"
+        from .trading.ledger.runtime import LedgerConfigError, open_ledger
+        try:
+            ledger = open_ledger(cfg)
+        except LedgerConfigError as exc:
+            raise SystemExit(f"trading ledger misconfigured: {exc}") from exc
     bot = IntelBot(cfg, TelegramApi(cfg.telegram.bot_token, cfg.telegram.timeout_s), store,
-                   reports, market)
+                   reports, market, ledger=ledger)
     stop = threading.Event()
 
     def _stop(*_: object) -> None:
@@ -658,6 +692,37 @@ def run_ui(cfg: Config) -> None:
         stop.set()
     signal.signal(signal.SIGINT, _stop)
     signal.signal(signal.SIGTERM, _stop)
+    worker = exec_rpc = None
+    if cfg.trading.wallet_execution_enabled:   # default OFF; when ON a missing piece is fatal
+        from .trading.wallet.runtime import ExecutionRpcConfigError, build_execution_rpc
+        from .trading.wallet.supervisor import WorkerSetupError, build_worker
+        try:
+            exec_rpc = build_execution_rpc(cfg)
+            worker = build_worker(cfg, ledger, stop=stop, rpc=exec_rpc)
+        except (ExecutionRpcConfigError, WorkerSetupError) as exc:
+            raise SystemExit(f"wallet reconciliation worker misconfigured: {exc}") from exc
+        bot.worker = worker
+        from .trading.wallet.corroboration import Corroborator
+        from .trading.wallet.recovery import LegRecovery
+        from .trading.wallet.runtime import build_rpc_sources
+        if ledger is None:
+            raise SystemExit("wallet leg recovery needs the ledger")
+        try:                                    # owner leg recovery (F-02): read-only, owner-driven
+            bot.recovery = LegRecovery(ledger, Corroborator(
+                build_rpc_sources(cfg, exec_rpc),
+                finality=cfg.trading.finality_confirmations,
+                require_finalized_tag=cfg.trading.finality_require_finalized_tag,
+                max_skew=cfg.trading.corroboration_max_head_skew_blocks))
+        except (ExecutionRpcConfigError, ValueError) as exc:
+            raise SystemExit(f"wallet leg recovery misconfigured: {exc}") from exc
+    ingress = None
+    if cfg.trading.ingress_enabled:            # default OFF; when ON a missing piece is fatal (F-16)
+        from .trading.ingress import IngressSetupError, build_ingress
+        try:
+            ingress = build_ingress(cfg, flow=bot.paper_trades, ledger=ledger, exec_rpc=exec_rpc)
+        except IngressSetupError as exc:
+            raise SystemExit(f"Mini App ingress misconfigured: {exc}") from exc
+        bot.ingress = ingress
     if cfg.collector.enabled:
         coll = Collector(store, AgoraMarket(cfg.market), cfg.collector,
                          new_launchpad_alerts=cfg.intel.new_launchpad_alerts)
@@ -666,9 +731,28 @@ def run_ui(cfg: Config) -> None:
         from . import scoring
         threading.Thread(target=scoring.loop, args=(store, cfg.scoring, stop), name="scoring",
                          daemon=True).start()
+    if worker is not None:
+        worker.start()
+    monitor = None
     try:
-        bot.run(stop)
+        if ingress is not None:
+            from .trading.ingress import IngressSetupError
+            try:
+                ingress.start()
+            except IngressSetupError as exc:
+                raise SystemExit(f"Mini App ingress failed to start: {exc}") from exc
+        monitor = build_liveness(cfg, bot, ingress=ingress, worker=worker)
+        if monitor is not None:
+            bot.liveness = monitor
+            monitor.start()
+        bot.run(stop)                          # the ONE getUpdates consumer; ingress never polls
     finally:
+        if monitor is not None:                # first: no restart may race the shutdown
+            monitor.stop()
+        if ingress is not None:                # stop accepting requests before the workers go
+            ingress.stop()
+        if worker is not None:
+            worker.stop()
         bot.shutdown()
         engine.dispose()
 

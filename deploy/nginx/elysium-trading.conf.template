@@ -1,0 +1,79 @@
+# Elysium private trading ingress — nginx vhost TEMPLATE (#95 F-17).
+#
+# NOT installed by anything in this repository. An operator renders it, reviews it, installs it on
+# the VPS and runs scripts/verify_ingress_proxy.py against the result. Placeholders:
+#   __ORIGIN_HOST__   the host of trading.ingress_origin (e.g. app.example.com), nothing else
+#   __INGRESS_PORT__  trading.ingress_port (default 8765)
+#   __CERT__ / __KEY__  TLS certificate chain / key for __ORIGIN_HOST__
+#
+# Contract with the application (docs/TRADING_INGRESS.md §4):
+#   * TLS terminates here, for exactly one host; every other Host/SNI gets nothing.
+#   * The app trusts X-Forwarded-Proto/For ONLY from loopback, and requires the shared secret
+#     header. Every forwarded header is SET (overwritten), never appended, so a client cannot inject
+#     its own X-Forwarded-*, Host or X-Elysium-Ingress value.
+#   * Shared proxy settings: deploy/nginx/ingress-proxy.conf.template -> /etc/elysium/ingress-proxy.conf
+#   * The secret lives in a root-owned include (mode 0640, group www-data/nginx), never in git:
+#       /etc/elysium/ingress-secret.conf:
+#         proxy_set_header X-Elysium-Ingress "<openssl rand -hex 32>";
+#     Rotation: write the new include, set TRADING_INGRESS_SECRET to the same value, `nginx -t`,
+#     reload nginx, restart the --ui service (brief window of 404s; nothing is lost).
+#   * Only the Mini App / wallet paths are proxied; the public dashboard is a different vhost.
+
+limit_req_zone  $binary_remote_addr zone=elysium_trading_req:10m rate=10r/s;
+limit_conn_zone $binary_remote_addr zone=elysium_trading_conn:10m;
+
+# Catch-all: unknown Host / SNI / plain IP access gets the connection closed (no app, no cert leak).
+server {
+    listen 443 ssl default_server;
+    listen [::]:443 ssl default_server;
+    server_name _;
+    ssl_reject_handshake on;              # nginx >= 1.19.4: no certificate for unknown SNI
+    return 444;                           # a known SNI with a foreign Host lands here: close
+}
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name __ORIGIN_HOST__;
+    return 301 https://__ORIGIN_HOST__$request_uri;
+}
+
+server {
+    listen 443 ssl http2;                 # (nginx >= 1.25.1 prefers `http2 on;`)
+    listen [::]:443 ssl http2;
+    server_name __ORIGIN_HOST__;
+
+    ssl_certificate     __CERT__;
+    ssl_certificate_key __KEY__;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers off;
+    ssl_session_tickets off;
+
+    server_tokens off;
+    access_log off;                        # the app logs nothing user-specific either
+    add_header Strict-Transport-Security "max-age=31536000" always;
+
+    # bounded work per client (the app has its own caps behind this)
+    client_max_body_size 16k;
+    client_body_timeout 10s;
+    client_header_timeout 10s;
+    large_client_header_buffers 4 8k;
+    keepalive_timeout 15s;
+    send_timeout 15s;
+    limit_req  zone=elysium_trading_req burst=20 nodelay;
+    limit_conn elysium_trading_conn 20;
+    limit_req_status 429;
+    limit_conn_status 429;
+
+    # requests whose Host does not match exactly (e.g. Host with a port or a different case)
+    if ($host != "__ORIGIN_HOST__") { return 421; }
+
+    # only the routes the application serves; everything else 404 here, never reaches loopback
+    location = /                    { include /etc/elysium/ingress-proxy.conf; }
+    location ^~ /static/            { include /etc/elysium/ingress-proxy.conf; }
+    location ^~ /api/               { include /etc/elysium/ingress-proxy.conf; }
+    location = /wallet              { include /etc/elysium/ingress-proxy.conf; }
+    location ^~ /wallet/static/     { include /etc/elysium/ingress-proxy.conf; }
+    location ^~ /wallet/api/        { include /etc/elysium/ingress-proxy.conf; }
+    location /                      { return 404; }
+}

@@ -34,7 +34,7 @@ from collections import defaultdict
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
 import requests
@@ -50,6 +50,9 @@ from .export import EXPORT_ERRORS, Exporter
 from .market import AgoraMarket
 from .reports import Reports
 from .timerange import PRESETS, RangeError, TimeRange, custom_range, from_pref, parse_local
+
+if TYPE_CHECKING:
+    from .trading.ledger import OrderLedger
 
 UTC = timezone.utc
 log = logging.getLogger(__name__)
@@ -155,9 +158,17 @@ class Sessions:
 
 
 class IntelBot:
+    ledger: OrderLedger | None = None     # class defaults keep partially built test bots valid
+    worker: Any = None                    # wallet reconciliation supervisor (None: off)
+    ingress: Any = None                   # private Mini App listener (None: off, the default)
+    recovery: Any = None                  # owner leg recovery service (None: off, the default)
+    liveness: Any = None                  # F-18 push-alert monitor (None: off)
+    _paper_broken = False
+
     def __init__(self, cfg: Config, api: TelegramApi, store: Store, reports: Reports,
                  market: AgoraMarket | None = None,
-                 now: Callable[[], datetime] = lambda: datetime.now(UTC)):
+                 now: Callable[[], datetime] = lambda: datetime.now(UTC),
+                 ledger: OrderLedger | None = None):
         self.cfg, self.api, self.store, self.reports = cfg, api, store, reports
         self.market = market
         self.now = now
@@ -166,6 +177,8 @@ class IntelBot:
         self.allowed = set(cfg.ui.admin_ids)
         from .trading.paper import PaperFlow
         self.paper_trades = PaperFlow(self.allowed)
+        self.ledger = ledger                  # durable pause + private order ledger (None: off)
+        self._paper_broken = False
         self.paper_market = None
         if cfg.trading.paper_enabled:
             from .trading.agora import AgoraV1
@@ -180,8 +193,10 @@ class IntelBot:
                     self.paper_trades.provider = DirectV2Provider(ReadRpc(cfg.trading.paper_rpc_url), agora=AgoraV1())
                     self.paper_trades.routes = frozenset({DIRECT_ROUTE})
                 except (OSError, ValueError):
+                    self._paper_broken = True
                     self.paper_trades.paused = True
                     log.error("Private PAPER journal unavailable; paper actions paused")
+        self._sync_pause()
         self.sessions = Sessions(store)
         self.exporter = Exporter(reports, self.tz, max_rows=cfg.ui.report_max_rows,
                                  max_bytes=cfg.ui.report_max_bytes)
@@ -195,6 +210,47 @@ class IntelBot:
         self._exp_lock = threading.Lock()
         self._user_locks: dict[int, threading.Lock] = defaultdict(threading.Lock)
         self._refused: dict[int, float] = {}
+
+    def _sync_pause(self) -> None:
+        """The durable ledger flag is the source of truth for the pause (it survives restarts and
+        is shared by every process); unreadable state counts as paused."""
+        if self.ledger is not None:
+            self.paper_trades.paused = self._paper_broken or self.ledger.is_paused()
+
+    def _pause_command(self, chat: int, uid: int) -> None:
+        if self.ledger is None:
+            self.paper_trades.paused = True
+            self._send(chat, "Paper trading paused until process restart. Live execution is unavailable.", None)
+            return
+        from .trading.ledger import Actor
+        # any authorized operator may stop trading in an emergency; only an owner may resume
+        actor = Actor.owner(uid) if uid in self.ledger.owner_ids else Actor.system()
+        self.paper_trades.paused = True
+        try:
+            self.ledger.pause(actor, f"Telegram /pause_trading by {uid}")
+            self._send(chat, "Trading paused. The pause is saved and survives restarts; "
+                             "receipt reconciliation continues. An owner can /resume_trading. "
+                             "Live execution is unavailable.", None)
+        except Exception:   # noqa: BLE001 - the in-memory pause above still protects this process
+            log.exception("could not persist the trading pause")
+            self._send(chat, "Paused for now, but the pause could NOT be saved and will not "
+                             "survive a restart.", None)
+
+    def _resume_command(self, chat: int, uid: int) -> None:
+        if self.ledger is None:
+            self._send(chat, "The durable ledger is disabled; paper trading resumes at restart.", None)
+            return
+        from .trading.ledger import Actor, LedgerRefused
+        try:
+            self.ledger.resume(Actor.owner(uid), f"Telegram /resume_trading by {uid}")
+        except LedgerRefused as e:
+            self._send(chat, "Only an owner can resume trading." if e.code == "actor_not_permitted"
+                       else f"Could not resume: {e.message}", None)
+            return
+        self._sync_pause()
+        self._send(chat, "Trading resumed." if not self.paper_trades.paused
+                   else "The ledger pause is cleared, but paper trading is still unavailable "
+                        "(see the logs).", None)
 
     # --- lifecycle -------------------------------------------------------------------------
     def setup(self) -> None:
@@ -297,6 +353,117 @@ class IntelBot:
                        "the owner can add it to TG_ADMIN_IDS.", None)
         return False
 
+    def _worker_health(self, chat: int, uid: int, msg: dict) -> None:
+        """Private health of the wallet worker and the Mini App ingress: owners, private chat
+        only. Everyone else gets the same neutral reply as when both are off."""
+        from .trading.ledger.runtime import owner_ids
+        owners = self.ledger.owner_ids if self.ledger is not None else owner_ids(self.cfg)
+        ingress = getattr(self, "ingress", None)
+        if not (uid in owners and (self.worker is not None or ingress is not None)
+                and chat == uid and msg.get("chat", {}).get("type") == "private"):
+            self._send(chat, "Not available.", None)
+            return
+        import html as _h
+        parts = []
+        if self.worker is not None:
+            from .trading.wallet.supervisor import render_text
+            parts.append(render_text(self.worker.snapshot(), _h.escape))
+        if ingress is not None:
+            from .trading.ingress import render_text as render_ingress
+            parts.append(render_ingress(ingress.snapshot(), _h.escape))
+        mon = getattr(self, "liveness", None)
+        if mon is not None:                      # F-18: what the push alerts currently see
+            m = mon.snapshot()
+            parts.append("<b>Liveness alerts</b>\n"
+                         f"active: {_h.escape(', '.join(m['active']) or 'none')}; "
+                         f"degraded: {m['degraded']}; sent {m['sent']}, suppressed "
+                         f"{m['suppressed']}, delivery errors {m['delivery_errors']}, ingress "
+                         f"restarts {m['ingress_restarts']}")
+        self._send(chat, "\n\n".join(parts), None)
+
+    def _trading_status(self, chat: int, uid: int, msg: dict) -> None:
+        """Read-only, owner-only, private chat: the EXPLICIT execution state (config switches and
+        the durable ledger controls). Changes nothing; everyone else gets "Not available."."""
+        import html as _h
+
+        from .trading.ledger.runtime import owner_ids
+        owners = self.ledger.owner_ids if self.ledger is not None else owner_ids(self.cfg)
+        if not (uid in owners and chat == uid and msg.get("chat", {}).get("type") == "private"):
+            self._send(chat, "Not available.", None)
+            return
+        self._send(chat, render_trading_status(self.cfg, self.ledger, getattr(self, "liveness", None),
+                                               _h.escape), None)
+
+    def _leg_recovery(self, chat: int, uid: int, msg: dict, cmd: str, arg: str) -> None:
+        """Owner leg recovery (#95 F-02). Owners only, private chat only; everyone else gets the
+        same neutral reply as when the feature is off. Nothing here can sign, broadcast, prompt a
+        wallet or create an order: /wallet_recover is read-only; /wallet_resolve needs the one-time
+        code from /wallet_recover AND a reason, and only records an audited ledger correction."""
+        import html as _h
+
+        from .trading.ledger import LedgerRefused
+        from .trading.ledger.core import Actor
+        from .trading.ledger.runtime import owner_ids
+        from .trading.wallet.recovery import (
+            RecoveryRefused,
+            render_diagnosis,
+            render_stuck,
+        )
+        rec = getattr(self, "recovery", None)
+        owners = self.ledger.owner_ids if self.ledger is not None else owner_ids(self.cfg)
+        if not (rec is not None and uid in owners and chat == uid
+                and msg.get("chat", {}).get("type") == "private"):
+            self._send(chat, "Not available.", None)
+            return
+        actor = Actor.owner(uid)
+        try:
+            parts = arg.split()
+            if cmd == "/wallet_recover" and not parts:
+                self._send(chat, render_stuck(rec.stuck(actor), _h.escape), None)
+            elif cmd == "/wallet_recover" and len(parts) == 1 and parts[0].isdigit():
+                prepared = rec.prepare(actor, int(parts[0]))
+                self._send(chat, render_diagnosis(prepared.diagnosis, _h.escape, prepared), None)
+            elif cmd == "/wallet_resolve" and len(parts) >= 3 and parts[0].isdigit():
+                reason = arg.split(None, 2)[2]
+                res = rec.confirm(actor, int(parts[0]), parts[1], reason)
+                self._send(chat, f"Recorded: leg #{res.leg_id} {_h.escape(res.leg_state)}, order "
+                           f"{_h.escape(res.order_state)}. Evidence digest "
+                           f"{_h.escape(res.evidence_digest[:16])}… No transaction was sent.", None)
+            elif cmd == "/wallet_recover":
+                self._send(chat, "Use /wallet_recover [leg id]", None)
+            else:
+                self._send(chat, "Use /wallet_resolve &lt;leg id&gt; &lt;code&gt; &lt;reason&gt;", None)
+        except RecoveryRefused as exc:
+            text = f"Refused ({_h.escape(exc.code)}): {_h.escape(exc.message)}"
+            if exc.diagnosis is not None:
+                text += "\n\n" + render_diagnosis(exc.diagnosis, _h.escape)
+            self._send(chat, text, None)
+        except LedgerRefused as exc:
+            self._send(chat, f"Refused ({_h.escape(exc.code)}).", None)
+        except Exception:                                           # noqa: BLE001
+            log.exception("wallet leg recovery command failed")
+            self._send(chat, "Recovery is unavailable right now; the leg stays as it is.", None)
+
+    def _wallet_section(self, uid: int, *, positions: bool) -> str:
+        """Wallet-managed orders / verified positions, appended to the PAPER text. Empty when the
+        ledger is off or has nothing for this user; never raises into the command handler."""
+        if self.ledger is None:
+            return ""
+        try:
+            import html as _h
+
+            from .trading.wallet.status import positions as _pos
+            from .trading.wallet.status import render_text, wallet_overview
+            items = wallet_overview(self.ledger, uid, self.L)
+            if not items:
+                return ""
+            pos = _pos(self.ledger.get_fills(uid)) if positions else []
+            body = render_text(items[:5], pos, _h.escape)
+            return "\n\n<b>Wallet-managed orders (on-chain evidence only)</b>\n" + body
+        except Exception:                                  # noqa: BLE001 - status is best-effort
+            log.warning("wallet status section unavailable", exc_info=True)
+            return ""
+
     def on_message(self, msg: dict) -> None:
         uid, chat = msg.get("from", {}).get("id"), msg.get("chat", {}).get("id")
         text = (msg.get("text") or "").strip()
@@ -314,13 +481,24 @@ class IntelBot:
             from .trading.telegram import custom_amount
             custom_amount(self, msg, trade_arg)
             return
-        if trade_cmd in ("/trade", "/pause_trading", "/orders", "/positions"):
+        if trade_cmd == "/wallet_health":
+            self._worker_health(chat, uid, msg)
+            return
+        if trade_cmd == "/trading_status":
+            self._trading_status(chat, uid, msg)
+            return
+        if trade_cmd in ("/wallet_recover", "/wallet_resolve"):
+            self._leg_recovery(chat, uid, msg, trade_cmd, trade_arg)
+            return
+        if trade_cmd in ("/trade", "/pause_trading", "/resume_trading", "/orders", "/positions"):
             if chat != uid or msg.get("chat", {}).get("type") != "private":
                 self._send(chat, "Open a private chat for paper trade actions.", None)
                 return
+            self._sync_pause()
             if trade_cmd == "/pause_trading":
-                self.paper_trades.paused = True
-                self._send(chat, "Paper trading paused until process restart. Live execution is unavailable.", None)
+                self._pause_command(chat, uid)
+            elif trade_cmd == "/resume_trading":
+                self._resume_command(chat, uid)
             elif trade_cmd == "/orders":
                 from .trading.paper import TradeRefused
                 try:
@@ -328,9 +506,10 @@ class IntelBot:
                     text = order_history(self.paper_trades, uid, chat)
                 except TradeRefused as e:
                     text = str(e)
-                self._send(chat, text, None)
+                self._send(chat, text + self._wallet_section(uid, positions=False), None)
             elif trade_cmd != "/trade":
-                self._send(chat, "PAPER records are hypothetical scenarios. Use /paper_balances TOKEN for an on-chain watch-wallet snapshot; no live positions or receipts are created.", None)
+                self._send(chat, "PAPER records are hypothetical scenarios. Use /paper_balances TOKEN for an on-chain watch-wallet snapshot; no live positions or receipts are created."
+                           + self._wallet_section(uid, positions=True), None)
             else:
                 from .trading.telegram import callback
                 parts = trade_arg.split()
@@ -404,6 +583,7 @@ class IntelBot:
             return
         if data.split("|", 1)[0] in ("tp", "ps", "pr", "pc", "pf", "pa", "pq"):
             from .trading.telegram import callback
+            self._sync_pause()
             callback(self, cq)
             return
         if data == "n":
@@ -861,3 +1041,39 @@ def smoke(bot: IntelBot, owner: int, *, send: bool = True) -> dict[str, Any]:
                   "\nTap a button below or send /menu.", None)
         bot._show(owner, None, *bot._view(owner, owner, "h"))
     return {"results": results, "failed": failed}
+
+
+def render_trading_status(cfg: Config, ledger: Any, liveness: Any, esc: Callable[[str], str]) -> str:
+    """Explicit trading state for owners (#95/#96): what is ON, what is OFF, and why spending is
+    or is not possible. No addresses, ids, URLs or secrets."""
+    t = cfg.trading
+
+    def onoff(v: bool) -> str:
+        return "ON" if v else "off"
+    lines = ["<b>Trading status</b> (read-only)",
+             f"PAPER: {onoff(t.paper_enabled)} · ledger: {onoff(t.ledger_enabled)} · "
+             f"wallet execution (config): {onoff(t.wallet_execution_enabled)} · "
+             f"ingress: {onoff(t.ingress_enabled)}",
+             f"finality: {t.finality_confirmations} confirmations"
+             + (" + finalized tag" if t.finality_require_finalized_tag else " (depth only: REVIEWED DOWNGRADE)")]
+    spend = False
+    if ledger is None:
+        lines.append("ledger controls: n/a (ledger off)")
+    else:
+        try:
+            c = ledger.controls()
+        except Exception as exc:                        # noqa: BLE001 - display only
+            lines.append(f"ledger controls: unavailable ({esc(type(exc).__name__)})")
+        else:
+            lines.append(f"ledger: paused={c.paused}"
+                         + (f" ({esc(str(c.pause_reason or '')[:80])})" if c.paused else "")
+                         + f" · execution flag={onoff(c.execution_enabled)} · policy v{c.policy_version}")
+            spend = (t.wallet_execution_enabled and c.execution_enabled and not c.paused
+                     and t.ingress_enabled)
+    if liveness is not None:
+        m = liveness.snapshot()
+        lines.append(f"alerts active: {esc(', '.join(m['active']) or 'none')}"
+                     + (" · INGRESS DEGRADED" if m["degraded"] else ""))
+    lines.append("<b>Wallet requests possible: " + ("YES" if spend else "NO") + "</b>"
+                 + ("" if spend else " — execution is disabled"))
+    return "\n".join(lines)

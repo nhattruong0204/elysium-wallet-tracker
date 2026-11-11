@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>Wallet-managed order</title>
+<link rel="stylesheet" href="/wallet/static/wallet.css">
+</head>
+<body>
+<main id="app" data-state="idle">
+  <h1>Wallet-managed order</h1>
+  <p class="notice">Your own wallet signs and sends every transaction. This server holds no keys, never signs and never broadcasts. A transaction hash is an acknowledgment, <strong>not</strong> a fill.</p>
+  <section id="wallet-card">
+    <p>Wallet: <span id="wallet-account">not connected</span> · chain <span id="wallet-chain">?</span></p>
+    <button id="connect" type="button">Connect wallet</button>
+  </section>
+  <section id="order-card" hidden>
+    <h2 id="order-title">Order</h2>
+    <dl id="order-fields"></dl>
+    <button id="create" type="button" disabled>Review and create order</button>
+    <button id="cancel" type="button" disabled>Cancel order</button>
+  </section>
+  <section id="request-card" hidden>
+    <h2 id="request-title">Wallet request</h2>
+    <dl id="request-fields"></dl>
+    <p id="request-warning" class="warn"></p>
+    <button id="send" type="button" disabled>Send to my wallet</button>
+  </section>
+  <section id="receipt-card" hidden>
+    <h2>Receipt</h2>
+    <dl id="receipt-fields"></dl>
+    <button id="refresh" type="button">Refresh status</button>
+  </section>
+  <p id="status" role="status" aria-live="polite"></p>
+</main>
+<script src="/wallet/static/wallet.js"></script>
+</body>
+</html>

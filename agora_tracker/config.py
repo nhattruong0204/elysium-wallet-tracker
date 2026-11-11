@@ -306,9 +306,122 @@ class TradingConfig:
     paper_order_path: str | None = None
     paper_rpc_url: str = 'https://rpc.agoradex.app'
     miniapp_url: str | None = None
+    # Private order ledger (Stage C2). OFF by default; enabling it never enables execution, which
+    # has its own durable, owner-only flag (also OFF). The URL must log in as `trading_rw`.
+    ledger_enabled: bool = False
+    # Wallet-managed Buy/Sell prompts (Stage C2). OFF by default and meaningless without the ledger
+    # and the (also OFF, owner-only) durable execution flag. The server never signs or broadcasts.
+    wallet_execution_enabled: bool = False
+    ledger_db_url_env: str = 'TRADING_DB_URL'
+    # Dedicated execution RPC (Stage C2 #93): a SECRET url (may embed an API key), read from this
+    # environment variable only, never from config files. Separate from the scanner's RPC.
+    execution_rpc_url_env: str = 'TRADING_EXEC_RPC_URL'
+    ledger_owner_ids_env: str = 'TRADING_OWNER_IDS'   # extra owner ids; TG_CHAT_ID is always one
+    # RPC corroboration (Stage C2 #95 F-15; replaces F-02's recovery_rpc_urls_env). Comma-separated
+    # SECRET URLs (each optionally `label=url`) of further, independently operated, read-only chain
+    # endpoints. Receipts, finalization, fills, reorgs, automatic lock release and owner recovery
+    # are recorded only on facts that >= 2 endpoints with distinct hosts AND distinct operators
+    # agree on at one anchor block: the execution RPC plus these. Unset => nothing safety-critical
+    # is ever recorded (fail closed).
+    corroboration_rpc_urls_env: str = 'TRADING_CORROBORATION_RPC_URLS'
+    execution_rpc_operator: str = ''        # optional label for the execution RPC's operator
+    corroboration_calls_per_pass: int = 120  # RPC calls one reconciler pass may spend in total
+    # Receipt finality (Stage C2 #94): confirmations after which an inclusion is treated as final.
+    # An ASSUMPTION about this chain's reorg depth, not a protocol guarantee: until it is reached a
+    # fill is provisional and a reorg can roll it back. Raise it if reorgs deeper than this occur.
+    finality_confirmations: int = 12
+    # F-04: Elysium is an Arbitrum Orbit rollup with a single sequencer and ~100-200 ms blocks, so 12
+    # confirmations are ~2 s of the sequencer's own promise, not finality. When true (default) an
+    # inclusion, a supersession or an owner recovery is final only if, IN ADDITION to the depth
+    # above, the block is at or below the `finalized` tag that EVERY corroboration source reports
+    # (derived from the parent chain). A node without the tag => nothing becomes final (fail
+    # closed: fills stay provisional, locks stay held). Setting false is a conscious downgrade
+    # that the security review must accept (docs/TRADING_FINALITY.md).
+    finality_require_finalized_tag: bool = True
+    # Largest head difference (blocks) between corroboration sources; the lowest head is the anchor
+    # so this only bounds freshness. Sized for ~5-10 blocks/s (F-07).
+    corroboration_max_head_skew_blocks: int = 64
+    # Supervised reconciliation worker (Stage C2 #95 F-01). It only ever starts when
+    # `wallet_execution_enabled` is true. All bounds protect the shared VPS: the worker is one
+    # low-priority thread, sequential (one RPC call at a time), and rate-limited.
+    worker_interval_s: float = 10.0          # pause between cycles while there is work
+    worker_idle_interval_s: float = 30.0     # pause between cycles when the queue is empty
+    worker_max_backoff_s: float = 300.0      # ceiling for consecutive-failure backoff
+    worker_batch: int = 50                   # legs per pass per reconciler
+    worker_pass_budget_s: float = 20.0       # wall-clock cap of one cycle
+    worker_rpc_calls_per_min: int = 240      # hard ceiling on execution-RPC calls per minute
+    worker_standby_retry_s: float = 15.0     # how often a standby worker retries the lease
+    # Private Mini App / wallet ingress (Stage C2 #95 F-16). OFF by default: no listener exists
+    # unless `ingress_enabled` is true. It binds LOOPBACK only and is meant to sit behind an
+    # explicitly configured HTTPS reverse proxy (docs/TRADING_INGRESS.md). The wallet routes are
+    # mounted only if `wallet_execution_enabled` is ALSO true.
+    ingress_enabled: bool = False
+    ingress_origin: str | None = None        # canonical public origin, e.g. https://app.example.com
+    ingress_bind_host: str = '127.0.0.1'     # must be a loopback address
+    ingress_port: int = 8765
+    ingress_auth_path: str | None = None     # private SQLite for sessions (dir 0700, file 0600)
+    ingress_secret_env: str = 'TRADING_INGRESS_SECRET'   # shared secret the proxy must inject
+    ingress_max_concurrency: int = 32        # open connections (idle keep-alive included); 503 above
+    ingress_threads: int = 8                 # blocking-work threads (RPC / sqlite / ledger)
+    ingress_max_body_bytes: int = 16384
+    ingress_request_timeout_s: float = 30.0
+    ingress_keepalive_s: float = 5.0
+    # Liveness push alerts (Stage C2 #95 F-18). Active only when the worker or the ingress runs:
+    # private Telegram messages to the trading owners when the listener dies (bounded restarts,
+    # then a fail-closed degraded mode), the worker stalls/crash-loops, the execution RPC breaker
+    # stays open, or ambiguous/orphaned legs and evidence queues build up. Deduplicated, cooled
+    # down and capped per hour; never contains addresses, ids, URLs or secrets.
+    liveness_alerts_enabled: bool = True
+    liveness_interval_s: float = 30.0
+    liveness_cooldown_s: float = 3600.0
+    liveness_ingress_max_restarts: int = 3
 
     def __post_init__(self) -> None:
+        import re as _re
         from urllib.parse import urlsplit
+        if type(self.ledger_enabled) is not bool:
+            raise ValueError("trading.ledger_enabled must be a boolean")
+        if type(self.wallet_execution_enabled) is not bool:
+            raise ValueError("trading.wallet_execution_enabled must be a boolean")
+        if self.wallet_execution_enabled and not self.ledger_enabled:
+            raise ValueError("trading.wallet_execution_enabled requires trading.ledger_enabled")
+        if (type(self.finality_confirmations) is not int
+                or not 1 <= self.finality_confirmations <= 256):
+            raise ValueError("trading.finality_confirmations must be an integer in 1..256")
+        if type(self.liveness_alerts_enabled) is not bool:
+            raise ValueError("trading.liveness_alerts_enabled must be a boolean")
+        for fname, lo, hi in (("liveness_interval_s", 5, 3600), ("liveness_cooldown_s", 60, 86400)):
+            v = getattr(self, fname)
+            if type(v) not in (int, float) or not lo <= v <= hi:
+                raise ValueError(f"trading.{fname} must be a number in {lo}..{hi}")
+        if (type(self.liveness_ingress_max_restarts) is not int
+                or not 0 <= self.liveness_ingress_max_restarts <= 10):
+            raise ValueError("trading.liveness_ingress_max_restarts must be an integer in 0..10")
+        if type(self.finality_require_finalized_tag) is not bool:
+            raise ValueError("trading.finality_require_finalized_tag must be a boolean")
+        if (type(self.corroboration_max_head_skew_blocks) is not int
+                or not 1 <= self.corroboration_max_head_skew_blocks <= 10_000):
+            raise ValueError("trading.corroboration_max_head_skew_blocks must be an integer in 1..10000")
+        for fname, lo, hi in (("worker_interval_s", 1, 3600), ("worker_idle_interval_s", 1, 3600),
+                              ("worker_max_backoff_s", 1, 3600), ("worker_pass_budget_s", 1, 600),
+                              ("worker_standby_retry_s", 1, 3600)):
+            v = getattr(self, fname)
+            if type(v) not in (int, float) or not lo <= v <= hi:
+                raise ValueError(f"trading.{fname} must be a number in {lo}..{hi}")
+        if (not isinstance(self.execution_rpc_operator, str)
+                or (self.execution_rpc_operator
+                    and not _re.fullmatch(r'[a-z0-9][a-z0-9._-]{0,63}', self.execution_rpc_operator))):
+            raise ValueError("trading.execution_rpc_operator must be empty or 1-64 of [a-z0-9._-]")
+        for fname, lo, hi in (("worker_batch", 1, 500), ("worker_rpc_calls_per_min", 10, 6000),
+                              ("corroboration_calls_per_pass", 10, 2000)):
+            v = getattr(self, fname)
+            if type(v) is not int or not lo <= v <= hi:
+                raise ValueError(f"trading.{fname} must be an integer in {lo}..{hi}")
+        for name in (self.ledger_db_url_env, self.ledger_owner_ids_env, self.execution_rpc_url_env,
+                     self.corroboration_rpc_urls_env, self.ingress_secret_env):
+            if not isinstance(name, str) or not _re.fullmatch(r'[A-Z][A-Z0-9_]{2,63}', name):
+                raise ValueError("trading ledger environment variable names must be UPPER_SNAKE_CASE")
+        self._check_ingress()
         if not isinstance(self.paper_rpc_url, str) or urlsplit(self.paper_rpc_url).scheme != 'https':
             raise ValueError('paper_rpc_url must use HTTPS')
         if self.paper_order_path is not None and (not isinstance(self.paper_order_path, str) or not self.paper_order_path.strip()):
@@ -321,6 +434,54 @@ class TradingConfig:
                 raise ValueError('miniapp_url must be a clean HTTPS URL')
         if type(self.paper_enabled) is not bool:
             raise ValueError("trading.paper_enabled must be a boolean")
+
+    def _check_ingress(self) -> None:
+        import ipaddress as _ip
+        from urllib.parse import urlsplit
+        if type(self.ingress_enabled) is not bool:
+            raise ValueError("trading.ingress_enabled must be a boolean")
+        try:
+            loopback = _ip.ip_address(self.ingress_bind_host).is_loopback
+        except (TypeError, ValueError):
+            loopback = False
+        if not loopback:
+            raise ValueError("trading.ingress_bind_host must be a loopback IP address; the public "
+                             "listener is the HTTPS reverse proxy, never this process")
+        if type(self.ingress_port) is not int or not 1024 <= self.ingress_port <= 65535:
+            raise ValueError("trading.ingress_port must be an integer in 1024..65535")
+        for fname, lo, hi in (("ingress_max_concurrency", 1, 256), ("ingress_threads", 1, 32),
+                              ("ingress_max_body_bytes", 1024, 65536)):
+            v = getattr(self, fname)
+            if type(v) is not int or not lo <= v <= hi:
+                raise ValueError(f"trading.{fname} must be an integer in {lo}..{hi}")
+        for fname, lo, hi in (("ingress_request_timeout_s", 1, 120), ("ingress_keepalive_s", 1, 60)):
+            v = getattr(self, fname)
+            if type(v) not in (int, float) or not lo <= v <= hi:
+                raise ValueError(f"trading.{fname} must be a number in {lo}..{hi}")
+        if self.ingress_auth_path is not None and (
+                not isinstance(self.ingress_auth_path, str) or not self.ingress_auth_path.strip()):
+            raise ValueError("trading.ingress_auth_path must be a local private file path")
+        if self.ingress_origin is not None:
+            origin = self.ingress_origin
+            u = urlsplit(origin) if isinstance(origin, str) else None
+            if (u is None or u.scheme != 'https' or not u.hostname or u.username or u.password
+                    or u.path or u.query or u.fragment or not origin.isascii()
+                    or u.netloc != u.netloc.lower()):
+                raise ValueError("trading.ingress_origin must be a canonical lower-case https "
+                                 "origin without a path")
+        if self.ingress_enabled:
+            if not self.ingress_origin:
+                raise ValueError("trading.ingress_enabled requires trading.ingress_origin")
+            if not self.paper_enabled or not self.paper_order_path:
+                raise ValueError("trading.ingress_enabled requires trading.paper_enabled and "
+                                 "trading.paper_order_path")
+            if not self.ingress_auth_path:
+                raise ValueError("trading.ingress_enabled requires trading.ingress_auth_path")
+            m = urlsplit(self.miniapp_url or '')
+            if (m.scheme, m.netloc) != ('https', urlsplit(self.ingress_origin).netloc) \
+                    or m.path not in ('', '/'):
+                raise ValueError("trading.miniapp_url must be the ingress origin's root, so the "
+                                 "Telegram launcher and the listener cannot drift apart")
 
 
 @dataclass

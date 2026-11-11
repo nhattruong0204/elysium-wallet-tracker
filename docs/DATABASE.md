@@ -102,3 +102,47 @@ Adds `public_api.wallet_scan_coverage` (public wallets only) so the website can 
 wallet's data quality without reading the private `wallet_scan_coverage` table (which also holds
 intervals for manual / Telegram wallets). One view, one grant, no table change; downgrade drops
 the view.
+
+## Migration 0011: private trading order ledger
+
+Adds schema `trading_private` (tables `orders`, `execution_attempts`, `order_events`,
+`policy_versions`, `controls`, `order_state_edges`, sequence `order_update_seq`, function
+`admission_snapshot`) and the login role `trading_rw`, which has no password until `--migrate`
+sets one from `TRADING_DB_PASSWORD`. It is purely additive: no existing table, view, role or
+grant changes, and `public_api`/`dashboard_ro` have no access to the new schema. Orders are never
+deleted, audit rows are append-only and hash-chained by trigger, and `trading_rw` is confined to
+one Telegram user at a time by row level security. `alembic downgrade 0010` drops the schema and
+the role (destructive for ledger data: back it up first). Details, backup/restore and retention:
+[TRADING_ORDER_LEDGER.md](TRADING_ORDER_LEDGER.md).
+
+## Migrations 0012–0016 and the release migration procedure
+
+Trading migrations (all additive, all in `trading_private`): 0012 wallet-request audit, 0013 order
+legs, 0014 receipts and fills (downgrade drops `order_fills` — back up first, F-14), 0015
+`leg_recoveries` (append-only), 0016 `chain_evidence` (append-only) + `order_fills.evidence_id` +
+`ck_fill_verified_evidence` **NOT VALID** (new verified fills need evidence; rows written before
+0016 are not rechecked).
+
+**Preflight / verification** (`agora_tracker/preflight.py`; read-only unless asked):
+
+```bash
+python -m agora_tracker.preflight --graph-only            # in CI and before any merge
+DATABASE_URL=... python -m agora_tracker.preflight        # before AND after --migrate
+```
+
+1. Before: graph PASS (single linear head), database revision ≤ head, `pg_dump` taken and the
+   restore rehearsed (`docs/BACKUP_AND_RECOVERY.md`). If upgrading through 0016, note
+   `pre_0016_verified_fills` (should be 0: no funded trade ever ran).
+2. `--migrate` (no service running against the schema; flags OFF).
+3. After: every item PASS/INFO; `fill_evidence_violations` = 0. Only then may an owner run
+   `--validate-fill-evidence` (refuses if any violation; scans under SHARE UPDATE EXCLUSIVE — quiet
+   window). Leaving it NOT VALID is also safe: new rows are enforced either way.
+4. Rollback: `alembic downgrade 0015` drops 0016's table/column/constraint (evidence is lost —
+   archive `chain_evidence` with `pg_dump -t` first).
+
+**Paused clustering branch** (`feat/clustering`): its `0011_wallet_clusters.py` collides with the
+trading `0011`. No other branch uses 0017 (checked across every remote branch on 2026-11-09), so
+after the trading stack is on `main` the clustering branch must be rebased and the file renamed to
+`0017_wallet_clusters.py` with `revision = "0017"`, `down_revision = "0016"`. The preflight graph
+check (and `tests/test_preflight.py`) fails on any duplicate/branching revision, so the conflict
+cannot be merged silently.

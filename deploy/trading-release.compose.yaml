@@ -1,0 +1,34 @@
+# REVIEW ARTIFACT ONLY (#96). Adding this file deploys nothing and authorizes nothing.
+# Use only in an owner-approved window:  docker compose -f docker-compose.yml \
+#     -f deploy/trading-release.compose.yaml up -d
+#
+# Every application service runs the SAME immutable image (pinned by digest), because the schema
+# head is compiled into the image: a service on an older image refuses to start against a newer
+# schema ("schema at 0016, code expects 0010"). Postgres is pinned too.
+#
+# F-19: the ingress listens on 127.0.0.1 INSIDE the `ui` container. A host nginx cannot reach a
+# container's loopback, and the config refuses a non-loopback bind (fail closed). Pick ONE before
+# enabling the ingress, and record the choice in the security review:
+#   (a) uncomment `network_mode: host` below (ui shares the host network: the listener is then on the
+#       HOST loopback; DATABASE_URL must use a host-reachable address, e.g. postgres published on
+#       127.0.0.1:5432 only), or
+#   (b) run `--ui` under systemd on the host instead of in Docker.
+services:
+  postgres:
+    image: ${POSTGRES_IMAGE:?pin postgres:16-alpine@sha256:<digest>}
+  migrate:
+    image: ${TRADING_RELEASE_IMAGE:?pin elysium-wallet-tracker@sha256:<reviewed digest>}
+  tracker:
+    image: ${TRADING_RELEASE_IMAGE:?pin elysium-wallet-tracker@sha256:<reviewed digest>}
+  web:
+    image: ${TRADING_RELEASE_IMAGE:?pin elysium-wallet-tracker@sha256:<reviewed digest>}
+  ui:
+    image: ${TRADING_RELEASE_IMAGE:?pin elysium-wallet-tracker@sha256:<reviewed digest>}
+    # network_mode: host
+    environment:
+      # secrets come from the root-owned env file only, never from config or the repository
+      TRADING_DB_URL: ${TRADING_DB_URL:-}
+      TRADING_EXEC_RPC_URL: ${TRADING_EXEC_RPC_URL:-}
+      TRADING_CORROBORATION_RPC_URLS: ${TRADING_CORROBORATION_RPC_URLS:-}
+      TRADING_INGRESS_SECRET: ${TRADING_INGRESS_SECRET:-}
+      TRADING_OWNER_IDS: ${TRADING_OWNER_IDS:-}

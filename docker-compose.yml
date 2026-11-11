@@ -39,6 +39,8 @@ services:
       <<: *db-url
       # optional: when set, --migrate (re)sets the dashboard_ro password (scram-sha-256)
       DASHBOARD_DB_PASSWORD: ${DASHBOARD_DB_PASSWORD:-}
+      # optional: when set, --migrate (re)sets the private trading_rw ledger role password
+      TRADING_DB_PASSWORD: ${TRADING_DB_PASSWORD:-}
     depends_on:
       postgres:
         condition: service_healthy
@@ -82,7 +84,10 @@ services:
     command: ["--ui"]
     restart: unless-stopped
     env_file: .env                 # TG_BOT_TOKEN, TG_CHAT_ID, optional TG_ADMIN_IDS
-    environment: *db-url
+    environment:
+      <<: *db-url
+      # only read when trading.ledger_enabled is true (default false); must log in as trading_rw
+      TRADING_DB_URL: ${TRADING_DB_URL:-}
     volumes:
       - ./config:/config:ro
     depends_on:
