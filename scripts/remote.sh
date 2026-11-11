@@ -77,6 +77,8 @@ write_env() {
     if [ -f .env ] && grep -qE '^DASHBOARD_DB_PASSWORD=.+' .env; then
       grep -E '^DASHBOARD_DB_PASSWORD=' .env | head -1 >> .env.tmp
     fi
+    # the Consensus group settings (created by the `consensus` action) must survive a deploy
+    if [ -f .env ]; then grep -E '^CONSENSUS_[A-Z_]+=.+' .env >> .env.tmp || true; fi
     while IFS= read -r line; do
       key="${line%%=*}"; val="${line#*=}"
       if [ -z "$val" ] && [ -f .env ]; then
@@ -134,6 +136,54 @@ ensure_dashboard_password() {
     fi
     chmod 600 .env
   )
+}
+
+ensure_consensus_env() {
+  # CONSENSUS_DB_PASSWORD is generated once on the VPS (never leaves it, never printed).
+  # The bot token, group id and owner key arrive from GitHub secrets in .env.consensus (0600);
+  # an empty value keeps what .env already has. Prints names only, never values.
+  (
+    umask 077
+    touch .env
+    if ! grep -qE '^CONSENSUS_DB_PASSWORD=[A-Za-z0-9_-]{32,}' .env; then
+      pw="$(openssl rand -hex 24 2>/dev/null || head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+      grep -vE '^CONSENSUS_DB_PASSWORD=' .env > .env.tmp || : > .env.tmp
+      echo "CONSENSUS_DB_PASSWORD=$pw" >> .env.tmp; mv .env.tmp .env
+      echo "generated CONSENSUS_DB_PASSWORD (stored only in $DIR/.env)"
+    fi
+    if [ -f .env.consensus ]; then
+      while IFS= read -r line; do
+        key="${line%%=*}"; val="${line#*=}"
+        case "$key" in CONSENSUS_TG_BOT_TOKEN|CONSENSUS_TG_CHAT_ID|CONSENSUS_ADMIN_KEY) ;; *) continue ;; esac
+        [ -n "$val" ] || continue
+        grep -vE "^${key}=" .env > .env.tmp || : > .env.tmp
+        echo "${key}=${val}" >> .env.tmp; mv .env.tmp .env
+      done < .env.consensus
+      rm -f .env.consensus
+    fi
+  )
+  missing=""
+  for key in CONSENSUS_TG_BOT_TOKEN CONSENSUS_TG_CHAT_ID CONSENSUS_ADMIN_KEY CONSENSUS_DB_PASSWORD; do
+    grep -qE "^${key}=.+" .env || missing="$missing $key"
+  done
+  if [ -n "$missing" ]; then
+    echo "missing:$missing - add them as GitHub repository secrets and run this action again" >&2
+    return 1
+  fi
+  grep -qE '^CONSENSUS_TG_CHAT_ID=-100[0-9]{5,20}$' .env || { echo "CONSENSUS_TG_CHAT_ID must be a supergroup id (-100...)" >&2; return 1; }
+  grep -qE '^CONSENSUS_ADMIN_KEY=.{32,}$' .env || { echo "CONSENSUS_ADMIN_KEY must be at least 32 characters" >&2; return 1; }
+  if [ "$(grep -E '^CONSENSUS_TG_BOT_TOKEN=' .env | cut -d= -f2-)" = "$(grep -E '^TG_BOT_TOKEN=' .env | cut -d= -f2-)" ]; then
+    echo "CONSENSUS_TG_BOT_TOKEN must be a different bot from the existing alert bot" >&2; return 1
+  fi
+  echo "consensus settings present: bot token, group id, owner key, database password (values not shown)"
+}
+
+consensus_state() {
+  echo "  containers: $(docker ps --filter name=elysium-consensus-alerts --format '{{.Names}} {{.Status}}' | paste -sd' ' - || true)"
+  psql_admin -Atc "SELECT '  schema: ' || coalesce((SELECT version_num FROM alembic_version LIMIT 1), '?') || ', consensus tables: ' || (SELECT count(*) FROM information_schema.tables WHERE table_schema = 'consensus_alerts')" || true
+  psql_admin -Atc "SELECT '  saved settings: enabled=' || enabled || ' version=' || version || ' traders=' || min_traders || ' window=' || window_min || 'm min_net=' || min_net_hype || ' range=' || period || ' independent=' || independent FROM consensus_alerts.settings" 2>/dev/null || echo "  saved settings: (table not created yet)"
+  psql_admin -Atc "SELECT '  deliveries: ' || coalesce(string_agg(status || '=' || n, ' '), 'none') FROM (SELECT status, count(*) n FROM consensus_alerts.deliveries GROUP BY 1) x" 2>/dev/null || true
+  psql_admin -Atc "SELECT '  dashboard_ro can read consensus settings: ' || has_schema_privilege('dashboard_ro', 'consensus_alerts', 'USAGE') || ' (must be false); consensus_rw can read trades: ' || has_table_privilege('consensus_rw', 'public.trades', 'SELECT') || ' (must be false)'" 2>/dev/null || true
 }
 
 psql_admin() { docker compose exec -T postgres psql -U tracker -d tracker -X -v ON_ERROR_STOP=0 "$@"; }
@@ -334,19 +384,73 @@ case "$ACTION" in
     tracker_alive
     resources
     ;;
-  wallet-probe)
-    # Read-only dry run of the airdrop rule over 7 days (per calendar day as the window).
-    need_docker
-    q() { echo "--- $1"; psql_admin -P pager=off -c "$2" 2>&1 | sed 's/^/  /' || true; }
-    BASE="WITH d AS (SELECT t.token, date_trunc('day', t.block_time) dy, count(DISTINCT t.wallet) FILTER (WHERE t.kind='TRANSFER_IN' AND x.from_address IS NOT NULL AND x.from_address <> t.wallet) got, count(*) FILTER (WHERE t.kind='TRANSFER_IN' AND x.from_address <> t.wallet) legs, count(DISTINCT x.from_address) FILTER (WHERE t.kind='TRANSFER_IN' AND x.from_address <> t.wallet) senders, count(*) FILTER (WHERE t.kind IN ('BUY','SELL')) traded FROM trades t LEFT JOIN transactions x ON x.tx_hash=t.tx_hash WHERE t.block_time >= now() - interval '7 days' GROUP BY 1,2), f AS (SELECT * FROM d WHERE got >= 5 AND traded <= 0.1 * got)"
-    q "flagged token-days" "$BASE SELECT f.token, coalesce(p.symbol,'') sym, coalesce(p.launchpad,'') pad, to_char(f.dy,'MM-DD') dy, f.got wallets, f.legs, f.senders, f.traded FROM f LEFT JOIN token_profiles p ON p.address=f.token ORDER BY f.got DESC LIMIT 40"
-    q "totals" "$BASE SELECT count(*) token_days, count(DISTINCT token) tokens, sum(legs) unsolicited_legs, (SELECT count(*) FROM notification_outbox WHERE created_at >= now() - interval '7 days' AND payload->>'type'='trade') all_trade_alerts FROM f"
-    q "near misses: 5+ unsolicited wallets but really traded" "$BASE SELECT d.token, coalesce(p.symbol,'') sym, to_char(d.dy,'MM-DD') dy, d.got, d.senders, d.traded FROM d LEFT JOIN token_profiles p ON p.address=d.token WHERE d.got >= 5 AND d.traded > 0.1 * d.got ORDER BY d.got DESC LIMIT 12"
-    ;;
   web-hotfix-rollback)
     need_docker
     log "before"; web_state
     web_rollback_to_pre_hotfix
+    tracker_alive
+    ;;
+  consensus)
+    # Bring the dedicated Consensus Telegram group live in one step: secrets -> .env, database
+    # dump, migration 0011 (adds schema consensus_alerts + role consensus_rw only), dashboard
+    # recreated with the owner-settings endpoint, sender container started. Alerts stay OFF
+    # until the owner saves settings with "enabled" on the website. Tracker, ui and postgres
+    # are not restarted.
+    need_docker
+    [ -f .env ] || { echo ".env missing: run the normal deploy first" >&2; exit 1; }
+    ensure_consensus_env
+    log "before"; consensus_state; tracker_alive
+    log "database dump before the migration (kept in backups/, newest 3)"
+    mkdir -p backups
+    free_kb=$(df -k --output=avail . | tail -1)
+    [ "$free_kb" -gt 3000000 ] || { echo "less than 3 GB free: refusing to dump and migrate" >&2; exit 1; }
+    dump="backups/pre-consensus-$(date -u +%Y%m%dT%H%M%SZ).dump"
+    docker compose exec -T postgres pg_dump -U tracker -Fc tracker > "$dump"
+    [ "$(stat -c %s "$dump")" -gt 100000 ] || { echo "dump looks empty: refusing to migrate" >&2; exit 1; }
+    chmod 600 "$dump"; echo "  $dump $(du -h "$dump" | cut -f1)"
+    ls -1t backups/pre-consensus-*.dump | tail -n +4 | xargs -r rm -f
+    docker tag "$(docker inspect -f '{{.Image}}' elysium-web)" elysium-wallet-tracker:pre-web-hotfix 2>/dev/null \
+      && echo "  rollback image for the dashboard: elysium-wallet-tracker:pre-web-hotfix" || echo "  WARNING: could not tag the running dashboard image"
+    log "build"
+    docker compose build migrate
+    log "migrate (adds only schema consensus_alerts and role consensus_rw; sets its password)"
+    docker compose run --rm migrate
+    log "recreate the dashboard only (owner-settings endpoint)"
+    docker compose up -d --no-deps --force-recreate web
+    if ! wait_healthy elysium-web "dashboard"; then
+      docker logs --tail 60 elysium-web 2>&1 | sed 's/^/  web| /'
+      echo "dashboard not healthy: rolling the dashboard back (the new schema is additive and stays)" >&2
+      printf 'services:\n  web:\n    image: elysium-wallet-tracker:pre-web-hotfix\n' > docker-compose.web-rollback.yml
+      docker compose -f docker-compose.yml -f docker-compose.web-rollback.yml up -d --no-deps --force-recreate web || true
+      wait_healthy elysium-web "dashboard (rolled back)" || true
+      exit 1
+    fi
+    log "start the Consensus sender"
+    docker compose --profile consensus-alerts up -d --no-deps --force-recreate consensus-alerts
+    sleep 25
+    docker logs --tail 30 elysium-consensus-alerts 2>&1 | grep -vE 'api\.telegram\.org' | cut -c1-200 | sed 's/^/  sender| /' || true
+    [ "$(docker inspect -f '{{.State.Running}} {{.RestartCount}}' elysium-consensus-alerts 2>/dev/null)" = "true 0" ] \
+      || { echo "the Consensus sender is not running cleanly (see its log above)" >&2; exit 1; }
+    log "after"; consensus_state
+    echo "  settings endpoint: $(curl -s -o /dev/null -m 15 -w '%{http_code}' http://127.0.0.1:8100/api/v1/consensus/settings) (200 expected)"
+    echo "  anonymous save:    $(curl -s -o /dev/null -m 15 -w '%{http_code}' -X POST -H 'content-type: application/json' -d '{}' http://127.0.0.1:8100/api/v1/consensus/settings) (401 expected)"
+    web_smoke
+    web_db_checks
+    tracker_alive
+    resources
+    ;;
+  consensus-off)
+    # Stop the group sender. Settings, history and the dashboard are left as they are.
+    need_docker
+    docker compose --profile consensus-alerts stop consensus-alerts || true
+    docker compose --profile consensus-alerts rm -f consensus-alerts || true
+    consensus_state
+    tracker_alive
+    ;;
+  consensus-status)
+    need_docker
+    consensus_state
+    docker logs --since 30m elysium-consensus-alerts 2>&1 | grep -vE 'api\.telegram\.org' | tail -20 | cut -c1-200 | sed 's/^/  sender| /' || true
     tracker_alive
     ;;
   tracker)

@@ -1,3 +1,3 @@
-action=tracker
-commit=PR #128 (merged to main as 85bf5ef) applied on the deployed ops tree
-requested=2026-11-11 owner: "Merged, deploy it" - airdrop spam filter, tracker container only, no migration
+action=consensus
+commit=main f660137 (PR #127 merged)
+requested=2026-11-11 owner: bring the Consensus Telegram group live - migration 0011, web recreated, sender started; tracker/ui/postgres not restarted

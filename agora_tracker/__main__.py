@@ -626,6 +626,11 @@ def migrate() -> int:
         from .migrate import set_dashboard_password
         set_dashboard_password(engine, pw)
         log.info("dashboard_ro password set from DASHBOARD_DB_PASSWORD")
+    consensus_pw = os.environ.get("CONSENSUS_DB_PASSWORD")
+    if consensus_pw:
+        from .migrate import set_consensus_password
+        set_consensus_password(engine, consensus_pw)
+        log.info("consensus_rw password configured from CONSENSUS_DB_PASSWORD")
     return 0
 
 
@@ -728,6 +733,8 @@ def main(argv: list[str] | None = None) -> None:
                     help="send the latest tracked trade to Telegram as a full card")
     ap.add_argument("--test-telegram", action="store_true",
                     help="send one test message to Telegram and exit")
+    ap.add_argument("--consensus-alerts", action="store_true",
+                    help="run the isolated send-only Consensus group alert service")
     ap.add_argument("--ui", action="store_true",
                     help="run the Telegram Intelligence Center (menu, reports, exports) and "
                          "the market snapshot collector")
@@ -783,6 +790,10 @@ def main(argv: list[str] | None = None) -> None:
     if args.web:
         from .web.run import serve
         serve(cfg, args.host, args.port)
+        return
+    if args.consensus_alerts:
+        from .consensus_delivery import run_consensus_alerts
+        run_consensus_alerts(cfg)
         return
     if args.ui:
         run_ui(cfg)

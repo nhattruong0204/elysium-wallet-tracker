@@ -28,7 +28,7 @@ on:
         description: What to do on the VPS
         type: choice
         default: status
-        options: [preflight, deploy, tracker, tracker-rollback, web-hotfix, web-hotfix-rollback, web-hotfix-check, wallet-probe, status, logs, discover, dry-run, test-telegram, test-card, ui-smoke, restart, stop, audit, backup, maint, web, web-smoke, web-rollback, loadtest]
+        options: [preflight, deploy, tracker, tracker-rollback, web-hotfix, web-hotfix-rollback, web-hotfix-check, status, logs, discover, dry-run, test-telegram, test-card, ui-smoke, restart, stop, audit, backup, maint, web, web-smoke, web-rollback, loadtest, consensus, consensus-off, consensus-status]
       deploy_dir:
         description: Directory on the VPS (relative to the SSH user's home, or absolute)
         type: string
@@ -73,7 +73,7 @@ jobs:
             IN_SCOPE="$(get scope)"; IN_STEPS="$(get steps)"; IN_BACKUP_RUN="$(get backup_run)"
           fi
           case "$IN_ACTION" in
-            preflight|deploy|tracker|tracker-rollback|web-hotfix|web-hotfix-rollback|web-hotfix-check|wallet-probe|status|logs|discover|dry-run|test-telegram|test-card|ui-smoke|restart|stop|audit|backup|maint|web|web-smoke|web-rollback|loadtest) ;;
+            preflight|deploy|tracker|tracker-rollback|web-hotfix|web-hotfix-rollback|web-hotfix-check|status|logs|discover|dry-run|test-telegram|test-card|ui-smoke|restart|stop|audit|backup|maint|web|web-smoke|web-rollback|loadtest|consensus|consensus-off|consensus-status) ;;
             *) echo "invalid action '$IN_ACTION'"; exit 1 ;;
           esac
           [ "$IN_INSTALL" = true ] || IN_INSTALL=false
@@ -135,6 +135,9 @@ jobs:
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
           TG_ADMIN_IDS: ${{ secrets.TG_ADMIN_IDS }}
           BACKUP_PASSPHRASE: ${{ secrets.BACKUP_PASSPHRASE }}
+          CONSENSUS_TG_BOT_TOKEN: ${{ secrets.CONSENSUS_TG_BOT_TOKEN }}
+          CONSENSUS_TG_CHAT_ID: ${{ secrets.CONSENSUS_TG_CHAT_ID }}
+          CONSENSUS_ADMIN_KEY: ${{ secrets.CONSENSUS_ADMIN_KEY }}
           GH_TOKEN: ${{ github.token }}
         run: |
           ssh_() {
@@ -172,7 +175,7 @@ jobs:
             echo "backup run $BACKUP_RUN: conclusion=$concl, live encrypted artifacts=$arts, age=${age_h}h"
             [ "$concl" = success ] && [ "$arts" -ge 1 ] && [ "$age_h" -le 36 ] || { echo "no recent verified backup: refusing to change the schema"; exit 1; }
           fi
-          if [ "$ACTION" = deploy ] || [ "$ACTION" = web ] || [ "$ACTION" = tracker ] || [ "$ACTION" = web-hotfix ]; then
+          if [ "$ACTION" = deploy ] || [ "$ACTION" = web ] || [ "$ACTION" = tracker ] || [ "$ACTION" = web-hotfix ] || [ "$ACTION" = consensus ]; then
             # code bundle (tracked files only; never .env, config/, backups/)
             git archive --format=tar HEAD | \
               ssh_ "mkdir -p '$DIR' && cd '$DIR' && rm -rf agora_tracker && tar -xf -"
@@ -186,6 +189,13 @@ jobs:
             # Telegram secrets, written with 0600; POSTGRES_PASSWORD is generated on the VPS
             printf 'TG_BOT_TOKEN=%s\nTG_CHAT_ID=%s\nTG_ADMIN_IDS=%s\n' "$TG_BOT_TOKEN" "$TG_CHAT_ID" "$TG_ADMIN_IDS" | \
               ssh_ "umask 077 && cat > '$DIR/.env.incoming'"
+          fi
+          if [ "$ACTION" = consensus ]; then
+            # Consensus group secrets, written with 0600 and merged into .env on the VPS; an
+            # empty secret keeps the value already stored there. Never echoed.
+            printf 'CONSENSUS_TG_BOT_TOKEN=%s\nCONSENSUS_TG_CHAT_ID=%s\nCONSENSUS_ADMIN_KEY=%s\n' \
+              "$CONSENSUS_TG_BOT_TOKEN" "$CONSENSUS_TG_CHAT_ID" "$CONSENSUS_ADMIN_KEY" | \
+              ssh_ "umask 077 && cat > '$DIR/.env.consensus'"
           fi
           if [ "$ACTION" = maint ]; then
             [ -n "$MAINT_STEPS" ] || { echo "maint needs steps=..."; exit 1; }

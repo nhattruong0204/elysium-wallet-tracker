@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+import os
 import time
 
 import sqlalchemy as sa
@@ -75,7 +76,26 @@ def build(cfg: Config, url: str | None = None) -> tuple[object, Engine]:
     reports.hidden_tokens = tuple(sorted({*cfg.alerts.mute_tokens, *cfg.web.activity_hidden_tokens}))
     log.info("web: default Activity hides %d token(s) by address: %s", len(reports.hidden_tokens),
              ", ".join(reports.hidden_tokens) or "none")
-    return create_app(cfg, Dashboard(reports, cfg), engine), engine
+    from ..consensus_delivery import ConsensusSettingsStore, make_settings_engine
+    writer_pw = os.environ.get("CONSENSUS_DB_PASSWORD", "")
+    admin_key = os.environ.get("CONSENSUS_ADMIN_KEY", "")
+    if bool(writer_pw) != bool(admin_key):
+        raise SystemExit("Both CONSENSUS_DB_PASSWORD and CONSENSUS_ADMIN_KEY are required")
+    if admin_key and len(admin_key) < 32:
+        raise SystemExit("CONSENSUS_ADMIN_KEY must contain at least 32 characters")
+    writer_url = (sa.engine.make_url(url).set(
+        username="consensus_rw", password=writer_pw).render_as_string(hide_password=False)
+        if admin_key else "")
+    writer = None
+    if admin_key:
+        try:
+            writer = ConsensusSettingsStore(make_settings_engine(writer_url))
+        except Exception as e:  # noqa: BLE001 - an optional feature must never take the site down
+            # e.g. migration 0011 not applied yet, or the role has no password: the public
+            # dashboard stays up and the settings endpoint answers 503 until this is fixed.
+            log.error("Consensus owner settings disabled (%s): the dashboard runs without them",
+                      type(e).__name__)
+    return create_app(cfg, Dashboard(reports, cfg), engine, consensus_settings=writer), engine
 
 
 def serve(cfg: Config, host: str | None = None, port: int | None = None) -> None:
