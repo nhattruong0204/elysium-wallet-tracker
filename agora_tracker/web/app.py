@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
+import json
+import os
 import logging
 import time
 import uuid
@@ -145,7 +148,8 @@ class Guard(BaseHTTPMiddleware):
 
 
 # --- application ---------------------------------------------------------------------------------
-def create_app(cfg: Config, dash: Dashboard, engine: Engine | None = None) -> Starlette:
+def create_app(cfg: Config, dash: Dashboard, engine: Engine | None = None,
+               *, consensus_settings: Any = None) -> Starlette:
     env = jinja2.Environment(
         loader=jinja2.FileSystemLoader(HERE / "templates"),
         autoescape=jinja2.select_autoescape(["html"]), trim_blocks=True, lstrip_blocks=True)
@@ -393,6 +397,50 @@ def create_app(cfg: Config, dash: Dashboard, engine: Engine | None = None) -> St
         return page(request, "consensus.html", "consensus", ctx, None, title="Consensus")
 
     @guarded
+    async def consensus_settings_api(request: Request) -> Response:
+        """Public read of saved alert thresholds, authenticated full replacement on POST.
+
+        No Telegram token, group id, DB connection string or admin key is ever returned.
+        The public dashboard's own database role remains SELECT-only.
+        """
+        headers = {"Cache-Control": "no-store"}
+        if consensus_settings is None:
+            return JSONResponse({"error": "Owner settings are not configured"},
+                                status_code=503, headers=headers)
+        if request.method == "GET":
+            saved = await run(request, consensus_settings.read)
+            return JSONResponse(saved, headers=headers)
+        key = os.environ.get("CONSENSUS_ADMIN_KEY", "")
+        auth = request.headers.get("authorization", "")
+        origin = os.environ.get("CONSENSUS_ADMIN_ORIGIN", "https://onchainflow.app")
+        if not key or not hmac.compare_digest(auth, "Bearer " + key):
+            return JSONResponse({"error": "Unauthorized"}, status_code=401, headers=headers)
+        # Header-only Bearer authentication is non-ambient (no cookies/CSRF). Require a
+        # real same-origin TLS browser request as an additional condition.
+        if (request.headers.get("origin") != origin
+                or request.headers.get("x-forwarded-proto") != "https"
+                or request.headers.get("content-type", "").split(";")[0].strip()
+                != "application/json"):
+            return JSONResponse({"error": "Invalid origin, proxy or content type"},
+                                status_code=403, headers=headers)
+        if request.headers.get("content-length", "0").isdigit() and int(
+                request.headers.get("content-length", "0")) > 2048:
+            return JSONResponse({"error": "Settings too large"}, status_code=413, headers=headers)
+        body = await request.body()
+        if len(body) > 2048:
+            return JSONResponse({"error": "Settings too large"}, status_code=413, headers=headers)
+        try:
+            raw = json.loads(body)
+            updated = await run(request, lambda: consensus_settings.save(raw))
+        except (ValueError, TypeError):
+            return JSONResponse({"error": "Invalid Consensus thresholds"}, status_code=400,
+                                headers=headers)
+        except RuntimeError:
+            return JSONResponse({"error": "Settings changed: reload before saving"},
+                                status_code=409, headers=headers)
+        return JSONResponse(updated, headers=headers)
+
+    @guarded
     async def scanner(request: Request) -> Response:
         d = await run(request, lambda: dash.health(now_utc()))
         return page(request, "health.html", "health", d, None, title="Scanner health")
@@ -514,6 +562,7 @@ def create_app(cfg: Config, dash: Dashboard, engine: Engine | None = None) -> St
         Route("/api/v1/early", api(lambda r: dash.early(
             get_range(r), r.query_params.get("sort", "score"), now_utc()))),
         Route("/api/v1/health", api(lambda r: dash.health(now_utc()))),
+        Route("/api/v1/consensus/settings", consensus_settings_api, methods=["GET", "POST"]),
         Route("/api/v1/consensus", api(lambda r: {"params": parse_consensus(r.query_params).__dict__,
                                                   **cons_ctx(r)[1]})),
         Route("/api/v1/search", api(lambda r: dash.search(r.query_params.get("q", "")[:80]))),
