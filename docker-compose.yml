@@ -39,6 +39,8 @@ services:
       <<: *db-url
       # optional: when set, --migrate (re)sets the dashboard_ro password (scram-sha-256)
       DASHBOARD_DB_PASSWORD: ${DASHBOARD_DB_PASSWORD:-}
+      # Optional dedicated Consensus settings role (no Telegram secrets in migrate).
+      CONSENSUS_DB_PASSWORD: ${CONSENSUS_DB_PASSWORD:-}
     depends_on:
       postgres:
         condition: service_healthy
@@ -108,6 +110,9 @@ services:
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql+psycopg://dashboard_ro:${DASHBOARD_DB_PASSWORD:-unset}@postgres:5432/tracker
+      # Separate narrow writer role for owner-authenticated Consensus settings only.
+      CONSENSUS_DB_PASSWORD: ${CONSENSUS_DB_PASSWORD:-}
+      CONSENSUS_ADMIN_KEY: ${CONSENSUS_ADMIN_KEY:-}
     ports:
       - "127.0.0.1:8100:8100"      # loopback only; the host reverse proxy is the public edge
     volumes:
@@ -129,6 +134,32 @@ services:
       retries: 3
     stop_grace_period: 15s
     mem_limit: 256m
+    logging: *logging
+
+  # Dedicated send-only Consensus Telegram bot; never polls getUpdates and never
+  # affects the existing tracker/UI chats. The profile is OFF unless opted in.
+  consensus-alerts:
+    profiles: ["consensus-alerts"]
+    image: elysium-wallet-tracker:latest
+    container_name: elysium-consensus-alerts
+    command: ["--consensus-alerts"]
+    restart: unless-stopped
+    environment:
+      CONSENSUS_PUBLIC_DATABASE_URL: postgresql+psycopg://dashboard_ro:${DASHBOARD_DB_PASSWORD:-unset}@postgres:5432/tracker
+      CONSENSUS_DB_PASSWORD: ${CONSENSUS_DB_PASSWORD:-}
+      CONSENSUS_TG_BOT_TOKEN: ${CONSENSUS_TG_BOT_TOKEN:-}
+      CONSENSUS_TG_CHAT_ID: ${CONSENSUS_TG_CHAT_ID:-}
+    volumes:
+      - ./config:/config:ro
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 192m
     logging: *logging
 
   # Daily pg_dump (custom format), verified with pg_restore --list, pruned after N days.
