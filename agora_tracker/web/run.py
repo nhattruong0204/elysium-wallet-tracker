@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+import os
 import time
 
 import sqlalchemy as sa
@@ -71,7 +72,15 @@ def build(cfg: Config, url: str | None = None) -> tuple[object, Engine]:
                             collector_interval_s=cfg.collector.interval_s)
     reports.fx_policy = FxPolicy.from_web(cfg.web)
     reports.hidden_tokens = tuple(cfg.alerts.mute_tokens)
-    return create_app(cfg, Dashboard(reports, cfg), engine), engine
+    from ..consensus_delivery import ConsensusSettingsStore, make_settings_engine
+    writer_url = os.environ.get("CONSENSUS_DATABASE_URL", "")
+    admin_key = os.environ.get("CONSENSUS_ADMIN_KEY", "")
+    if bool(writer_url) != bool(admin_key):
+        raise SystemExit("Both CONSENSUS_DATABASE_URL and CONSENSUS_ADMIN_KEY are required")
+    if admin_key and len(admin_key) < 32:
+        raise SystemExit("CONSENSUS_ADMIN_KEY must contain at least 32 characters")
+    writer = ConsensusSettingsStore(make_settings_engine(writer_url)) if admin_key else None
+    return create_app(cfg, Dashboard(reports, cfg), engine, consensus_settings=writer), engine
 
 
 def serve(cfg: Config, host: str | None = None, port: int | None = None) -> None:
