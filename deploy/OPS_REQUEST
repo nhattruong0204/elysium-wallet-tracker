@@ -1,3 +1,3 @@
 action=consensus
 commit=main f660137 (PR #127 merged)
-requested=2026-11-11 owner updated CONSENSUS_TG_CHAT_ID - retry the Consensus go-live
+requested=2026-11-11 owner updated CONSENSUS_ADMIN_KEY - retry the Consensus go-live (2)
