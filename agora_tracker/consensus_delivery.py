@@ -16,7 +16,6 @@ import signal
 import threading
 import time
 from datetime import datetime, timedelta, timezone
-from decimal import Decimal
 from typing import Any
 
 import requests
@@ -24,8 +23,13 @@ import sqlalchemy as sa
 from sqlalchemy.engine import Engine
 
 from .config import Config
-from .web.consensus import (NET_CHOICES, RANGE_CHOICES, TRADER_CHOICES, WINDOW_CHOICES,
-                            ConsensusParams)
+from .web.consensus import (
+    NET_CHOICES,
+    RANGE_CHOICES,
+    TRADER_CHOICES,
+    WINDOW_CHOICES,
+    ConsensusParams,
+)
 
 log = logging.getLogger(__name__)
 UTC = timezone.utc
@@ -163,7 +167,7 @@ class ConsensusSettingsStore:
                 inserted += int(result.scalar() is not None)
         return inserted
 
-    def send_due(self, settings: dict[str, Any], bot: "ConsensusSender") -> int:
+    def send_due(self, settings: dict[str, Any], bot: ConsensusSender) -> int:
         if not settings["enabled"]:
             return 0
         sent = 0
