@@ -644,6 +644,20 @@ if me.get("ok") and ch.get("ok"):
     m = call("getChatMember", {"chat_id": chat, "user_id": me["result"]["id"]})
     mr = m.get("result") or {}
     print("bot in group:", m.get("ok"), mr.get("status"), "can_post_messages=", mr.get("can_post_messages"), m.get("description", ""))
+# Chats the bot was added to (its own update queue; nothing else consumes this bot's updates).
+# Prints shape only: the id itself stays off the public log.
+up = call("getUpdates", {"timeout": 0, "allowed_updates": ["my_chat_member", "message"]})
+seen = {}
+for u in up.get("result") or []:
+    c = ((u.get("my_chat_member") or u.get("message") or {}).get("chat") or {})
+    if c.get("type") in ("group", "supergroup", "channel"):
+        seen[c["id"]] = (c.get("type"), c.get("title"))
+print("chats in the bot's recent updates:", len(seen), up.get("description", ""))
+for cid, (typ, title) in seen.items():
+    sid = str(cid)
+    print(f"  - {typ} {title!r}: id starts -100={sid.startswith('-100')}, digits={len(sid.lstrip('-'))},"
+          f" equals configured={sid == chat}, configured is this with -100 added={chat == '-100' + sid.lstrip('-')}")
+print(f"configured id: starts -100={chat.startswith('-100')}, digits={len(chat.lstrip('-'))}")
 raw = open(sys.argv[1]).read().strip()
 if not raw:
     print("no refused message to retry"); sys.exit(0)

@@ -1,3 +1,3 @@
 action=consensus-diag
-commit=cdd0acb (fix/consensus-health-and-ops) on main f660137
-requested=2026-11-11 why does Telegram refuse the Consensus group message (HTTP 400)
+commit=fix/consensus-health-and-ops
+requested=2026-11-11 which chats was the Consensus bot added to
