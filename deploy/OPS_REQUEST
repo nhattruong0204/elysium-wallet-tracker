@@ -1,2 +1,3 @@
-action=wallet-probe
-requested=2026-11-11 owner: dry run of the airdrop rule (read-only)
+action=tracker
+commit=PR #128 (merged to main as 85bf5ef) applied on the deployed ops tree
+requested=2026-11-11 owner: "Merged, deploy it" - airdrop spam filter, tracker container only, no migration

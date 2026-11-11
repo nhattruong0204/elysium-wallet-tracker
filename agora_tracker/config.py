@@ -281,6 +281,17 @@ class IntelConfig:
     # snipers paid by another address, volume loops). A fast wallet that really trades is kept.
     bot_max_trade_share: float = 0.05
     bot_refresh_s: float = 900.0
+    # Airdrop spam: a token pushed into tracked wallets by someone else. A TRANSFER_IN is
+    # "unsolicited" when the receiving wallet did not send the transaction. Once at least
+    # `airdrop_min_wallets` tracked wallets got unsolicited transfers of one token within
+    # `airdrop_window_h`, and the tracked wallets' real BUY/SELL legs of it are at most
+    # `airdrop_max_trade_share` of those receipts, further unsolicited receipts of that token
+    # are not sent to Telegram. They are still indexed (positions, website); buys, sells and
+    # transfers the wallet itself sends still alert. Off: ALERTS_AIRDROP_FILTER=off (tracker).
+    airdrop_filter: bool = True
+    airdrop_min_wallets: int = 5
+    airdrop_window_h: float = 24.0
+    airdrop_max_trade_share: float = 0.1
     # forward measurement of the strong signal (no orders are ever placed)
     paper_enabled: bool = True
     paper_slippage_pct: float = 10.0
@@ -413,6 +424,8 @@ def load_config(path: str | Path) -> Config:
     intel = IntelConfig(**(raw.get("intel") or {}))
     if os.environ.get("ALERTS_BOT_FILTER", "").strip().lower() in ("off", "0", "false", "no"):
         intel.bot_filter = False
+    if os.environ.get("ALERTS_AIRDROP_FILTER", "").strip().lower() in ("off", "0", "false", "no"):
+        intel.airdrop_filter = False
     tracking = TrackingConfig(**(raw.get("tracking") or {}))
     env_blocked = os.environ.get("TRACKING_BLOCKED_WALLETS", "").replace(",", " ").split()
     tracking.blocked_wallets = sorted({_norm_addr(a) for a in [*tracking.blocked_wallets,

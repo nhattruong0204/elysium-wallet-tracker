@@ -411,3 +411,25 @@ Blocked on 2026-11-11 (owner decision, the five wallets the automated-wallet dry
 
 To reinstate one: delete its line, recreate the tracker (`action=tracker`). It is re-enrolled on
 the next leaderboard refresh; the blocks it missed are a recorded coverage gap, not back-filled.
+
+## Airdrop spam filter (2026-11-11)
+
+Anyone can mint a token and send it to every leaderboard wallet; each receipt used to produce a
+Telegram alert (197 alerts in 12 minutes for `0x6f0954d9…8af6` on 2026-11-11).
+
+- **Unsolicited receipt:** a `TRANSFER_IN` leg whose wallet did not send the transaction.
+- **Rule** (`IntelConfig.airdrop_*`, defaults in code): once 5 or more tracked wallets received
+  unsolicited transfers of one token within 24 hours, and the tracked wallets' real BUY/SELL legs
+  of that token are at most 10% of that number, further unsolicited receipts of the token are
+  not sent to Telegram. The check runs per indexed block range and counts the range itself, so
+  a burst is silenced from its first range; a slow drip leaks at most the first four alerts.
+- **Still alerted:** buys, sells, and transfers a wallet sends itself (including selling or
+  moving a spam token), and receipts of tokens that are really traded.
+- **Unchanged:** every leg is still stored; positions, the website and the other mutes are as
+  before. The tracker logs each newly flagged token once (`airdrop filter: ...`).
+- **Dry run on production, 2026-11-11 (7 days):** 23 tokens, 3,180 receipts out of 26,844 trade
+  alerts; every flagged token had one or two senders and at most two real trades.
+- **Off switch:** `ALERTS_AIRDROP_FILTER=off` in the tracker's environment.
+- **Limits:** Telegram only; the website's Activity feed still lists these rows (its read-only
+  views do not expose who sent a transaction). A genuine airdrop of a real token is muted the
+  same way until tracked wallets trade it.
