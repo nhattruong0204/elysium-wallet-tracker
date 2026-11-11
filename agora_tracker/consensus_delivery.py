@@ -168,38 +168,45 @@ class ConsensusSettingsStore:
         return inserted
 
     def send_due(self, settings: dict[str, Any], bot: ConsensusSender) -> int:
+        """Send due deliveries of the current settings version, oldest first.
+
+        The Telegram request is made OUTSIDE any database transaction: no row or settings lock
+        is held while waiting on the network, so an owner Save is never blocked by a slow send
+        and the role's idle-in-transaction timeout cannot cut a send short. One worker runs at
+        a time (session advisory lock), so claim-then-send needs no row lock; the result is
+        recorded only if the row is still pending (a Save in between cancels it)."""
         if not settings["enabled"]:
             return 0
         sent = 0
         for _ in range(MAX_SENDS):
             with self.engine.begin() as c:
-                # Re-check settings under lock so turning alerts OFF stops new sends.
                 current = c.execute(sa.text(
-                    f"SELECT version, enabled FROM {SCHEMA}.settings WHERE id=1 FOR SHARE")).one()
+                    f"SELECT version, enabled FROM {SCHEMA}.settings WHERE id=1")).one()
                 if not current[1] or current[0] != settings["version"]:
-                    return sent
+                    return sent                      # turned off or changed: stop sending
                 row = c.execute(sa.text(f"""
-                    SELECT * FROM {SCHEMA}.deliveries
+                    SELECT id, body, buttons, attempts FROM {SCHEMA}.deliveries
                     WHERE status='pending' AND version=:v AND next_retry_at <= now()
-                    ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED"""),
-                    {"v": settings["version"]}).mappings().first()
-                if row is None:
-                    return sent
-                ok, permanent, error, retry = bot.send(row["body"], row["buttons"])
+                    ORDER BY id LIMIT 1"""), {"v": settings["version"]}).mappings().first()
+            if row is None:
+                return sent
+            ok, permanent, error, retry = bot.send(row["body"], row["buttons"])
+            attempts = int(row["attempts"]) + 1
+            with self.engine.begin() as c:
                 if ok:
                     c.execute(sa.text(f"""
                         UPDATE {SCHEMA}.deliveries
-                        SET status='sent', attempts=attempts+1, sent_at=now(), last_error=NULL
-                        WHERE id=:id"""), {"id": row["id"]})
+                        SET status='sent', attempts=:attempts, sent_at=now(), last_error=NULL
+                        WHERE id=:id AND status IN ('pending', 'cancelled')"""),
+                        {"id": row["id"], "attempts": attempts})
                     sent += 1
                 else:
-                    attempts = int(row["attempts"]) + 1
                     status = "dead" if permanent or attempts >= 12 else "pending"
                     delay = min(1800, max(retry, 5 * 2 ** min(attempts, 8)))
                     c.execute(sa.text(f"""
                         UPDATE {SCHEMA}.deliveries SET status=:status, attempts=:attempts,
                             last_error=:error, next_retry_at=now()+make_interval(secs=>:delay)
-                        WHERE id=:id"""),
+                        WHERE id=:id AND status='pending'"""),
                         {"status": status, "attempts": attempts, "error": error[:120],
                          "delay": delay, "id": row["id"]})
             if not ok:
@@ -330,7 +337,10 @@ def run_consensus_alerts(cfg: Config) -> None:
     rep.fx_policy = FxPolicy.from_web(cfg.web)
     rep.hidden_tokens = tuple(dict.fromkeys(
         list(cfg.alerts.mute_tokens)
-        + [v.lower() for v in os.getenv("WEB_ACTIVITY_HIDDEN_TOKENS", "").split(",")
+        # the same exact-address list the website hides (set on this service in compose)
+        + [v.lower() for v in (os.getenv("CONSENSUS_HIDDEN_TOKENS")
+                               or os.getenv("WEB_ACTIVITY_HIDDEN_TOKENS", "")
+                               ).replace(",", " ").split()
            if PATTERN.fullmatch(v.lower())]))
     dash = Dashboard(rep, cfg)
     links = Links(cfg.links)

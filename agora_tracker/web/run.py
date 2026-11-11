@@ -82,7 +82,15 @@ def build(cfg: Config, url: str | None = None) -> tuple[object, Engine]:
     writer_url = (sa.engine.make_url(url).set(
         username="consensus_rw", password=writer_pw).render_as_string(hide_password=False)
         if admin_key else "")
-    writer = ConsensusSettingsStore(make_settings_engine(writer_url)) if admin_key else None
+    writer = None
+    if admin_key:
+        try:
+            writer = ConsensusSettingsStore(make_settings_engine(writer_url))
+        except Exception as e:  # noqa: BLE001 - an optional feature must never take the site down
+            # e.g. migration 0011 not applied yet, or the role has no password: the public
+            # dashboard stays up and the settings endpoint answers 503 until this is fixed.
+            log.error("Consensus owner settings disabled (%s): the dashboard runs without them",
+                      type(e).__name__)
     return create_app(cfg, Dashboard(reports, cfg), engine, consensus_settings=writer), engine
 
 

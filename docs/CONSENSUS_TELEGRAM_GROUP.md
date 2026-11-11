@@ -119,3 +119,33 @@ revision graph and rename/rebase migrations. Do not merge both heads blindly.
 **Deployment remains OFF** until independent review, owner configuration, staging
 and explicit authorization. No funded trades, Stage C execution flags, or Telegram
 `getUpdates` calls are involved.
+
+## Go-live in one step (added in review, 2026-11-11)
+
+Owner preparation (once):
+
+1. In Telegram, create a **new** bot with @BotFather (not the existing alert bot) and copy its
+   token. Create the supergroup, add the bot as an administrator that may post messages, and get
+   the group id (it starts with `-100`).
+2. In GitHub → repository → Settings → Secrets and variables → Actions, add three secrets:
+   `CONSENSUS_TG_BOT_TOKEN`, `CONSENSUS_TG_CHAT_ID`, and `CONSENSUS_ADMIN_KEY` (any random string
+   of 32+ characters; this is the "owner key" typed on the website when saving).
+3. Run the deploy workflow with `action=consensus` (or set it in `deploy/OPS_REQUEST` on `ops`).
+
+The `consensus` action then does everything else: generates the `consensus_rw` database password
+on the server, takes a database dump (`backups/pre-consensus-*.dump`), applies migration 0011
+(adds only schema `consensus_alerts` and role `consensus_rw`), recreates the dashboard with the
+owner-settings endpoint, starts the sender container and prints its checks. Tracker, ui and
+Postgres are not restarted. A full `deploy` later keeps the `CONSENSUS_*` values in `.env`.
+
+4. Open `https://onchainflow.app/consensus`, choose thresholds, tick "enabled", type the owner key
+   and press **Save filters for Telegram group**. Nothing is sent to the group before this.
+
+Operations: `action=consensus-status` (settings, delivery counts, sender log),
+`action=consensus-off` (stops the sender; settings and the dashboard stay). To pause alerts
+without touching the server, save with "enabled" unticked.
+
+Review fixes in this revision: the Telegram request is no longer made inside a database
+transaction (an owner Save cannot be blocked by a slow send); the dashboard starts even when the
+consensus role is not usable yet (the settings endpoint answers 503); the sender gets its own
+hidden-token list (`CONSENSUS_HIDDEN_TOKENS`, Elysium mainnet USDC).

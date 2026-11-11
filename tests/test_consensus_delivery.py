@@ -223,3 +223,75 @@ def test_web_consensus_settings_endpoint_rejects_anonymous_and_cross_origin(
     assert conflict.status_code == 409
     assert "CONSENSUS_ADMIN_KEY" not in web.get("/consensus").text
     assert ADMIN_KEY not in web.get("/consensus").text
+
+
+# --- review fixes (2026-11-11) -----------------------------------------------------------
+def test_owner_save_is_never_blocked_by_a_send_in_flight(setting_db):
+    """The Telegram request runs outside any transaction: a Save issued WHILE a message is
+    being sent succeeds at once, and the message that did go out is recorded as sent."""
+    setting_db.save(DEFAULT)
+    saved = setting_db.read()
+    now = datetime.now(timezone.utc)
+    assert setting_db.queue(saved, [_card(now)], now, Links(LinksConfig())) == 1
+    during: dict = {}
+
+    class SavingSender:
+        def send(self, body, buttons):
+            # what the owner does in the browser while the worker waits on Telegram
+            during["saved"] = setting_db.save({**DEFAULT, "version": saved["version"],
+                                               "traders": 3})
+            with setting_db.engine.connect() as c:
+                during["locks"] = c.execute(sa.text(
+                    "SELECT count(*) FROM pg_stat_activity WHERE usename = 'consensus_rw' "
+                    "AND state = 'idle in transaction'")).scalar()
+            return True, False, "", 0
+
+    assert setting_db.send_due(saved, SavingSender()) == 1
+    assert during["saved"]["version"] == saved["version"] + 1 and during["locks"] == 0
+    with setting_db.engine.connect() as c:          # truthful: it was delivered
+        assert c.execute(sa.text(
+            "SELECT status FROM consensus_alerts.deliveries")).scalar() == "sent"
+    assert setting_db.send_due(setting_db.read(), StubSender()) == 0
+
+
+def test_a_failed_send_after_a_save_does_not_resurrect_the_cancelled_message(setting_db):
+    setting_db.save(DEFAULT)
+    saved = setting_db.read()
+    now = datetime.now(timezone.utc)
+    setting_db.queue(saved, [_card(now)], now, Links(LinksConfig()))
+
+    class FailingAfterSave:
+        def send(self, body, buttons):
+            setting_db.save({**DEFAULT, "version": saved["version"], "enabled": False})
+            return False, False, "HTTP_502", 15
+
+    assert setting_db.send_due(saved, FailingAfterSave()) == 0
+    with setting_db.engine.connect() as c:
+        assert c.execute(sa.text(
+            "SELECT status, attempts FROM consensus_alerts.deliveries")).one() == ("cancelled", 0)
+
+
+def test_dashboard_stays_up_when_the_consensus_role_is_not_usable(
+        setting_db, make_live, monkeypatch):  # noqa: F811
+    """Secrets present but the role cannot log in (migration not applied yet, wrong password):
+    the public site must start; only the owner-settings endpoint is unavailable."""
+    monkeypatch.setenv("CONSENSUS_DB_PASSWORD", "wrong-password-wrong-password-wrong-1234")
+    monkeypatch.setenv("CONSENSUS_ADMIN_KEY", ADMIN_KEY)
+    web = make_live()
+    assert web.get("/healthz").status_code == 200
+    assert web.get("/consensus").status_code == 200
+    assert web.get("/api/v1/consensus/settings").status_code == 503
+    r = web.s.post(web.base + "/api/v1/consensus/settings", json=DEFAULT, timeout=15,
+                   headers={"Authorization": "Bearer " + ADMIN_KEY,
+                            "Origin": "https://onchainflow.app", "X-Forwarded-Proto": "https",
+                            "Content-Type": "application/json"})
+    assert r.status_code == 503
+
+
+def test_group_alerts_get_their_own_hidden_token_list_in_compose():
+    import yaml
+    svc = yaml.safe_load(open("docker-compose.yml"))["services"]["consensus-alerts"]
+    assert svc["environment"]["CONSENSUS_HIDDEN_TOKENS"] == \
+        "0xb47c4c8f73f009cc0c0d3f92b388d13e293f0b65"
+    assert svc["profiles"] == ["consensus-alerts"]              # still opt-in
+    assert "CONSENSUS_ADMIN_KEY" not in svc["environment"]      # the sender never has the key
