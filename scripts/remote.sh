@@ -597,10 +597,12 @@ case "$ACTION" in
     log "before"
     echo "  ui image $(docker inspect -f '{{.Image}}' elysium-ui 2>&1 | cut -c1-19), :latest $(docker image inspect -f '{{.Id}}' elysium-wallet-tracker:latest | cut -c1-19)"
     docker exec elysium-ui python -m agora_tracker --health-ui 2>&1 | sed 's/^/  /' || true
-    if docker tag "$(docker inspect -f '{{.Image}}' elysium-ui)" elysium-wallet-tracker:pre-ui-hotfix; then
+    if docker tag "$(docker inspect -f '{{.Image}}' elysium-ui)" elysium-wallet-tracker:pre-ui-hotfix 2>/dev/null; then
       echo "  rollback image: elysium-wallet-tracker:pre-ui-hotfix"
     else
-      echo "cannot tag the running ui image for rollback: refusing" >&2; exit 1
+      # Happens when the image was untagged/pruned while the container kept running. Not a
+      # reason to stop: an image that predates the current schema cannot restart anyway.
+      echo "  WARNING: the running ui image cannot be tagged; no ui rollback image is kept"
     fi
     docker compose up -d --no-deps --force-recreate ui
     wait_healthy elysium-ui "telegram menu" || { docker logs --tail 60 elysium-ui 2>&1 | sed 's/^/  ui| /'; exit 1; }
