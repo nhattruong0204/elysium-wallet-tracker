@@ -5,8 +5,8 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
-import os
 import logging
+import os
 import time
 import uuid
 from collections.abc import Awaitable, Callable
