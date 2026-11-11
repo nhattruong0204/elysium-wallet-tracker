@@ -56,6 +56,7 @@ class Engine:
         self._bundles_at = float("-inf")
         self._bundles: set[str] = set()
         self._bots_at = float("-inf")
+        self._airdrop_known: set[str] = set()     # only to log each token once
         self._bots: set[str] = set()
         self.chain_cfg, self.cfg = chain_cfg, alert_cfg
         self.labels = labels
@@ -174,6 +175,7 @@ class Engine:
         min_wei = int(Decimal(str(self.cfg.min_trade_hype)) * WEI)
         new = 0
         bots = self.automated_wallets()
+        drop_legs, drop_tokens = self.airdrop_spam(result)
         # counterparty of each (tx, token, wallet) transfer leg, for "sent to 0x…" lines
         counter: dict[tuple[str, str, str], tuple[int, str]] = {}
         for tr in result.transfers:
@@ -207,7 +209,9 @@ class Engine:
                     extra["counterparty"] = cp[1]
                 if not self._should_alert(ev, min_wei):
                     continue
-                if ev.token not in self._tg_muted and ev.wallet not in bots:
+                airdropped = (ev.token in drop_tokens
+                              and (ev.tx, ev.wallet, ev.token) in drop_legs)
+                if ev.token not in self._tg_muted and ev.wallet not in bots and not airdropped:
                     # (_tg_muted: the reported token, never the quote asset)
                     payload = self._trade_payload(ev, notes, bts, extra)
                     text, _ = cards.render_trade(payload, self.links)
@@ -258,6 +262,47 @@ class Engine:
             except Exception:  # noqa: BLE001 - scoring must never block indexing
                 log.exception("bundle wallet refresh failed; keeping %d known", len(self._bundles))
         return self._bundles
+
+    def airdrop_spam(self, result: ScanResult) -> tuple[set[tuple[str, str, str]], set[str]]:
+        """(unsolicited TRANSFER_IN legs of this range as (tx, wallet, token), spam tokens).
+
+        A leg is unsolicited when the receiving wallet did not send the transaction. A token is
+        airdrop spam once enough tracked wallets got it that way (this range + the recent
+        window) while almost nobody really traded it (IntelConfig.airdrop_*)."""
+        ic = self.intel
+        if not ic.airdrop_filter:
+            return set(), set()
+        sender = {t["tx_hash"]: (t.get("from_address") or "").lower() for t in result.transactions}
+        legs: set[tuple[str, str, str]] = set()
+        got: dict[str, set[str]] = {}
+        traded: dict[str, int] = {}
+        for ev in result.events:
+            if ev.kind in ("BUY", "SELL"):
+                traded[ev.token] = traded.get(ev.token, 0) + 1
+            elif ev.kind == "TRANSFER_IN" and sender.get(ev.tx) and sender[ev.tx] != ev.wallet:
+                legs.add((ev.tx, ev.wallet, ev.token))
+                got.setdefault(ev.token, set()).add(ev.wallet)
+        if not got:
+            return set(), set()
+        try:
+            seen = self.store.unsolicited_receipts(got, ic.airdrop_window_h)
+        except Exception:  # noqa: BLE001 - a filter must never block indexing
+            log.exception("airdrop lookup failed; judging this range on its own")
+            seen = {}
+        spam: set[str] = set()
+        for token, wallets in got.items():
+            before, n_traded = seen.get(token, (set(), 0))
+            receivers = wallets | before
+            n_traded += traded.get(token, 0)
+            if (len(receivers) >= ic.airdrop_min_wallets
+                    and n_traded <= ic.airdrop_max_trade_share * len(receivers)):
+                spam.add(token)
+        new = spam - self._airdrop_known
+        if new:
+            log.info("airdrop filter: unsolicited receipts of %d token(s) not alerted: %s",
+                     len(new), ", ".join(sorted(new)))
+            self._airdrop_known |= new
+        return legs, spam
 
     def automated_wallets(self) -> set[str]:
         """Wallets judged automated by their transaction timing (IntelConfig.bot_*); refreshed

@@ -226,6 +226,13 @@ class WebConfig:
     activity_since_limit: int = 100          # most rows one incremental poll returns
     activity_poll_s: int = 20                # browser poll interval while the tab is visible
     activity_hidden_poll_s: int = 120        # ... and while it is hidden (0 = pause)
+    # Tokens left out of the DEFAULT Activity feed (page, live since_id poll, count, cursor
+    # pagination) and the overview/wallet recent-trade lists, by exact contract address. An
+    # explicit token filter, an address search or the token's own page still shows them, and
+    # nothing is removed from storage, positions, PnL, rankings or alerts. Merged with
+    # alerts.mute_tokens. Also read from WEB_ACTIVITY_HIDDEN_TOKENS, which docker-compose.yml
+    # sets on the web service ONLY (the tracker and the Telegram UI never see it).
+    activity_hidden_tokens: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -274,6 +281,17 @@ class IntelConfig:
     # snipers paid by another address, volume loops). A fast wallet that really trades is kept.
     bot_max_trade_share: float = 0.05
     bot_refresh_s: float = 900.0
+    # Airdrop spam: a token pushed into tracked wallets by someone else. A TRANSFER_IN is
+    # "unsolicited" when the receiving wallet did not send the transaction. Once at least
+    # `airdrop_min_wallets` tracked wallets got unsolicited transfers of one token within
+    # `airdrop_window_h`, and the tracked wallets' real BUY/SELL legs of it are at most
+    # `airdrop_max_trade_share` of those receipts, further unsolicited receipts of that token
+    # are not sent to Telegram. They are still indexed (positions, website); buys, sells and
+    # transfers the wallet itself sends still alert. Off: ALERTS_AIRDROP_FILTER=off (tracker).
+    airdrop_filter: bool = True
+    airdrop_min_wallets: int = 5
+    airdrop_window_h: float = 24.0
+    airdrop_max_trade_share: float = 0.1
     # forward measurement of the strong signal (no orders are ever placed)
     paper_enabled: bool = True
     paper_slippage_pct: float = 10.0
@@ -400,9 +418,14 @@ def load_config(path: str | Path) -> Config:
     ui.admin_ids = _admin_ids(tg.chat_id, os.environ.get(ui.admin_ids_env, ""))
     collector = CollectorConfig(**(raw.get("collector") or {}))
     web = WebConfig(**(raw.get("web") or {}))
+    env_hidden = os.environ.get("WEB_ACTIVITY_HIDDEN_TOKENS", "").replace(",", " ").split()
+    web.activity_hidden_tokens = sorted({_norm_addr(t) for t in [*web.activity_hidden_tokens,
+                                                                 *env_hidden]})
     intel = IntelConfig(**(raw.get("intel") or {}))
     if os.environ.get("ALERTS_BOT_FILTER", "").strip().lower() in ("off", "0", "false", "no"):
         intel.bot_filter = False
+    if os.environ.get("ALERTS_AIRDROP_FILTER", "").strip().lower() in ("off", "0", "false", "no"):
+        intel.airdrop_filter = False
     tracking = TrackingConfig(**(raw.get("tracking") or {}))
     env_blocked = os.environ.get("TRACKING_BLOCKED_WALLETS", "").replace(",", " ").split()
     tracking.blocked_wallets = sorted({_norm_addr(a) for a in [*tracking.blocked_wallets,

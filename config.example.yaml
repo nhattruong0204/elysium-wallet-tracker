@@ -65,6 +65,9 @@ alerts:
   telegram_mute_tokens: []     # exact contracts: no Telegram alert (trade/transfer/cluster) only;
                                # still indexed, in PnL, signals and on the website. Also read from
                                # ALERTS_TELEGRAM_MUTE_TOKENS (comma-separated) in the environment.
+# Website only: `web.activity_hidden_tokens: [...]` (or WEB_ACTIVITY_HIDDEN_TOKENS on the web
+# service) hides exact contracts from the DEFAULT Activity feed and the overview/wallet recent
+# lists; an explicit token filter or the token's page still shows them. Nothing else changes.
 
 
 links:                         # every alert detail links here (formats verified 2026-11-02)

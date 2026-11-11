@@ -21,7 +21,15 @@ def test_web_has_no_secrets_other_than_its_narrow_db_and_owner_credentials():
     w = web()
     assert "env_file" not in w                      # no TG_* / POSTGRES_PASSWORD inside this container
     env = w["environment"]
-    assert set(env) == {"DATABASE_URL", "CONSENSUS_DB_PASSWORD", "CONSENSUS_ADMIN_KEY"}
+    # DATABASE_URL, the narrow Consensus settings credentials (owner key + consensus_rw
+    # password: no tracker, Telegram or admin-database secret) and, at most, the public list of
+    # hidden Activity tokens: literal 0x addresses only (no ${...} interpolation).
+    assert {"DATABASE_URL", "CONSENSUS_DB_PASSWORD", "CONSENSUS_ADMIN_KEY"} <= set(env)
+    assert set(env) <= {"DATABASE_URL", "CONSENSUS_DB_PASSWORD", "CONSENSUS_ADMIN_KEY",
+                        "WEB_ACTIVITY_HIDDEN_TOKENS"}
+    if "WEB_ACTIVITY_HIDDEN_TOKENS" in env:
+        assert re.fullmatch(r"0x[0-9a-f]{40}([ ,]+0x[0-9a-f]{40})*",
+                            env["WEB_ACTIVITY_HIDDEN_TOKENS"])
     assert env["DATABASE_URL"].startswith("postgresql+psycopg://dashboard_ro:${DASHBOARD_DB_PASSWORD")
     # Optional owner Save opens a separate, narrowly scoped consensus_rw connection.
     # The website never receives a Telegram bot token, group ID or tracker admin URL.
