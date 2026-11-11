@@ -338,7 +338,7 @@ def run_consensus_alerts(cfg: Config) -> None:
     rep.hidden_tokens = tuple(dict.fromkeys(
         list(cfg.alerts.mute_tokens)
         # the same exact-address list the website hides (set on this service in compose)
-        + [v.lower() for v in (os.getenv("CONSENSUS_HIDDEN_TOKENS")
+        + [v.lower() for v in (os.getenv("CONSENSUS_HIDDEN_TOKENS", "")
                                or os.getenv("WEB_ACTIVITY_HIDDEN_TOKENS", "")
                                ).replace(",", " ").split()
            if PATTERN.fullmatch(v.lower())]))
