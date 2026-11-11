@@ -265,11 +265,15 @@ def filter_sql(p: ActivityParams, *, with_cursor: bool = True,
                hidden: tuple[str, ...] = ()) -> tuple[str, dict[str, Any]]:
     """WHERE clause (without the keyword) over `trades t`, plus its bound parameters.
 
-    `hidden` tokens (alerts.mute_tokens) are left out unless the request filters on exactly
-    that token, so their own token page and an explicit filter still work."""
+    `hidden` tokens (alerts.mute_tokens + web.activity_hidden_tokens) are left out unless the
+    request names exactly that token (token= filter, or a full-address search), so their own
+    token page and an explicit filter still work. Same set for page, since_id poll and count."""
     cond: list[str] = ["t.chain_id = :c"]
     prm: dict[str, Any] = {}
-    hide = [h for h in hidden if h != p.token]
+    named = {p.token}
+    if p.search is not None and p.search.kind == "address":
+        named.add(p.search.value)
+    hide = [h for h in hidden if h not in named]
     if hide:
         cond.append("t.token <> ALL(:hidden)")
         prm["hidden"] = hide

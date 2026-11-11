@@ -108,6 +108,10 @@ services:
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql+psycopg://dashboard_ro:${DASHBOARD_DB_PASSWORD:-unset}@postgres:5432/tracker
+      # Web-only: hidden from the DEFAULT Activity feed / overview preview (exact address,
+      # Elysium mainnet USDC, chain 99901; evidence in docs/OPERATIONS.md). Still indexed,
+      # still in PnL/rankings, still shown on its token page or with an explicit token filter.
+      WEB_ACTIVITY_HIDDEN_TOKENS: "0xb47c4c8f73f009cc0c0d3f92b388d13e293f0b65"
     ports:
       - "127.0.0.1:8100:8100"      # loopback only; the host reverse proxy is the public edge
     volumes:

@@ -227,7 +227,119 @@ muted_queue() {
   psql_admin -Atc "SELECT 'all pending: ' || count(*) FROM notification_outbox WHERE status = 'pending'" | sed 's/^/  /' || true
 }
 
+web_hidden_tokens() {
+  # the web-only hidden list as docker compose resolves it (exact addresses, no secrets)
+  docker compose config 2>/dev/null | sed -n 's/^ *WEB_ACTIVITY_HIDDEN_TOKENS: *//p' | tr -d '"' | head -1
+}
+
+web_state() {
+  # Read-only: what the dashboard runs and with which visibility settings. Prints only the
+  # WEB_ACTIVITY_* variable of the container environment (DATABASE_URL holds a password).
+  echo "  web container: $(docker inspect -f 'image {{.Image}} started {{.State.StartedAt}} health {{.State.Health.Status}}' elysium-web 2>&1)"
+  echo "  web env: $(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' elysium-web 2>/dev/null | grep -E '^WEB_ACTIVITY_' | paste -sd' ' - || true)"
+  echo "  :latest image: $(docker image inspect -f '{{.Id}} created {{.Created}}' elysium-wallet-tracker:latest 2>&1)"
+  echo "  tracker/ui images: $(docker inspect -f '{{.Name}}={{.Image}}' elysium-wallet-tracker elysium-ui 2>&1 | paste -sd' ' -)"
+  echo "  config/config.yaml sha256 $(sha256sum config/config.yaml 2>/dev/null | cut -c1-16), deploy/config.yaml sha256 $(sha256sum deploy/config.yaml 2>/dev/null | cut -c1-16)"
+  echo "  alerts.mute_tokens in the mounted config (hidden on Activity since #65):"
+  sed -n '/^ *mute_tokens:/,/^ *[a-z_]*:/p' config/config.yaml 2>/dev/null | grep -E '0x[0-9a-fA-F]{40}' | sed 's/^/    /' || true
+}
+
+db_stats() {
+  psql_admin -Atc "SELECT 'db: backends ' || numbackends || ', commits ' || xact_commit || ', rollbacks ' || xact_rollback || ', deadlocks ' || deadlocks || ', temp files ' || temp_files FROM pg_stat_database WHERE datname = 'tracker'" | sed 's/^/  /' || true
+  psql_admin -Atc "SELECT 'web db sessions: ' || count(*) || ' (' || count(*) FILTER (WHERE state = 'active') || ' active)' FROM pg_stat_activity WHERE application_name = 'elysium-web'" | sed 's/^/  /' || true
+  echo "  postgres log errors (last 15 min): $(docker logs --since 15m elysium-postgres 2>&1 | grep -cE 'ERROR|FATAL' || true)"
+}
+
+web_rollback_to_pre_hotfix() {
+  # Serves the previous dashboard image WITHOUT moving :latest (the tracker and ui keep theirs).
+  docker image inspect elysium-wallet-tracker:pre-web-hotfix >/dev/null 2>&1 || { echo "no pre-web-hotfix image" >&2; return 1; }
+  printf 'services:\n  web:\n    image: elysium-wallet-tracker:pre-web-hotfix\n' > docker-compose.web-rollback.yml
+  docker compose -f docker-compose.yml -f docker-compose.web-rollback.yml up -d --no-deps --force-recreate web
+  wait_healthy elysium-web "dashboard (rolled back)" || true
+  web_state
+}
+
 case "$ACTION" in
+  web-hotfix)
+    # Code/config hotfix for the DASHBOARD container only (web hotfix 2026-11-10: the default
+    # Activity feed hides WEB_ACTIVITY_HIDDEN_TOKENS). No migration, no install_config (the
+    # mounted config/ is not changed), no restart of postgres, tracker, ui, Caddy or Revival.
+    need_docker
+    [ -f .env ] || { echo ".env missing: run the normal deploy first" >&2; exit 1; }
+    grep -E '^(action|commit)=' deploy/OPS_REQUEST 2>/dev/null | sed 's/^/  request: /' || true
+    hid="$(web_hidden_tokens)"
+    echo "$hid" | grep -qE '^0x[0-9a-f]{40}$' || { echo "WEB_ACTIVITY_HIDDEN_TOKENS missing or not one exact address in docker-compose.yml" >&2; exit 1; }
+    echo "  web-only hidden token: $hid"
+    log "before"
+    web_state
+    prev=$(docker inspect -f '{{.Image}}' elysium-web 2>/dev/null || true)
+    [ -n "$prev" ] || { echo "no running elysium-web container: use the web action" >&2; exit 1; }
+    if docker tag "$prev" elysium-wallet-tracker:pre-web-hotfix; then
+      echo "  rollback image: elysium-wallet-tracker:pre-web-hotfix = $prev"
+    else
+      echo "cannot tag the running dashboard image $prev for rollback: refusing to deploy" >&2; exit 1
+    fi
+    db_stats
+    tracker_alive
+    muted_queue
+    log "before: Activity visibility on the loopback port (report only)"
+    python3 scripts/web_activity_check.py --base http://127.0.0.1:8100 --hidden "$hid" 2>&1 | sed 's/^/  /' || true
+    log "build the image (retags :latest; tracker/ui keep running their current image)"
+    docker compose build migrate
+    echo "  new image: $(docker image inspect -f '{{.Id}}' elysium-wallet-tracker:latest)"
+    log "recreate the dashboard only (no migration)"
+    docker compose up -d --no-deps --force-recreate web
+    if ! wait_healthy elysium-web "dashboard"; then
+      docker logs --tail 60 elysium-web 2>&1 | sed 's/^/  web| /'
+      echo "dashboard not healthy: rolling back" >&2
+      web_rollback_to_pre_hotfix || true
+      exit 1
+    fi
+    log "after"
+    web_state
+    docker logs elysium-web 2>&1 | grep -E 'default Activity hides' | tail -1 | sed 's/^/  web log| /' || true
+    log "after: Activity visibility on the loopback port (must pass)"
+    if ! python3 scripts/web_activity_check.py --base http://127.0.0.1:8100 --hidden "$hid" --expect-hidden 2>&1 | sed 's/^/  /'; then
+      echo "loopback verification failed: rolling back" >&2
+      web_rollback_to_pre_hotfix || true
+      exit 1
+    fi
+    log "after: through the public domain (Caddy + TLS)"
+    echo | openssl s_client -servername onchainflow.app -connect onchainflow.app:443 2>/dev/null | openssl x509 -noout -subject -enddate 2>/dev/null | sed 's/^/  tls: /' || true
+    curl -s -o /dev/null -m 20 -w '  https://onchainflow.app/healthz -> %{http_code} (%{ssl_verify_result} = ssl verify)\n' https://onchainflow.app/healthz || true
+    docker ps --filter name=caddy --format '  {{.Names}}: {{.Status}}' || true
+    python3 scripts/web_activity_check.py --base https://onchainflow.app --hidden "$hid" --expect-hidden 2>&1 | sed 's/^/  /' || echo "  (public-domain check failed: see above)"
+    web_smoke
+    web_db_checks
+    db_stats
+    docker logs --since 5m elysium-web 2>&1 | grep -ciE 'traceback|error' | sed 's/^/  web log error lines (5 min): /' || true
+    muted_queue
+    tracker_alive
+    resources
+    ;;
+  web-hotfix-check)
+    # Read-only follow-up after web-hotfix: visibility, database errors, bots, resources.
+    # Postgres lines are reduced to their ERROR/FATAL message (no STATEMENT/DETAIL text, which
+    # could quote query parameters): the Actions log of this public repository is public.
+    need_docker
+    hid="$(web_hidden_tokens)"
+    web_state
+    python3 scripts/web_activity_check.py --base https://onchainflow.app --hidden "$hid" --expect-hidden 2>&1 | sed 's/^/  /' || true
+    db_stats
+    log "postgres ERROR/FATAL messages, last 60 min (UTC time, message only)"
+    docker logs --since 60m elysium-postgres 2>&1 | grep -E ' (ERROR|FATAL): ' | sed -E 's/^([0-9-]+ [0-9:]+)[^ ]* [A-Z]+ \[[0-9]+\] /\1 /' | cut -c1-160 | sed 's/^/  pg| /' | tail -40 || true
+    log "web errors, last 60 min"
+    docker logs --since 60m elysium-web 2>&1 | grep -iE 'traceback|error' | grep -vE '" [23][0-9][0-9] ' | cut -c1-200 | tail -20 | sed 's/^/  web| /' || true
+    curl -s -m 20 http://127.0.0.1:8100/api/v1/health | python3 -c 'import json,sys; d=json.load(sys.stdin).get("health", {}); print("  health:", d.get("status"), d.get("reasons"))' 2>&1 || true
+    tracker_alive
+    resources
+    ;;
+  web-hotfix-rollback)
+    need_docker
+    log "before"; web_state
+    web_rollback_to_pre_hotfix
+    tracker_alive
+    ;;
   tracker)
     # Code-only hotfix for the TRACKER container (indexer + alert notifier). Does not install
     # config/, does not migrate, does not touch postgres, ui (Telegram menu) or web. The running

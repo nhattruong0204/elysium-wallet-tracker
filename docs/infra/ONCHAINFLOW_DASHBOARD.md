@@ -326,6 +326,49 @@ the newest-15 preview with a "View All Activity" link (range carried over, 6h ma
 * **Caching:** short-TTL (5 s) single-flight cache separate from the page cache; responses are
   `Cache-Control: private, no-cache` with an ETag.
 
+### Default visibility: hidden tokens (web hotfix 2026-11-10, Elysium mainnet USDC)
+
+**Why:** after mainnet launch, USDC (`0xb47c4c8f73f009cc0c0d3f92b388d13e293f0b65`, chain 99901,
+identity evidence in `docs/OPERATIONS.md` → "Telegram-only token mute") flooded the public
+Activity feed. PR #118 muted it for Telegram only, through `ALERTS_TELEGRAM_MUTE_TOKENS` on the
+*tracker* service; the website takes its hidden list from `alerts.mute_tokens` (WHYPE, KNTQ in
+`deploy/config.yaml`), so USDC stayed visible.
+
+**What:** `web.activity_hidden_tokens`, also read from `WEB_ACTIVITY_HIDDEN_TOKENS` (comma/space
+separated, exact addresses, lower-cased, a symbol is rejected), set in `docker-compose.yml` on the
+`web` service only. It is merged with `alerts.mute_tokens` into `PublicReports.hidden_tokens`.
+
+| Surface | Hidden token |
+|---|---|
+| `/activity`, `GET /api/v1/activity` default page, every sort and action, cursor pages, `total` | hidden |
+| live poll `since_id=` | hidden (the returned `head_id` still advances past hidden rows) |
+| overview "Recent activity" preview, wallet page / `GET /api/v1/wallets/{a}` trade list | hidden |
+| `token=<address>` filter, full-address search `q=<address>` | **shown** |
+| `/tokens/{address}`, `GET /api/v1/tokens/{address}` | **shown** |
+| symbol search `q=usdc` | the hidden contract stays hidden; look-alikes at other addresses are shown |
+| token tables, smart money, early plays, overview totals and top tokens, leaderboard, PnL | **unchanged** (rankings and financial figures keep USDC) |
+| consensus | excluded, as for `alerts.mute_tokens` since #66 |
+| stored rows, positions, PnL, alerts, the Telegram mute | unchanged |
+
+Rankings are deliberately not filtered: removing a token there changes totals and rank order.
+The in-process caches start empty with the new container and the Activity ETag covers the item
+ids, so no pre-hotfix page is served after the restart (`Cache-Control: private, no-cache`).
+
+**Deploy (web only):** `deploy/OPS_REQUEST` on the `ops` branch with `action=web-hotfix`
+(or Actions → deploy → `web-hotfix`). It records the running image and settings, tags the running
+dashboard image `elysium-wallet-tracker:pre-web-hotfix`, builds, recreates **only** `web`
+(`--no-deps --force-recreate`, no migration, `config/` untouched), then runs
+`scripts/web_activity_check.py --expect-hidden` on the loopback port and through
+`https://onchainflow.app` (cache-busting GETs). Unhealthy or a failed loopback check rolls back
+automatically.
+
+**Rollback (web only):** `action=web-hotfix-rollback`. It serves `pre-web-hotfix` through a
+generated `docker-compose.web-rollback.yml` override, so `:latest` (and with it the tracker's and
+ui's image) is not moved; no database restore is involved. Trigger it if the site fails health
+checks, non-USDC activity disappears, paging breaks, database errors rise or the container nears
+its 256 MiB limit. Removing the variable from `docker-compose.yml` and re-running `web-hotfix`
+also restores the previous visibility.
+
 ### USD market cap
 
 * **Units:** Agora quotes everything in HYPE and attaches `hypeUsd` (USD per 1 HYPE) to each

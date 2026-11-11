@@ -226,6 +226,13 @@ class WebConfig:
     activity_since_limit: int = 100          # most rows one incremental poll returns
     activity_poll_s: int = 20                # browser poll interval while the tab is visible
     activity_hidden_poll_s: int = 120        # ... and while it is hidden (0 = pause)
+    # Tokens left out of the DEFAULT Activity feed (page, live since_id poll, count, cursor
+    # pagination) and the overview/wallet recent-trade lists, by exact contract address. An
+    # explicit token filter, an address search or the token's own page still shows them, and
+    # nothing is removed from storage, positions, PnL, rankings or alerts. Merged with
+    # alerts.mute_tokens. Also read from WEB_ACTIVITY_HIDDEN_TOKENS, which docker-compose.yml
+    # sets on the web service ONLY (the tracker and the Telegram UI never see it).
+    activity_hidden_tokens: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -411,6 +418,9 @@ def load_config(path: str | Path) -> Config:
     ui.admin_ids = _admin_ids(tg.chat_id, os.environ.get(ui.admin_ids_env, ""))
     collector = CollectorConfig(**(raw.get("collector") or {}))
     web = WebConfig(**(raw.get("web") or {}))
+    env_hidden = os.environ.get("WEB_ACTIVITY_HIDDEN_TOKENS", "").replace(",", " ").split()
+    web.activity_hidden_tokens = sorted({_norm_addr(t) for t in [*web.activity_hidden_tokens,
+                                                                 *env_hidden]})
     intel = IntelConfig(**(raw.get("intel") or {}))
     if os.environ.get("ALERTS_BOT_FILTER", "").strip().lower() in ("off", "0", "false", "no"):
         intel.bot_filter = False

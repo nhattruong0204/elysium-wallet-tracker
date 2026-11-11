@@ -27,7 +27,7 @@ import logging
 import math
 import re
 import time
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -439,9 +439,14 @@ class Reports:
                 "range": tr}
 
     def trades(self, tr: TimeRange, *, wallet: str | None = None, token: str | None = None,
-               limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
-        """Transaction-level evidence, newest first (deterministic order)."""
+               limit: int = 50, offset: int = 0,
+               hidden: Sequence[str] = ()) -> list[dict[str, Any]]:
+        """Transaction-level evidence, newest first (deterministic order). `hidden` tokens are
+        left out (the website's default-visibility list) unless `token` names one of them."""
         cond = ""
+        hide = [h for h in hidden if h != token]
+        if hide:
+            cond += " AND t.token <> ALL(:hidden)"
         if wallet:
             cond += " AND t.wallet = :w"
         if token:
@@ -455,7 +460,7 @@ class Reports:
                 WHERE t.chain_id = :c AND t.block_time >= :s AND t.block_time < :e {cond}
                 ORDER BY t.block_time DESC, t.block_number DESC, t.id DESC
                 LIMIT :lim OFFSET :off""", s=tr.start, e=tr.end, w=wallet, tok=token,
-                lim=int(limit), off=int(offset))
+                lim=int(limit), off=int(offset), hidden=hide)
             names = self.token_names(c, sorted({r["token"] for r in rows}))
         for r in rows:
             m = names.get(r["token"], {})
