@@ -335,19 +335,21 @@ case "$ACTION" in
     resources
     ;;
   wallet-probe)
-    # Read-only: is the Fomo column live, and do fresh alerts carry the new buttons?
+    # Read-only: profile of one airdropped spam token, and how common the pattern is.
     need_docker
-    H=$(curl -s -m 20 "https://onchainflow.app/activity?_cb=$(date +%s)")
-    echo "  /activity: Fomo header $(printf '%s' "$H" | grep -c '>Fomo</th>'), Fomo links $(printf '%s' "$H" | grep -o 'class="fomo"' | wc -l), rows $(printf '%s' "$H" | grep -o '<tr data-id=' | wc -l)"
-    curl -s -m 20 "https://onchainflow.app/api/v1/activity?limit=5&_cb=$(date +%s)" | python3 -c 'import json,sys; d=json.load(sys.stdin); [print("  api:", i["token"], i.get("fomo_url")) for i in d["items"][:3]]'
-    psql_admin -P pager=off -Atc "SELECT '  alerts since tracker start: ' || count(*) || ' sent, with Maestro button ' || count(*) FILTER (WHERE true) FROM notification_outbox WHERE status='sent' AND payload->>'type'='trade' AND sent_at >= '$(docker inspect -f '{{.State.StartedAt}}' elysium-wallet-tracker)'::timestamptz" 2>&1 || true
-    docker exec elysium-wallet-tracker python -c "
-from agora_tracker.cards import Links, keyboard
-from agora_tracker.config import LinksConfig
-kb = keyboard(Links(LinksConfig()), '0xb0ae33c9a05608a2d6cad984a5dae9c5ba67dcca', 'PURRK', None, '0x' + '1' * 64)
-for row in kb['inline_keyboard'][:2]:
-    print('  tracker renders:', [(b['text'], b['url']) for b in row])
-" 2>&1 | head -4
+    T=0x6f0954d9f9ed79fd5f5c745bd3dd6b14aec68af6
+    q() { echo "--- $1"; psql_admin -P pager=off -c "$2" 2>&1 | sed 's/^/  /' || true; }
+    q "token profile" "SELECT symbol, name, launchpad, version, source, launched_at, first_seen_at FROM token_profiles WHERE address='$T'"
+    q "legs by kind" "SELECT kind, confidence, count(*) legs, count(DISTINCT wallet) wallets, count(DISTINCT tx_hash) txs, count(*) FILTER (WHERE hype_wei IS NOT NULL) with_hype, to_char(min(block_time) at time zone 'utc','MM-DD HH24:MI:SS') first_utc, to_char(max(block_time) at time zone 'utc','MM-DD HH24:MI:SS') last_utc FROM trades WHERE token='$T' GROUP BY 1,2 ORDER BY 3 DESC"
+    q "who sent the transactions" "SELECT x.from_address, x.to_address, count(DISTINCT x.tx_hash) txs, count(DISTINCT t.wallet) recipients FROM trades t JOIN transactions x ON x.tx_hash=t.tx_hash WHERE t.token='$T' GROUP BY 1,2 ORDER BY 3 DESC LIMIT 6"
+    q "recipients per transaction" "SELECT max(n) max_recipients_in_one_tx, round(avg(n),1) avg, count(*) txs FROM (SELECT tx_hash, count(DISTINCT wallet) n FROM trades WHERE token='$T' GROUP BY 1) x"
+    q "transfer sources (token_transfers)" "SELECT from_address, count(*) transfers, count(DISTINCT to_address) recipients FROM token_transfers WHERE token='$T' GROUP BY 1 ORDER BY 2 DESC LIMIT 5"
+    q "same amount to everyone?" "SELECT qty, count(*) FROM trades WHERE token='$T' AND kind='TRANSFER_IN' GROUP BY 1 ORDER BY 2 DESC LIMIT 4"
+    q "did the recipient send the tx?" "SELECT (x.from_address = t.wallet) AS recipient_sent_it, count(*) FROM trades t JOIN transactions x ON x.tx_hash=t.tx_hash WHERE t.token='$T' AND t.kind='TRANSFER_IN' GROUP BY 1"
+    q "alerts for this token" "SELECT status, count(*), to_char(min(created_at) at time zone 'utc','MM-DD HH24:MI') first_utc, to_char(max(created_at) at time zone 'utc','MM-DD HH24:MI') last_utc FROM notification_outbox WHERE payload->>'token'='$T' GROUP BY 1"
+    q "outbox now" "SELECT status, count(*) FROM notification_outbox WHERE created_at >= now() - interval '24 hours' GROUP BY 1"
+    q "other tokens with the same shape, 7 days (>=20 wallets received it in txs they did not send, no buys)" "SELECT t.token, p.symbol, count(DISTINCT t.wallet) recipients, count(DISTINCT x.from_address) senders, count(*) FILTER (WHERE t.kind IN ('BUY','SELL')) buy_sell, count(*) legs, to_char(min(t.block_time) at time zone 'utc','MM-DD HH24:MI') first_utc FROM trades t JOIN transactions x ON x.tx_hash=t.tx_hash LEFT JOIN token_profiles p ON p.address=t.token WHERE t.block_time >= now() - interval '7 days' AND t.kind='TRANSFER_IN' AND x.from_address <> t.wallet GROUP BY 1,2 HAVING count(DISTINCT t.wallet) >= 20 ORDER BY 3 DESC LIMIT 15"
+    q "for scale: unsolicited transfer-in alerts, 7 days" "SELECT count(*) all_trade_alerts, count(*) FILTER (WHERE payload->>'kind'='TRANSFER_IN') transfer_in FROM notification_outbox WHERE created_at >= now() - interval '7 days' AND payload->>'type'='trade'"
     tracker_alive
     ;;
   web-hotfix-rollback)
