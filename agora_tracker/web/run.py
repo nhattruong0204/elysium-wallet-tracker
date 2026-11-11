@@ -79,8 +79,9 @@ def build(cfg: Config, url: str | None = None) -> tuple[object, Engine]:
         raise SystemExit("Both CONSENSUS_DB_PASSWORD and CONSENSUS_ADMIN_KEY are required")
     if admin_key and len(admin_key) < 32:
         raise SystemExit("CONSENSUS_ADMIN_KEY must contain at least 32 characters")
-    writer_url = (str(sa.engine.make_url(url).set(
-        username="consensus_rw", password=writer_pw)) if admin_key else "")
+    writer_url = (sa.engine.make_url(url).set(
+        username="consensus_rw", password=writer_pw).render_as_string(hide_password=False)
+        if admin_key else "")
     writer = ConsensusSettingsStore(make_settings_engine(writer_url)) if admin_key else None
     return create_app(cfg, Dashboard(reports, cfg), engine, consensus_settings=writer), engine
 
