@@ -1,3 +1,2 @@
-action=tracker
-commit=main f660137
-requested=2026-11-11 tracker image expects schema 0010 after migration 0011: recreate the tracker on the current image (tracker only)
+action=wallet-probe
+requested=2026-11-11 read-only: consensus settings applied, sender health, 7d page
