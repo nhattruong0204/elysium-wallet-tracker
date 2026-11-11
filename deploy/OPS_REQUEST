@@ -1,3 +1,2 @@
-action=consensus
-commit=main f660137 (PR #127 merged)
-requested=2026-11-11 owner updated CONSENSUS_ADMIN_KEY - retry the Consensus go-live (2)
+action=consensus-status
+requested=2026-11-11 read-only status after the Consensus go-live
