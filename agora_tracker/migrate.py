@@ -54,3 +54,17 @@ def set_dashboard_password(engine: Engine, password: str) -> None:
     with engine.begin() as conn:
         # DDL cannot take bind parameters; the charset check above makes inlining safe
         conn.exec_driver_sql(f"ALTER ROLE dashboard_ro PASSWORD '{password}'")
+
+
+def set_consensus_password(engine: Engine, password: str) -> None:
+    """Provision the separate, narrowly privileged consensus_rw role.
+
+    The role is created without LOGIN credentials by migration 0011; setting the
+    password never grants it access to tracker wallets, outbox, or public raw data.
+    """
+    import re
+
+    if not re.fullmatch(r"[A-Za-z0-9_-]{32,128}", password):
+        raise ValueError("CONSENSUS_DB_PASSWORD must be 32-128 safe characters")
+    with engine.begin() as conn:
+        conn.exec_driver_sql(f"ALTER ROLE consensus_rw PASSWORD '{password}'")
