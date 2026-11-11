@@ -287,9 +287,16 @@ def test_scanner_going_stale_turns_the_indicator_red(kinds, make_live, ctx):
     page.wait_for_selector("#act-dot.stale")
     assert "stale" in page.inner_text("#act-scanner")
     assert page.locator("#act-stale").count() == 1
-    kinds.set_kv("heartbeat", str(int(__import__("time").time())))
-    advance(page, 40000)
-    until(page, "!document.getElementById('act-dot').classList.contains('stale')")
+    kinds.set_kv("heartbeat", str(int(time.time())))
+    # First prove the real API recovered, then request the next browser poll.
+    # Playwright's virtual clock can skip a pending fetch/backoff timer when
+    # advanced by 40 s at once, making this recovery assertion flaky in CI.
+    api = lv.get("/api/v1/activity", params={"range": "all", "since_id": 0}).json()
+    assert api["meta"]["stale"] is False
+    assert api["freshness"]["scanner_status"] in ("live", "delayed")
+    until(page, "ActivityMonitor.state.inflight === null")
+    page.evaluate("ActivityMonitor.poll()")
+    until(page, "!document.getElementById('act-dot').classList.contains('stale')", timeout=10)
     assert page.locator("#act-stale").count() == 0
 
 
