@@ -45,7 +45,7 @@
     {% if k.launchpad_label %}<span class="lp-chip">{{ k.launchpad_label }}</span>{% endif %}
     <span>MC at consensus <b>{% if k.mcap_at_usd is not none %}{{ k.mcap_at_usd|usd }}{% else %}–{% endif %}</b></span>
     <span>now <b>{{ mcap(k.mcap_now) }}</b>{% if k.change_x is not none %} <span class="{{ 'pos' if k.change_x >= 1 else 'neg' }}">{{ '%.2f'|format(k.change_x) }}×</span>{% endif %}</span>
-    <span class="cons-links">{% set tl = links.token(k.token) %}<a href="{{ tl['Agora'] }}" target="_blank" rel="noopener noreferrer">Agora ↗</a> <a href="{{ tl['Elyscan'] }}" target="_blank" rel="noopener noreferrer">Elyscan ↗</a> <a href="{{ links.tx(k.trigger_tx) }}" target="_blank" rel="noopener noreferrer" title="The buy that reached the threshold">Trigger tx ↗</a></span>
+    <span class="cons-links">{% set tl = links.token(k.token) %}{% set fomo = links.fomo_token(k.token) %}<a href="{{ tl['Agora'] }}" target="_blank" rel="noopener noreferrer">Agora ↗</a> {% if fomo %}<a href="{{ fomo }}" target="_blank" rel="noopener noreferrer" title="Open Elysium token in Fomo">Fomo ↗</a> {% endif %}<a href="{{ tl['Elyscan'] }}" target="_blank" rel="noopener noreferrer">Elyscan ↗</a> <a href="{{ links.tx(k.trigger_tx) }}" target="_blank" rel="noopener noreferrer" title="The buy that reached the threshold">Trigger tx ↗</a></span>
   </footer>
 </article>
 {% endfor %}
