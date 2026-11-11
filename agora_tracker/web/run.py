@@ -73,12 +73,14 @@ def build(cfg: Config, url: str | None = None) -> tuple[object, Engine]:
     reports.fx_policy = FxPolicy.from_web(cfg.web)
     reports.hidden_tokens = tuple(cfg.alerts.mute_tokens)
     from ..consensus_delivery import ConsensusSettingsStore, make_settings_engine
-    writer_url = os.environ.get("CONSENSUS_DATABASE_URL", "")
+    writer_pw = os.environ.get("CONSENSUS_DB_PASSWORD", "")
     admin_key = os.environ.get("CONSENSUS_ADMIN_KEY", "")
-    if bool(writer_url) != bool(admin_key):
-        raise SystemExit("Both CONSENSUS_DATABASE_URL and CONSENSUS_ADMIN_KEY are required")
+    if bool(writer_pw) != bool(admin_key):
+        raise SystemExit("Both CONSENSUS_DB_PASSWORD and CONSENSUS_ADMIN_KEY are required")
     if admin_key and len(admin_key) < 32:
         raise SystemExit("CONSENSUS_ADMIN_KEY must contain at least 32 characters")
+    writer_url = (str(sa.engine.make_url(url).set(
+        username="consensus_rw", password=writer_pw)) if admin_key else "")
     writer = ConsensusSettingsStore(make_settings_engine(writer_url)) if admin_key else None
     return create_app(cfg, Dashboard(reports, cfg), engine, consensus_settings=writer), engine
 
