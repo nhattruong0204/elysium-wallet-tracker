@@ -1,3 +1,3 @@
-action=consensus-diag
-commit=fix/consensus-health-and-ops
-requested=2026-11-11 which chats was the Consensus bot added to
+action=consensus-restart
+commit=fix/consensus-health-and-ops (cdd0acb+) on main f660137
+requested=2026-11-11 recreate the Consensus sender with its own health check
