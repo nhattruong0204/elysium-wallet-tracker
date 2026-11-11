@@ -1,2 +1,3 @@
-action=consensus-status
-requested=2026-11-11 read-only status after the Consensus go-live
+action=tracker
+commit=main f660137
+requested=2026-11-11 tracker image expects schema 0010 after migration 0011: recreate the tracker on the current image (tracker only)
