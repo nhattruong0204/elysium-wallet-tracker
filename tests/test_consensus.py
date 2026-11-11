@@ -96,6 +96,11 @@ def test_consensus_page_and_api_show_public_wallets_only(seeded, make_live):  # 
     html = r.text
     assert "Consensus" in html and "Settings" in html and 'href="/consensus"' in html
     assert PUB1[:6] in html and PUB2[:6] in html and "BOXA" in html
+    # Fomo shares the exact contract/chain URL validated by the Telegram alert helper.
+    fomo = f"https://fomo.family/coin?address={TOK_PUB}&amp;chainId=99901"
+    assert f'href="{fomo}"' in html
+    assert html.count("Fomo ↗") == 1
+    assert 'title="Open Elysium token in Fomo"' in html
     assert PRIV not in html and PRIVATE_LABEL not in html and TOK_PRIV not in html
     j = web.get("/api/v1/consensus", params=q).json()
     assert j["total"] == 1 and j["params"]["min_traders"] == 2
@@ -111,3 +116,20 @@ def test_consensus_defaults_render_empty_state(seeded, make_live):  # noqa: F811
     r = web.get("/consensus")
     assert r.status_code == 200 and "No consensus with these settings" in r.text
     assert web.get("/consensus", params={"traders": "abc"}).status_code == 200
+
+
+def test_consensus_fomo_token_validation_and_independent_off_switch(monkeypatch):
+    from agora_tracker.config import LinksConfig
+    from agora_tracker.web.format import Links
+
+    link = Links(LinksConfig())
+    url = f"https://fomo.family/coin?address={TOK_PUB}&chainId=99901"
+    assert link.fomo_token(TOK_PUB) == url
+    assert link.fomo_token("0x" + TOK_PUB[2:].upper()) == url
+    assert link.fomo_token("USDC") is None
+    assert link.fomo_token("https://evil.example/" + TOK_PUB) is None
+
+    monkeypatch.setenv("FOMO_BUTTON", "off")
+    assert Links(LinksConfig()).fomo_token(TOK_PUB) is None
+    monkeypatch.setenv("FOMO_BUTTON", "on")
+    assert Links(LinksConfig()).fomo_token(TOK_PUB) == url
