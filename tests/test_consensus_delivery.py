@@ -96,8 +96,8 @@ def setting_db(pg_engine):
                           "min_traders=3, window_min=30, min_net_hype=1.0, "
                           "period='24h', launchpad='', independent=false, version=0, "
                           "updated_at=now() WHERE id=1"))
-    url = str(sa.engine.make_url(TEST_URL).set(
-        username="consensus_rw", password=DB_PASSWORD))
+    url = sa.engine.make_url(TEST_URL).set(
+        username="consensus_rw", password=DB_PASSWORD).render_as_string(hide_password=False)
     eng = make_settings_engine(url)
     yield ConsensusSettingsStore(eng)
     eng.dispose()
