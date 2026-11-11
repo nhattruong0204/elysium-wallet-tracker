@@ -576,6 +576,27 @@ class Store:
         return find_bundle_wallets(((int(b), tok, w) for b, tok, w in rows),
                                    min_wallets=min_wallets, min_hits=min_hits)
 
+    def unsolicited_receipts(self, tokens: Iterable[str], window_h: float
+                             ) -> dict[str, tuple[set[str], int]]:
+        """Per token, within the window: the tracked wallets that received it in a transaction
+        they did not send, and the number of real BUY/SELL legs. Committed rows only."""
+        toks = sorted(set(tokens))
+        if not toks:
+            return {}
+        since = utc(int(datetime.now(timezone.utc).timestamp() - window_h * 3600))
+        with self.engine.connect() as c:
+            rows = c.execute(sa.text("""
+                SELECT t.token,
+                       array_agg(DISTINCT t.wallet) FILTER (
+                           WHERE t.kind = 'TRANSFER_IN' AND x.from_address IS NOT NULL
+                             AND x.from_address <> t.wallet) AS got,
+                       count(*) FILTER (WHERE t.kind IN ('BUY', 'SELL')) AS traded
+                  FROM trades t
+                  LEFT JOIN transactions x ON x.chain_id = t.chain_id AND x.tx_hash = t.tx_hash
+                 WHERE t.chain_id = :c AND t.token = ANY(:toks) AND t.block_time >= :since
+                 GROUP BY t.token"""), {"c": self.chain_id, "toks": toks, "since": since}).all()
+        return {r.token: (set(r.got or ()), int(r.traded)) for r in rows}
+
     def automated_wallets(self, *, lookback_days: int, min_txs: int, fast_gap_s: float,
                           fast_share: float, max_trade_share: float = 1.0
                           ) -> dict[str, dict[str, Any]]:
