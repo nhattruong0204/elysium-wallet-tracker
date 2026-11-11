@@ -306,8 +306,10 @@ def run_consensus_alerts(cfg: Config) -> None:
 
     if cfg.chain.chain_id != 99901:
         raise SystemExit("Consensus alerts require Elysium chain 99901")
-    settings_url = os.getenv("CONSENSUS_DATABASE_URL", "")
     public_url = os.getenv("CONSENSUS_PUBLIC_DATABASE_URL", "")
+    writer_pw = os.getenv("CONSENSUS_DB_PASSWORD", "")
+    settings_url = (str(sa.engine.make_url(public_url).set(
+        username="consensus_rw", password=writer_pw)) if public_url and writer_pw else "")
     bot = ConsensusSender(os.getenv("CONSENSUS_TG_BOT_TOKEN", ""),
                           os.getenv("CONSENSUS_TG_CHAT_ID", ""))
     if not public_url or not settings_url:
