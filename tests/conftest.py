@@ -45,6 +45,7 @@ def pg_engine():
         raise RuntimeError("refusing to wipe a database whose name does not contain 'test'")
     eng = make_engine(TEST_URL)
     with eng.begin() as c:
+        c.execute(sa.text("DROP SCHEMA IF EXISTS consensus_alerts CASCADE"))   # migration 0011
         c.execute(sa.text("DROP SCHEMA IF EXISTS public_api CASCADE"))
         c.execute(sa.text("DROP SCHEMA IF EXISTS public CASCADE"))
         c.execute(sa.text("CREATE SCHEMA public"))
