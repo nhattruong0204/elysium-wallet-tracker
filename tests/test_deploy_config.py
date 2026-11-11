@@ -17,18 +17,40 @@ def web():
     return COMPOSE["services"]["web"]
 
 
-def test_web_has_no_secrets_other_than_its_own_db_credentials():
+def test_web_has_no_secrets_other_than_its_narrow_db_and_owner_credentials():
     w = web()
     assert "env_file" not in w                      # no TG_* / POSTGRES_PASSWORD inside this container
     env = w["environment"]
-    # DATABASE_URL plus, at most, the public list of hidden Activity tokens: literal 0x
-    # addresses only (no ${...} interpolation), so it can never carry a secret.
-    assert set(env) <= {"DATABASE_URL", "WEB_ACTIVITY_HIDDEN_TOKENS"} and "DATABASE_URL" in env
+    # DATABASE_URL, the narrow Consensus settings credentials (owner key + consensus_rw
+    # password: no tracker, Telegram or admin-database secret) and, at most, the public list of
+    # hidden Activity tokens: literal 0x addresses only (no ${...} interpolation).
+    assert {"DATABASE_URL", "CONSENSUS_DB_PASSWORD", "CONSENSUS_ADMIN_KEY"} <= set(env)
+    assert set(env) <= {"DATABASE_URL", "CONSENSUS_DB_PASSWORD", "CONSENSUS_ADMIN_KEY",
+                        "WEB_ACTIVITY_HIDDEN_TOKENS"}
     if "WEB_ACTIVITY_HIDDEN_TOKENS" in env:
         assert re.fullmatch(r"0x[0-9a-f]{40}([ ,]+0x[0-9a-f]{40})*",
                             env["WEB_ACTIVITY_HIDDEN_TOKENS"])
     assert env["DATABASE_URL"].startswith("postgresql+psycopg://dashboard_ro:${DASHBOARD_DB_PASSWORD")
+    # Optional owner Save opens a separate, narrowly scoped consensus_rw connection.
+    # The website never receives a Telegram bot token, group ID or tracker admin URL.
+    assert env["CONSENSUS_DB_PASSWORD"] == "${CONSENSUS_DB_PASSWORD:-}"
+    assert env["CONSENSUS_ADMIN_KEY"] == "${CONSENSUS_ADMIN_KEY:-}"
     assert "POSTGRES_PASSWORD" not in str(w) and "TG_" not in str(w)
+    assert "CONSENSUS_TG_BOT_TOKEN" not in str(w)
+    assert "CONSENSUS_TG_CHAT_ID" not in str(w)
+
+
+def test_group_bot_is_opt_in_and_cannot_change_existing_services():
+    s = COMPOSE["services"]
+    group = s["consensus-alerts"]
+    assert group["profiles"] == ["consensus-alerts"]
+    assert group["command"] == ["--consensus-alerts"]
+    assert "ports" not in group and "env_file" not in group
+    assert group["read_only"] and group["cap_drop"] == ["ALL"]
+    assert "CONSENSUS_TG_BOT_TOKEN" in group["environment"]
+    assert "CONSENSUS_TG_CHAT_ID" in group["environment"]
+    assert "TG_BOT_TOKEN" not in group["environment"]
+    assert "TG_CHAT_ID" not in group["environment"]
 
 
 def test_web_is_hardened_and_loopback_only():

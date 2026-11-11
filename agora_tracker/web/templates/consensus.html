@@ -6,7 +6,7 @@
 <div class="banner warn"><b>Statistics, not advice.</b> Several addresses can belong to one operator: same-block buyers and known bundle wallets are counted once in <i>independent</i>. So far most “3 independent” signals in the forward paper log fell below their entry: measure before you trust.</div>
 
 <form class="panel cons-set" method="get" action="/consensus" id="cons-set" aria-labelledby="cs-h">
-  <h2 id="cs-h">Settings <span class="sub">thresholds for this view; remembered in this browser</span></h2>
+  <h2 id="cs-h">Settings <span class="sub">Apply updates this browser view; only an owner Save updates the separate Consensus Telegram group</span></h2>
   <div class="cons-grid">
     <label>At least how many traders
       <select name="traders">{% for n in d.choices.traders %}<option value="{{ n }}"{% if n == d.p.min_traders %} selected{% endif %}>{{ n }} traders</option>{% endfor %}</select></label>
@@ -23,6 +23,19 @@
   <div class="cons-act"><button class="btn primary" type="submit">Apply</button> <a class="btn" href="/consensus?reset=1" id="cons-reset">Reset</a>
     <span class="faint">{{ d.total }} consensus event{{ '' if d.total == 1 else 's' }} in the last {{ d.range_label }}{% if d.total > d.cards|length %}, newest {{ d.cards|length }} shown{% endif %} · {{ d.bundle_wallets }} known bundle wallets</span></div>
 </form>
+<section class="panel" aria-label="Save Consensus Telegram alert settings">
+  <h2>Consensus Telegram group</h2>
+  <p class="faint">The public page is read-only for visitors. Only the owner can publish
+    these filters to the separate Consensus alert bot. They take effect on its next poll
+    and do not alter ordinary ElysiumScan Telegram alerts.</p>
+  <label class="cons-chk"><input id="cons-tg-enabled" type="checkbox"> Enable group alerts after saving</label>
+  <label>Owner admin key (not saved in browser)
+    <input id="cons-tg-key" type="password" autocomplete="off" spellcheck="false"
+           placeholder="Owner key for saving Telegram settings" style="min-width:19rem">
+  </label>
+  <button id="cons-tg-save" class="btn primary" type="button">Save filters for Telegram group</button>
+  <p id="cons-tg-status" class="faint" role="status" aria-live="polite">Checking shared settings…</p>
+</section>
 
 {% if d.cards %}
 <div class="cons-list">
