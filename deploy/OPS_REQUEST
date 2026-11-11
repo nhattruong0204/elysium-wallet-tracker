@@ -1,2 +1,3 @@
-action=wallet-probe
-requested=2026-11-11 read-only: consensus settings applied, sender health, 7d page (re-trigger)
+action=consensus-diag
+commit=cdd0acb (fix/consensus-health-and-ops) on main f660137
+requested=2026-11-11 why does Telegram refuse the Consensus group message (HTTP 400)
