@@ -588,6 +588,26 @@ case "$ACTION" in
   test-card)
     docker compose run --rm --no-deps tracker --test-card
     ;;
+  wallet-probe)
+    # Read-only: Consensus settings applied? sender health detail, 7d page timing.
+    need_docker
+    q() { echo "--- $1"; psql_admin -P pager=off -c "$2" 2>&1 | sed 's/^/  /' || true; }
+    q "saved settings" "SELECT enabled, version, min_traders, window_min, min_net_hype, period, launchpad, independent, to_char(updated_at at time zone 'utc','MM-DD HH24:MI:SS') updated_utc FROM consensus_alerts.settings"
+    q "settings audit" "SELECT version, to_char(created_at at time zone 'utc','MM-DD HH24:MI:SS') at_utc, config FROM consensus_alerts.settings_audit ORDER BY version"
+    q "deliveries" "SELECT status, count(*), max(attempts) max_attempts, max(last_error) last_error, to_char(max(created_at) at time zone 'utc','HH24:MI:SS') newest_utc, to_char(max(sent_at) at time zone 'utc','HH24:MI:SS') last_sent_utc FROM consensus_alerts.deliveries GROUP BY 1"
+    q "recent deliveries" "SELECT id, version, status, attempts, last_error, token, to_char(trigger_at at time zone 'utc','HH24:MI:SS') trig, to_char(created_at at time zone 'utc','HH24:MI:SS') created, to_char(sent_at at time zone 'utc','HH24:MI:SS') sent FROM consensus_alerts.deliveries ORDER BY id DESC LIMIT 8"
+    echo "--- sender container"
+    docker inspect -f '  status={{.State.Status}} running={{.State.Running}} restarts={{.RestartCount}} started={{.State.StartedAt}} health={{if .State.Health}}{{.State.Health.Status}} failing={{.State.Health.FailingStreak}}{{else}}(no healthcheck){{end}}' elysium-consensus-alerts 2>&1
+    docker inspect -f '{{if .State.Health}}{{range .State.Health.Log}}  hc exit={{.ExitCode}} at={{.Start}} out={{printf "%.160s" .Output}}{{println}}{{end}}{{end}}' elysium-consensus-alerts 2>&1 | tail -4
+    docker inspect -f '  healthcheck config: {{json .Config.Healthcheck}}' elysium-consensus-alerts 2>&1 | cut -c1-300
+    docker logs --since 30m elysium-consensus-alerts 2>&1 | grep -vE 'api\.telegram\.org' | tail -15 | cut -c1-220 | sed 's/^/  sender| /'
+    echo "--- /?range=7d timing (loopback, 4 tries)"
+    for k in 1 2 3 4; do curl -s -o /dev/null -m 30 -w "  try $k: %{http_code} %{time_total}s\n" "http://127.0.0.1:8100/?range=7d"; sleep 2; done
+    for path in "/?range=24h" "/?range=30d" "/api/v1/overview?range=7d" "/consensus"; do curl -s -o /dev/null -m 30 -w "  $path: %{http_code} %{time_total}s\n" "http://127.0.0.1:8100$path"; done
+    docker logs --since 30m elysium-web 2>&1 | grep -iE "timeout|canceling statement|503|error" | grep -v '" 200 ' | tail -6 | cut -c1-220 | sed 's/^/  web| /'
+    grep -nE "query_timeout_ms|request_timeout" config/config.yaml 2>/dev/null | sed 's/^/  config: /'
+    docker ps --format '  {{.Names}}: {{.Status}} {{.Image}}' | grep elysium
+    ;;
   ui-smoke)
     docker compose run --rm --no-deps ui --ui-smoke
     ;;
