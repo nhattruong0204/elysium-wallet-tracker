@@ -1,2 +1,3 @@
-action=wallet-probe
-requested=2026-11-11 read-only check after deploying PR #124
+action=web-hotfix
+commit=cfb9e2386607cd743aeafcf0ed74a07215f1d8be
+requested=2026-11-11 Consensus Fomo link web-only deploy, PR 126; preserve current USDC suppression
