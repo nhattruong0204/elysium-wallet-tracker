@@ -698,6 +698,38 @@ PY
     consensus_state
     tracker_alive
     ;;
+  wallet-probe)
+    # Read-only: live check of wallet labels on the loopback port + cohort data dump (public data).
+    need_docker
+    python3 - <<'PY_RUN'
+import csv, io, json, time, urllib.request
+B = "http://127.0.0.1:8100"
+def get(p):
+    with urllib.request.urlopen(urllib.request.Request(B + p + ("&" if "?" in p else "?") + f"_cb={time.time()}"), timeout=60) as r:
+        return r.status, r.read().decode()
+code, html = get("/leaderboard?window=all")
+print("page", code, "Labels:" in html, "Export all wallets" in html, "classified" in html)
+j = json.loads(get("/api/v1/leaderboard?window=all&limit=1")[1])
+print("DATA|summary|" + json.dumps({"kpis": j["label_kpis"], "summary": j["label_summary"], "as_of": j["labels_as_of"]}, default=str))
+code, body = get("/api/v1/leaderboard.csv?window=all")
+rows = list(csv.DictReader(io.StringIO(body)))
+print("csv", code, len(rows), "rows", len(rows[0]), "columns")
+keep = ("wallet status rank best_rank agora_pnl_hype measured_pnl_hype label_status label_flags cohort_id style style_tags size_tier "
+        "activity performance_tier label_confidence relationship bundle_partner_wallets lb_trade_legs lb_observed_launches lb_early_launches "
+        "lb_round_trips lb_median_hold_min lb_median_buy_hype lb_bundle_blocks lb_bundle_tokens lb_internal_transfers lb_closes lb_wins "
+        "lb_measured_pnl_hype lb_profit_factor lb_bot_txs last_trade_at").split()
+for r in rows:
+    if r["label_flags"]:
+        print("DATA|wallet|" + json.dumps({k: r[k] for k in keep if r[k] != ""}))
+co = json.loads(get("/api/v1/cohorts")[1])
+for c in co["cohorts"]:
+    d = json.loads(get("/api/v1/cohorts/" + c["id"])[1])
+    print("DATA|cohort|" + json.dumps({"id": d["id"], "size": d["size"], "launches": d["launches"], "confidence": d["confidence"],
+          "styles": d["styles"], "tiers": d["tiers"], "blocked": d["blocked"], "wallets": c["wallets"],
+          "tokens": [(t["token"], t.get("symbol")) for t in d["tokens"]]}))
+    print("cohort page", get("/cohorts/" + c["id"])[0])
+PY_RUN
+    ;;
   ui-smoke)
     docker compose run --rm --no-deps ui --ui-smoke
     ;;

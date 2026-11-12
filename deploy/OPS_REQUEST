@@ -1,3 +1,3 @@
-action=web-hotfix
-commit=main 3469a79 (PR #131 merged) + rollback-tag fallback in remote.sh
-requested=2026-11-12 owner: wallet labels - website only (retry)
+action=wallet-probe
+commit=ops-only read-only probe
+requested=2026-11-12 read-only live check of wallet labels
