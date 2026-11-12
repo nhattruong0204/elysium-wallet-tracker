@@ -1,3 +1,2 @@
-action=consensus-restart
-commit=feature/launch-cohort-detector 01f7916 (PR #130)
-requested=2026-11-12 owner: launch-cohort detector - Consensus sender only
+action=wallet-probe
+requested=2026-11-12 read-only: is the launch-cohort detector live
