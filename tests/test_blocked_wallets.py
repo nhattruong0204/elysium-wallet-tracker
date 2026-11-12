@@ -98,7 +98,9 @@ def test_no_leaderboard_alerts_for_a_blocked_wallet(store, monkeypatch):
 
 def test_env_and_compose_list_the_five_wallets_on_the_tracker_only(monkeypatch):
     svc = yaml.safe_load(open("docker-compose.yml"))["services"]
-    assert svc["tracker"]["environment"]["TRACKING_BLOCKED_WALLETS"].split() == FIVE
+    listed = svc["tracker"]["environment"]["TRACKING_BLOCKED_WALLETS"].split()
+    assert listed[:5] == FIVE and len(listed) == 21 and len(set(listed)) == 21
+    assert all(len(a) == 42 and a == a.lower() and a.startswith("0x") for a in listed)
     assert all("TRACKING_BLOCKED_WALLETS" not in (s.get("environment") or {})
                for name, s in svc.items() if name != "tracker")
     monkeypatch.delenv("TRACKING_BLOCKED_WALLETS", raising=False)

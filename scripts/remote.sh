@@ -693,33 +693,6 @@ PY
     consensus_state
     tracker_alive
     ;;
-  wallet-probe)
-    # Read-only: what is router R / address A, do the token-T wallets pay HYPE, and do they co-trade?
-    need_docker
-    T=0x0233722e99196c355fd8c0bc76a3b694e6c61bbe
-    R=0x3e328152d399a500a7423a7373ef767a906628d4
-    A=0xa13f7611115752deb2b13813bdde16a5073e4b45
-    RPC=https://rpc.elysium.kinetiq.xyz
-    q() { echo "--- $1"; psql_admin -P pager=off -c "$2" 2>&1 | sed 's/^/  /' || true; }
-    rpc() { curl -s -m 20 -H 'content-type: application/json' -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"$1\",\"params\":$2}" "$RPC"; }
-    W="(SELECT DISTINCT wallet FROM trades WHERE token='$T')"
-    for a in $R $A; do
-      echo "--- contract $a"
-      rpc eth_getCode "[\"$a\",\"latest\"]" | python3 -c 'import json,sys; c=json.load(sys.stdin)["result"]; print("  code bytes",(len(c)-2)//2)'
-      for sig in 0x06fdde03 0x95d89b41 0x8da5cb5b 0x0dfe1681 0xd21220a7 0xdc4c90d3 0x3fc8cef3 0x4aa4a4fc; do
-        out=$(rpc eth_call "[{\"to\":\"$a\",\"data\":\"$sig\"},\"latest\"]" | python3 -c 'import json,sys; r=json.load(sys.stdin); x=r.get("result") or ""; print(x[:200] if x and x!="0x" else "-")')
-        [ "$out" != "-" ] && echo "  $sig -> $out"
-      done
-    done
-    q "HYPE paid on their token-T transactions" "SELECT t.kind, count(DISTINCT x.tx_hash) txs, round(sum(DISTINCT x.value_wei)/1e18,3) value_hype_approx, count(*) FILTER (WHERE x.value_wei > 0) with_value FROM trades t JOIN transactions x ON x.tx_hash=t.tx_hash WHERE t.token='$T' GROUP BY 1"
-    q "sample: one wallet, all token-T legs" "SELECT to_char(t.block_time at time zone 'utc','HH24:MI:SS') t, t.kind, round(t.qty/1e18) qty, round(x.value_wei/1e18,4) hype_value, left(x.to_address,10) called, left(t.tx_hash,12) tx FROM trades t JOIN transactions x ON x.tx_hash=t.tx_hash WHERE t.token='$T' AND t.wallet='0x34518ccd5d4ff95bf9796737c251981ac2406380' ORDER BY t.block_time"
-    q "every leg in one of its transactions (token_transfers)" "SELECT tt.log_index, left(tt.token,10) token, left(tt.from_address,10) frm, left(tt.to_address,10) dst, round(tt.amount/1e18,4) amt FROM token_transfers tt WHERE tt.tx_hash=(SELECT tx_hash FROM trades WHERE token='$T' AND wallet='0x34518ccd5d4ff95bf9796737c251981ac2406380' ORDER BY block_time LIMIT 1) ORDER BY 1"
-    q "how many tracked wallets trade through R (7 days)" "SELECT count(DISTINCT x.from_address) wallets, count(*) txs, count(*) FILTER (WHERE x.value_wei>0) with_value FROM transactions x WHERE x.to_address='$R' AND x.inserted_at >= now() - interval '7 days'"
-    q "their decoded legs on R txs (what our decoder made of them)" "SELECT t.kind, t.confidence, count(*) FROM trades t JOIN transactions x ON x.tx_hash=t.tx_hash WHERE x.to_address='$R' AND t.block_time >= now() - interval '7 days' GROUP BY 1,2 ORDER BY 3 DESC"
-    q "co-trading: tokens touched by >=5 of the 16 wallets (7 days), and how tight in time" "SELECT t.token, p.symbol, count(DISTINCT t.wallet) of_16, round(extract(epoch from max(f) - min(f))) first_touch_spread_s, to_char(min(f) at time zone 'utc','MM-DD HH24:MI:SS') first_utc FROM (SELECT token, wallet, min(block_time) f FROM trades WHERE wallet IN $W AND block_time >= now() - interval '7 days' GROUP BY 1,2) t LEFT JOIN token_profiles p ON p.address=t.token GROUP BY 1,2 HAVING count(DISTINCT t.wallet) >= 5 ORDER BY min(f) DESC LIMIT 20"
-    q "token T: all tracked participants vs how many first touches within 5s of the first" "SELECT count(*) wallets, count(*) FILTER (WHERE f <= m + interval '5 seconds') within_5s FROM (SELECT wallet, min(block_time) f, min(min(block_time)) OVER () m FROM trades WHERE token='$T' GROUP BY wallet) x"
-    q "registry: since when are they tracked" "SELECT address, status, in_top, last_rank, to_char(first_seen_at,'MM-DD') first_seen FROM wallet_enrollment WHERE address IN $W ORDER BY last_rank"
-    ;;
   ui-smoke)
     docker compose run --rm --no-deps ui --ui-smoke
     ;;

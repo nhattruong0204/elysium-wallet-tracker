@@ -1,2 +1,3 @@
-action=wallet-probe
-requested=2026-11-12 owner: router/pool identity and co-trading of token 0x0233 wallets (read-only)
+action=tracker
+commit=block/launch-cohort-16 (PR #129 + 16-wallet block)
+requested=2026-11-12 owner: block the 16-wallet launch cohort - tracker only, no migration
