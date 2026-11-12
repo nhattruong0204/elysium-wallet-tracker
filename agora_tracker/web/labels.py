@@ -266,7 +266,7 @@ SELECT b.wallet, b.token, b.block_number
 
 
 def bundle_partners(rows: Iterable[tuple[str, str, int]], *, min_blocks: int,
-                    min_tokens: int, max_block_wallets: int = 50) -> dict[str, dict[str, int]]:
+                    min_tokens: int, max_block_wallets: int = 50) -> dict[str, dict[str, Any]]:
     """rows: (wallet, token, block) same-block buys. A wallet is a bundler when ONE other
     tracked wallet bought the same token in the same block as it at least `min_blocks` times,
     on at least `min_tokens` different tokens. Sharing a busy block with whoever else sniped
@@ -285,7 +285,7 @@ def bundle_partners(rows: Iterable[tuple[str, str, int]], *, min_blocks: int,
         for a, b in combinations(sorted(ws), 2):
             pair_blocks[(a, b)] = pair_blocks.get((a, b), 0) + 1
             pair_tokens.setdefault((a, b), set()).add(tok)
-    out: dict[str, dict[str, int]] = {}
+    out: dict[str, dict[str, Any]] = {}
     for (a, b), nb in pair_blocks.items():
         nt = len(pair_tokens[(a, b)])
         if nb < min_blocks or nt < min_tokens:
@@ -451,7 +451,7 @@ def classify(wallet: str, f: Mapping[str, Any] | None, rules: LabelRules, *,
     pnl = Decimal(f.get("pnl_wei") or 0) / E18
     win, loss = Decimal(f.get("win_wei") or 0), Decimal(f.get("loss_wei") or 0)
     pf = (win / loss) if loss > 0 else None           # None: no measured loss (or no closes)
-    wr = (wins / closes) if closes else None
+    wr = (wins / closes) if closes else 0.0
     # measured closes only (sells whose cost basis we know); Agora's PnL is never used here
     if closes < rules.edge_min_closes:
         tier = "insufficient_history"
