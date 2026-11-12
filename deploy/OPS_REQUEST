@@ -1,3 +1,2 @@
-action=tracker
-commit=block/launch-cohort-16 (PR #129 + 16-wallet block)
-requested=2026-11-12 owner: block the 16-wallet launch cohort - tracker only, no migration
+action=wallet-probe
+requested=2026-11-12 dry run of the launch-cohort rule on production (read-only)
