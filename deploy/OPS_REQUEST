@@ -1,2 +1,2 @@
 action=wallet-probe
-requested=2026-11-12 dry run of the launch-cohort rule on production (read-only)
+requested=2026-11-12 dry run of the launch-cohort rule on production (read-only, re-trigger)
