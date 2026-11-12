@@ -693,6 +693,25 @@ PY
     consensus_state
     tracker_alive
     ;;
+  wallet-probe)
+    # Read-only: who touched token T, how, and is it a coordinated bundle or an airdrop?
+    need_docker
+    T=0x0233722e99196c355fd8c0bc76a3b694e6c61bbe
+    q() { echo "--- $1"; psql_admin -P pager=off -c "$2" 2>&1 | sed 's/^/  /' || true; }
+    W="(SELECT DISTINCT wallet FROM trades WHERE token='$T')"
+    q "token" "SELECT p.symbol, p.name, p.launchpad, to_char(p.launched_at at time zone 'utc','MM-DD HH24:MI') launched, a.creator, a.recipient, a.dev_buy_tokens FROM token_profiles p LEFT JOIN ascend_launches a ON a.token=p.address WHERE p.address='$T'"
+    q "tracked wallets x token: legs and who sent the tx" "SELECT t.wallet, e.last_rank rank, e.status, string_agg(DISTINCT t.kind, ',') kinds, count(*) legs, count(*) FILTER (WHERE x.from_address = t.wallet) self_sent, count(DISTINCT x.from_address) FILTER (WHERE x.from_address <> t.wallet) other_senders, to_char(min(t.block_time) at time zone 'utc','MM-DD HH24:MI:SS') first_utc FROM trades t LEFT JOIN transactions x ON x.tx_hash=t.tx_hash LEFT JOIN wallet_enrollment e ON e.address=t.wallet WHERE t.token='$T' GROUP BY 1,2,3 ORDER BY min(t.block_time)"
+    q "transaction senders for those legs" "SELECT x.from_address sender, x.to_address called, count(DISTINCT x.tx_hash) txs, count(DISTINCT t.wallet) tracked_recipients, (x.from_address IN $W) sender_is_tracked FROM trades t JOIN transactions x ON x.tx_hash=t.tx_hash WHERE t.token='$T' GROUP BY 1,2,5 ORDER BY 3 DESC LIMIT 8"
+    q "token flow (token_transfers): biggest from->to" "SELECT tt.from_address, tt.to_address, count(*) n, (tt.from_address IN $W) from_tracked, (tt.to_address IN $W) to_tracked FROM token_transfers tt WHERE tt.token='$T' GROUP BY 1,2,4,5 ORDER BY 3 DESC LIMIT 12"
+    q "token flow between two tracked wallets" "SELECT count(*) transfers, count(DISTINCT from_address) senders, count(DISTINCT to_address) receivers FROM token_transfers WHERE token='$T' AND from_address IN $W AND to_address IN $W"
+    q "did any tracked wallet send T out?" "SELECT t.wallet, count(*) out_legs, count(*) FILTER (WHERE x.from_address=t.wallet) self_sent FROM trades t LEFT JOIN transactions x ON x.tx_hash=t.tx_hash WHERE t.token='$T' AND t.kind IN ('TRANSFER_OUT','SELL') GROUP BY 1"
+    q "any token moved directly between these wallets, ever (all tokens)" "SELECT count(*) transfers, count(DISTINCT token) tokens, count(DISTINCT from_address) senders FROM token_transfers WHERE from_address IN $W AND to_address IN $W AND from_address <> to_address"
+    q "HYPE sent between these wallets, ever" "SELECT count(*) txs FROM transactions WHERE from_address IN $W AND to_address IN $W AND value_wei > 0"
+    q "same-sender drops to this wallet set, other tokens (>=5 of them, unsolicited)" "SELECT t.token, p.symbol, count(DISTINCT t.wallet) wallets, count(DISTINCT x.from_address) senders, count(*) FILTER (WHERE t.kind IN ('BUY','SELL')) buy_sell, to_char(min(t.block_time) at time zone 'utc','MM-DD HH24:MI') first_utc FROM trades t JOIN transactions x ON x.tx_hash=t.tx_hash LEFT JOIN token_profiles p ON p.address=t.token WHERE t.wallet IN $W AND t.kind='TRANSFER_IN' AND x.from_address <> t.wallet GROUP BY 1,2 HAVING count(DISTINCT t.wallet) >= 5 ORDER BY min(t.block_time) DESC LIMIT 15"
+    q "did the sender of T also drop the other tokens?" "WITH s AS (SELECT DISTINCT x.from_address a FROM trades t JOIN transactions x ON x.tx_hash=t.tx_hash WHERE t.token='$T' AND x.from_address <> t.wallet) SELECT x.from_address, count(DISTINCT t.token) tokens_dropped, count(DISTINCT t.wallet) wallets_hit, to_char(min(t.block_time) at time zone 'utc','MM-DD HH24:MI') first_utc FROM trades t JOIN transactions x ON x.tx_hash=t.tx_hash WHERE x.from_address IN (SELECT a FROM s) AND t.kind='TRANSFER_IN' GROUP BY 1"
+    q "what these wallets really do (7 days)" "SELECT t.wallet, e.last_rank rank, count(*) FILTER (WHERE kind='BUY') buys, count(*) FILTER (WHERE kind='SELL') sells, round(coalesce(sum(hype_wei) FILTER (WHERE kind='BUY'),0)/1e18,1) buy_hype, round(coalesce(sum(hype_wei) FILTER (WHERE kind='SELL'),0)/1e18,1) sell_hype, count(*) FILTER (WHERE kind='TRANSFER_IN') xfer_in, count(DISTINCT token) tokens FROM trades t LEFT JOIN wallet_enrollment e ON e.address=t.wallet WHERE t.wallet IN $W AND t.block_time >= now() - interval '7 days' GROUP BY 1,2 ORDER BY 2 NULLS LAST"
+    q "shared funders (first HYPE into each wallet we have on record)" "SELECT x.from_address funder, count(DISTINCT x.to_address) wallets_funded FROM transactions x WHERE x.to_address IN $W AND x.value_wei > 0 AND x.from_address NOT IN $W GROUP BY 1 HAVING count(DISTINCT x.to_address) >= 2 ORDER BY 2 DESC LIMIT 6"
+    ;;
   ui-smoke)
     docker compose run --rm --no-deps ui --ui-smoke
     ;;

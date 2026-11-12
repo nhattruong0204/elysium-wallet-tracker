@@ -1,3 +1,2 @@
-action=consensus-diag
-commit=fix/consensus-health-and-ops (PR #129)
-requested=2026-11-12 owner added the bot as channel admin: verify and resend the refused alert once
+action=wallet-probe
+requested=2026-11-12 owner: are the wallets on token 0x0233 a coordinated bundle? (read-only)
