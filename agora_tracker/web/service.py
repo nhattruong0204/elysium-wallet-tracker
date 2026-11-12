@@ -29,6 +29,7 @@ from .intel import SORTS as INTEL_SORTS
 from .intel import IntelParams, WalletIntel
 from .intel import matches as intel_matches
 from .intel import order as intel_order
+from .labels import LabelRules, compute_labels, label_kpis, unlabeled
 from .params import ListParams, paginate, range_dict, range_key
 from .reports import PublicReports, sort_key
 
@@ -75,6 +76,10 @@ class Dashboard:
         self._bundles_at = float("-inf")
         self._cohorts: list[Cohort] = []
         self._cohorts_at = float("-inf")
+        self.label_rules = LabelRules.from_intel(cfg.intel)
+        self._labels: dict[str, dict[str, Any]] = {}
+        self._labels_at = float("-inf")
+        self._labels_as_of: datetime | None = None
 
     # --- plumbing ----------------------------------------------------------------------------
     def _cached(self, key: tuple, fn: Callable[[], Any]) -> Hit:
@@ -306,14 +311,40 @@ class Dashboard:
                 "meta": {"generated_at": now, "age_s": round(hit.age_s), "stale": hit.stale}}
 
     # --- wallet intelligence -----------------------------------------------------------------------
+    def wallet_labels(self, enrollment: dict[str, str], now: datetime) -> dict[str, dict[str, Any]]:
+        """Labels (agora_tracker/web/labels.py) for every tracked wallet, refreshed every
+        intel.cohort_refresh_s like the cohorts they include; a failed refresh keeps the last
+        result (the page then shows the older labels with their as-of time)."""
+        if time.monotonic() - self._labels_at > self.cfg.intel.cohort_refresh_s:
+            self._labels_at = time.monotonic()        # also on failure: retry next interval
+            cohorts = self.cohorts(now)
+            try:
+                with self.rep.ro() as c:
+                    self._labels = compute_labels(
+                        c, chain_id=self.rep.chain_id, rules=self.label_rules, now=now,
+                        enrollment=enrollment, blocked=self.cfg.tracking.blocked_wallets,
+                        cohorts=cohorts, skip_tokens=self.rep.hidden_tokens)
+                self._labels_as_of = now
+            except Exception:  # noqa: BLE001 - the table renders without labels
+                log.warning("wallet label refresh failed", exc_info=True)
+        return self._labels
+
     def _intel_rows(self, p: IntelParams) -> tuple[dict[str, Any], list[dict[str, Any]], Hit]:
         hit = self._cached(("intel", p.window), lambda: self.intel.table(p.window, datetime.now(UTC)))
         v = hit.value
-        return v, intel_order([w for w in v["wallets"] if intel_matches(w, p)], p), hit
+        labels = self.wallet_labels({w["wallet"]: w["enrollment"] for w in v["wallets"]},
+                                    datetime.now(UTC))
+        blank = unlabeled()
+        wallets = [{**w, **labels.get(w["wallet"], blank)} for w in v["wallets"]]
+        v = {**v, "wallets": wallets, "label_kpis": label_kpis(wallets),
+             "labels_as_of": self._labels_as_of}
+        return v, intel_order([w for w in wallets if intel_matches(w, p)], p), hit
 
     def intel_table(self, p: IntelParams, now: datetime) -> dict[str, Any]:
         v, rows, hit = self._intel_rows(p)
         return {"params": p, "page": paginate(rows, p.page, p.size), "kpis": v["kpis"],
+                "label_kpis": v["label_kpis"], "labels_as_of": v["labels_as_of"],
+                "label_rules": self.label_rules.describe(),
                 "snapshot": v["snapshot"], "truncated": v["truncated"], "window": p.window,
                 "since": v["since"], "filtered": len(rows), "tracked": len(v["wallets"]),
                 "score_version": self.cfg.scoring.version,

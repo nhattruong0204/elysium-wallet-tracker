@@ -26,10 +26,13 @@ def test_web_has_no_secrets_other_than_its_narrow_db_and_owner_credentials():
     # hidden Activity tokens: literal 0x addresses only (no ${...} interpolation).
     assert {"DATABASE_URL", "CONSENSUS_DB_PASSWORD", "CONSENSUS_ADMIN_KEY"} <= set(env)
     assert set(env) <= {"DATABASE_URL", "CONSENSUS_DB_PASSWORD", "CONSENSUS_ADMIN_KEY",
-                        "WEB_ACTIVITY_HIDDEN_TOKENS"}
-    if "WEB_ACTIVITY_HIDDEN_TOKENS" in env:
-        assert re.fullmatch(r"0x[0-9a-f]{40}([ ,]+0x[0-9a-f]{40})*",
-                            env["WEB_ACTIVITY_HIDDEN_TOKENS"])
+                        "WEB_ACTIVITY_HIDDEN_TOKENS", "TRACKING_BLOCKED_WALLETS"}
+    for name in ("WEB_ACTIVITY_HIDDEN_TOKENS", "TRACKING_BLOCKED_WALLETS"):
+        if name in env:         # public lists of exact addresses, never ${...} interpolation
+            assert re.fullmatch(r"0x[0-9a-f]{40}([ ,]+0x[0-9a-f]{40})*", env[name])
+    if "TRACKING_BLOCKED_WALLETS" in env:   # the very list the tracker enforces
+        assert env["TRACKING_BLOCKED_WALLETS"] == \
+            COMPOSE["services"]["tracker"]["environment"]["TRACKING_BLOCKED_WALLETS"]
     assert env["DATABASE_URL"].startswith("postgresql+psycopg://dashboard_ro:${DASHBOARD_DB_PASSWORD")
     # Optional owner Save opens a separate, narrowly scoped consensus_rw connection.
     # The website never receives a Telegram bot token, group ID or tracker admin URL.

@@ -15,6 +15,14 @@
   {{ kpi('Tracked since', (s.tracked_since|ts if s.tracked_since else '–'), 'basis: ' ~ s.tracking_basis ~ ' · ' ~ s.scan_gaps ~ ' gap(s)') }}
 </section>{% endif %}
 
+{% if s and s.label_status %}{% set sk = {'blocked': 'bad', 'cohort': 'bad', 'bundler': 'warn', 'farm': 'warn', 'automated': 'warn', 'organic': 'ok'} %}
+<h2>Labels <small class="faint">rule-based, last 30 days</small></h2>
+<p>{{ badge(sk.get(s.label_status, ''), s.label_status) }}{% for f in s.label_flags if f != s.label_status %} {{ badge(sk.get(f, ''), f) }}{% endfor %}
+  · style <b>{{ s.style }}</b>{% for t in s.style_tags %} · {{ t|replace('_', ' ') }}{% endfor %}{% if s.size_tier %} · size <b>{{ s.size_tier }}</b>{% endif %} · {{ s.activity }} · edge <b>{{ s.edge }}</b>
+  {% if s.cohort_id %} · <a href="/api/v1/cohorts">launch cohort</a> of {{ s.cohort_size }} wallets{% endif %}</p>
+{% if s.label_reasons %}<ul class="faint">{% for r in s.label_reasons %}<li>{{ r }}</li>{% endfor %}</ul>{% endif %}
+{% endif %}
+
 <h2>Score <small class="faint">{{ d.score_version }}</small></h2>
 {% if d.score %}
 <p>{% if d.score.score is not none %}<b style="font-size:1.4em">{{ '%.1f'|format(d.score.score) }}</b> / 100{% else %}No score{% endif %}

@@ -24,6 +24,11 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
+from .labels import FLAGS as LABEL_FLAGS
+from .labels import STATUSES as LABEL_STATUSES
+from .labels import STYLE_TAGS as LABEL_STYLE_TAGS
+from .labels import STYLES as LABEL_STYLES
+from .labels import VERSION as LABEL_VERSION
 from .params import ADDR_RE, ParamError
 
 UTC = timezone.utc
@@ -59,6 +64,9 @@ class IntelParams:
     min_pnl: Decimal | None = None          # Agora-reported PnL, HYPE
     min_score: Decimal | None = None        # 0-100; a wallet with no score never matches
     q: str = ""                             # address fragment
+    label: str = "all"                      # overall label status (labels.STATUSES)
+    style: str = "all"                      # primary style (labels.STYLES)
+    flag: str = "all"                       # any flag (labels.FLAGS) or style tag; "clean": no flag
     sort: str = "rank"
     desc: bool = False
     page: int = 1
@@ -123,12 +131,22 @@ def parse_intel(q: Mapping[str, str], *, default_size: int = 50) -> IntelParams:
     text = (q.get("q") or "").strip().lower()[:44]
     if text and not re.fullmatch(r"(0x)?[0-9a-f]{1,40}", text):
         raise ParamError("q must be an address or the start of one (hex)")
+    label = (q.get("label") or "all").strip().lower()
+    if label not in ("all", *LABEL_STATUSES):
+        raise ParamError(f"label must be one of all, {', '.join(LABEL_STATUSES)}")
+    style = (q.get("style") or "all").strip().lower()
+    if style not in ("all", *LABEL_STYLES):
+        raise ParamError(f"style must be one of all, {', '.join(LABEL_STYLES)}")
+    flag = (q.get("flag") or "all").strip().lower()
+    if flag not in ("all", "clean", *LABEL_FLAGS, *LABEL_STYLE_TAGS):
+        raise ParamError("flag must be all, clean, a flag or a style tag")
     size = _int(q.get("limit"), "limit", 1, 100) or default_size
     page = _int(q.get("page"), "page", 1, 10_000) or 1
     return IntelParams(window=window, membership=membership, quality=quality,
                        active=active_raw in ("1", "true"),
                        min_trades=_int(q.get("min_trades"), "min_trades", 0, 1_000_000) or 0,
                        min_rank=min_rank, max_rank=max_rank, min_pnl=min_pnl, min_score=min_score, q=text,
+                       label=label, style=style, flag=flag,
                        sort=sort, desc=desc, page=page, size=size)
 
 
@@ -301,6 +319,16 @@ def matches(w: Mapping[str, Any], p: IntelParams) -> bool:
     # no score (not computed yet, or not enough evidence) is unknown, never 0
     if p.min_score is not None and (w["score"] is None or w["score"] < p.min_score):
         return False
+    # label filters: a wallet whose labels are not computed yet never matches a label filter
+    if p.label != "all" and w.get("label_status") != p.label:
+        return False
+    if p.style != "all" and w.get("style") != p.style:
+        return False
+    if p.flag == "clean" and (w.get("label_status") is None or w.get("label_flags")):
+        return False
+    if p.flag not in ("all", "clean") and p.flag not in (*w.get("label_flags", ()),
+                                                          *w.get("style_tags", ())):
+        return False
     if p.q:
         frag = p.q if p.q.startswith("0x") else "0x" + p.q
         if not w["wallet"].startswith(frag) and p.q not in w["wallet"]:
@@ -355,7 +383,22 @@ CSV_COLUMNS = (
     "trades_in_window", "buys", "sells", "tokens", "bought_hype", "sold_hype",
     "estimated_legs", "measured_closes", "measured_win_rate", "measured_pnl_hype",
     "last_trade_at", "data_quality", "tracking_basis", "tracked_since", "scan_gaps",
-    "score", "score_quality", "score_weight_available", "score_version", "score_as_of")
+    "score", "score_quality", "score_weight_available", "score_version", "score_as_of",
+    # labels (agora_tracker/web/labels.py), over their own fixed lookback
+    "label_version", "label_status", "label_flags", "cohort_id", "cohort_size", "style",
+    "style_tags", "size_tier", "activity", "edge", "label_reasons",
+    "lb_legs", "lb_trade_legs", "lb_transfer_share", "lb_observed_launches",
+    "lb_early_launches", "lb_early_share", "lb_round_trips", "lb_median_hold_min",
+    "lb_legs_per_active_day", "lb_median_buy_hype", "lb_top_token_share",
+    "lb_internal_transfers", "lb_transfer_peers", "lb_bundle_blocks", "lb_bundle_tokens",
+    "lb_bundle_partners", "lb_bot_txs", "lb_bot_fast_share", "lb_bot_trade_share",
+    "lb_closes", "lb_wins", "lb_measured_pnl_hype")
+_METRIC_KEYS = (
+    "lookback_legs", "lookback_trade_legs", "transfer_share", "observed_launches",
+    "early_launches", "early_share", "round_trips", "median_hold_min", "legs_per_active_day",
+    "median_buy_hype", "top_token_share", "internal_transfers", "transfer_peers",
+    "bundle_blocks", "bundle_tokens", "bundle_partners", "bot_txs", "bot_fast_share",
+    "bot_trade_share", "lookback_closes", "lookback_wins", "lookback_measured_pnl")
 _FORMULA = ("=", "+", "-", "@", "\t", "\r")
 
 
@@ -370,8 +413,12 @@ def csv_cell(v: Any) -> Any:
         return format(v, "f")
     if isinstance(v, bool):
         return "true" if v else "false"
-    if isinstance(v, int | float):
+    if isinstance(v, float):
+        return round(v, 6)
+    if isinstance(v, int):
         return v
+    if isinstance(v, list | tuple):
+        v = ";".join(str(x) for x in v)
     s = str(v)
     return "'" + s if s.startswith(_FORMULA) else s
 
@@ -389,7 +436,12 @@ def to_csv(rows: list[dict[str, Any]], window: str, score_version: str = "") -> 
             w["win_rate"], w["measured_pnl"], w["last_trade_at"], w["quality"],
             w["tracking_basis"], w["tracked_since"], w["scan_gaps"], w["score"],
             w["score_quality"], w["score_weight_available"],
-            score_version if w["score"] is not None else None, w["score_as_of"])])
+            score_version if w["score"] is not None else None, w["score_as_of"],
+            LABEL_VERSION if w.get("label_status") else None, w.get("label_status"),
+            w.get("label_flags") or [], w.get("cohort_id"), w.get("cohort_size"), w.get("style"),
+            w.get("style_tags") or [], w.get("size_tier"), w.get("activity"), w.get("edge"),
+            " | ".join(w.get("label_reasons") or []),
+            *((w.get("label_metrics") or {}).get(k) for k in _METRIC_KEYS))])
     return out.getvalue()
 
 

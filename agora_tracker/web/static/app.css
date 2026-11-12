@@ -226,3 +226,9 @@ h2.ph .right { float: right; padding: 3px 10px; font-size: 12.5px; font-weight: 
 .btn.sm { padding: 3px 9px; font-size: 12px; }
 .btn[aria-current="true"] { border-color: var(--accent); color: var(--accent); }
 .amt-presets { margin-top: -4px; }
+
+/* wallet labels (leaderboard) */
+.label-mix .badge { text-decoration: none; }
+.label-mix .badge.sel { outline: 2px solid var(--accent-2); outline-offset: 1px; }
+td.labels { white-space: normal; min-width: 180px; max-width: 280px; line-height: 1.7; }
+td.labels .badge { margin-right: 2px; }
