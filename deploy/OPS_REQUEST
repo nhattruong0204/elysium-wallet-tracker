@@ -1,3 +1,3 @@
 action=wallet-probe
 commit=ops-only read-only probe
-requested=2026-11-12 calibrate wallet-label rules (trigger)
+requested=2026-11-12 label distribution with the PR 131 review changes (SELECT only)
