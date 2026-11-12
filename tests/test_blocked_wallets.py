@@ -101,8 +101,11 @@ def test_env_and_compose_list_the_five_wallets_on_the_tracker_only(monkeypatch):
     listed = svc["tracker"]["environment"]["TRACKING_BLOCKED_WALLETS"].split()
     assert listed[:5] == FIVE and len(listed) == 21 and len(set(listed)) == 21
     assert all(len(a) == 42 and a == a.lower() and a.startswith("0x") for a in listed)
+    # the tracker enforces the list; the read-only website only labels those wallets "blocked"
+    # (the identical list, by YAML anchor); no other service sees it
     assert all("TRACKING_BLOCKED_WALLETS" not in (s.get("environment") or {})
-               for name, s in svc.items() if name != "tracker")
+               for name, s in svc.items() if name not in ("tracker", "web"))
+    assert svc["web"]["environment"]["TRACKING_BLOCKED_WALLETS"].split() == listed
     monkeypatch.delenv("TRACKING_BLOCKED_WALLETS", raising=False)
     assert load_config("config.example.yaml").tracking.blocked_wallets == []
     monkeypatch.setenv("TRACKING_BLOCKED_WALLETS", f"{FIVE[4].upper().replace('0X', '0x')}, {FIVE[0]}")
