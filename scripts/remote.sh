@@ -707,7 +707,7 @@ def get(p):
     with urllib.request.urlopen(f"http://127.0.0.1:8100{p}{'&' if '?' in p else '?'}_cb={time.time()}", timeout=60) as r:
         return r.read().decode()
 try:
-    t = json.loads(get("/api/v1/tokens/0x7347a64423c67cdb7e6186a217c5e35397819663"))
+    t = json.loads(get("/api/v1/tokens/0x5068b816f0c09ab03a1028fb18127f9f5b120b14"))
     print("DATA|token|" + json.dumps({k: v for k, v in t.items() if k not in ("trades", "recent", "holders", "wallets", "meta")}, default=str)[:3000])
     print("DATA|tokenkeys|" + json.dumps(list(t.keys())))
 except Exception as e:
@@ -721,14 +721,14 @@ PY_RUN
 SET default_transaction_read_only = on; SET statement_timeout = '60s';
 SELECT 'DATA','leg', t.wallet, t.kind, t.confidence, t.block_number, to_char(t.block_time AT TIME ZONE 'UTC', 'MM-DD HH24:MI:SS'), round(t.qty / 1e18, 2), round(coalesce(t.hype_wei, 0) / 1e18, 4), t.hype_method, left(t.tx_hash, 12), left(coalesce(x.to_address, '?'), 12), (x.from_address = t.wallet)
   FROM trades t LEFT JOIN transactions x ON x.chain_id = t.chain_id AND x.tx_hash = t.tx_hash
- WHERE t.chain_id = 99901 AND t.token = '0x7347a64423c67cdb7e6186a217c5e35397819663' ORDER BY t.block_time, t.id;
+ WHERE t.chain_id = 99901 AND t.token = '0x5068b816f0c09ab03a1028fb18127f9f5b120b14' ORDER BY t.block_time, t.id;
 SELECT 'DATA','dest', coalesce(x.to_address, '?'), count(DISTINCT t.tx_hash), count(DISTINCT t.wallet)
   FROM trades t LEFT JOIN transactions x ON x.chain_id = t.chain_id AND x.tx_hash = t.tx_hash
- WHERE t.chain_id = 99901 AND t.token = '0x7347a64423c67cdb7e6186a217c5e35397819663' GROUP BY 3 ORDER BY 4 DESC LIMIT 8;
+ WHERE t.chain_id = 99901 AND t.token = '0x5068b816f0c09ab03a1028fb18127f9f5b120b14' GROUP BY 3 ORDER BY 4 DESC LIMIT 8;
 SELECT 'DATA','outbox', payload->>'type', status, count(*), to_char(min(created_at) AT TIME ZONE 'UTC', 'MM-DD HH24:MI'), to_char(max(created_at) AT TIME ZONE 'UTC', 'MM-DD HH24:MI')
-  FROM notification_outbox WHERE payload->>'token' = '0x7347a64423c67cdb7e6186a217c5e35397819663' GROUP BY 3, 4;
+  FROM notification_outbox WHERE payload->>'token' = '0x5068b816f0c09ab03a1028fb18127f9f5b120b14' GROUP BY 3, 4;
 SELECT 'DATA','pnl', r.wallet, r.status, count(*), round(sum(r.pnl_wei) / 1e18, 3)
-  FROM realized_pnl r JOIN trades t ON t.id = r.trade_id WHERE t.chain_id = 99901 AND t.token = '0x7347a64423c67cdb7e6186a217c5e35397819663' GROUP BY 3, 4;
+  FROM realized_pnl r JOIN trades t ON t.id = r.trade_id WHERE t.chain_id = 99901 AND t.token = '0x5068b816f0c09ab03a1028fb18127f9f5b120b14' GROUP BY 3, 4;
 SQL
     ;;
   ui-smoke)
