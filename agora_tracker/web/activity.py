@@ -262,7 +262,8 @@ def _like_escape(s: str) -> str:
 
 
 def filter_sql(p: ActivityParams, *, with_cursor: bool = True,
-               hidden: tuple[str, ...] = ()) -> tuple[str, dict[str, Any]]:
+               hidden: tuple[str, ...] = (),
+               hidden_wallets: tuple[str, ...] = ()) -> tuple[str, dict[str, Any]]:
     """WHERE clause (without the keyword) over `trades t`, plus its bound parameters.
 
     `hidden` tokens (alerts.mute_tokens + web.activity_hidden_tokens) are left out unless the
@@ -277,6 +278,12 @@ def filter_sql(p: ActivityParams, *, with_cursor: bool = True,
     if hide:
         cond.append("t.token <> ALL(:hidden)")
         prm["hidden"] = hide
+    # muted wallets (tracking.muted_wallets): out of the default feed; naming the wallet
+    # (wallet= filter or a full-address search) or one transaction still shows its rows
+    quiet = [w for w in hidden_wallets if w != p.wallet and w not in named]
+    if quiet and not p.tx:
+        cond.append("t.wallet <> ALL(:hidden_wallets)")
+        prm["hidden_wallets"] = quiet
     if p.start is not None:
         cond.append("t.block_time >= :start")
         prm["start"] = p.start

@@ -74,6 +74,8 @@ def build(cfg: Config, url: str | None = None) -> tuple[object, Engine]:
     # alerts.mute_tokens (WHYPE, KNTQ) were always hidden here; web.activity_hidden_tokens adds
     # web-only ones (WEB_ACTIVITY_HIDDEN_TOKENS on the web service: Elysium mainnet USDC).
     reports.hidden_tokens = tuple(sorted({*cfg.alerts.mute_tokens, *cfg.web.activity_hidden_tokens}))
+    reports.hidden_wallets = tuple(cfg.tracking.muted_wallets)
+    log.info("web: default Activity leaves out %d muted wallet(s)", len(reports.hidden_wallets))
     log.info("web: default Activity hides %d token(s) by address: %s", len(reports.hidden_tokens),
              ", ".join(reports.hidden_tokens) or "none")
     from ..consensus_delivery import ConsensusSettingsStore, make_settings_engine

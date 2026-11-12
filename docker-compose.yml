@@ -60,13 +60,16 @@ services:
       ALERTS_TELEGRAM_MUTE_TOKENS: "0xb47c4c8f73f009cc0c0d3f92b388d13e293f0b65"
       # Wallets removed from tracking by the operator (2026-11-10: machines; see
       # docs/OPERATIONS.md "Blocked wallets"). History is kept; delete an address to reinstate.
-      # 2026-11-12: + 16 wallets of a launch cohort (router 0x3e328152; docs/OPERATIONS.md)
       TRACKING_BLOCKED_WALLETS: &blocked-wallets >-
         0xf70da97812cb96acdf810712aa562db8dfa3dbef
         0xf8fe0956cc3e5c3df0da1085bf40b397318624e6
         0x00c18c85bf479ba2768d9faa7c02a39f2617592e
         0x75d2ae0861661ef7479e9229a3e3e2cdd14dfb08
         0xfffff389f8b090073efb9ac908323b2d5895f7d9
+      # Tracked and shown on Wallet intelligence, never alerted on (docs/OPERATIONS.md "Muted
+      # wallets"). 2026-11-12: launch cohort 1 (16 wallets, router 0x3e328152; issue #132,
+      # unblocked the same day) and launch cohort 2 (7 wallets; issue #133).
+      TRACKING_MUTED_WALLETS: &muted-wallets >-
         0x34518ccd5d4ff95bf9796737c251981ac2406380
         0x67b730d0f0e6bcd300f1f56830d2e4a098467607
         0x0a90d9d0d0c76c5fe79faa6f6de4105fd3e68c79
@@ -83,6 +86,13 @@ services:
         0x0034f8e8e551b12ff6c4c678774bc64ccf13aab8
         0x89421958985e15f5f24efed8c260d662e4b5574a
         0x74fae0ec6ac058c9cdbce006242d8bf37951d858
+        0x5732b9e35e5c5bc4889bbafce634545247601c9d
+        0x8bfee4f379d78955c5a42e9335af361a7e9101e3
+        0x8f8952ce273546d8db48586e20aa884adcb95945
+        0xb0dc4980d62543f761554427debd832919b9f7a7
+        0xbc7d33197d06917f8f8e50f79b5fd55dbb7f49ca
+        0xd8ba9e5886b7000bace2c9dbdd0be98ac77d4a28
+        0xdd88b3e5c8000c19514b8c30a8adf83223d784ab
     volumes:
       - ./config:/config:ro        # config.yaml + watchlist.txt
       - tracker-data:/data         # v0.1/v0.2 SQLite file lives here (for --import-sqlite)
@@ -134,6 +144,7 @@ services:
       # The tracker's public block list (same YAML anchor), read only to label those wallets
       # "blocked" on Wallet intelligence. Literal addresses, no secret.
       TRACKING_BLOCKED_WALLETS: *blocked-wallets
+      TRACKING_MUTED_WALLETS: *muted-wallets
       # Separate narrow writer role for owner-authenticated Consensus settings only.
       CONSENSUS_DB_PASSWORD: ${CONSENSUS_DB_PASSWORD:-}
       CONSENSUS_ADMIN_KEY: ${CONSENSUS_ADMIN_KEY:-}
@@ -175,6 +186,8 @@ services:
       CONSENSUS_TG_CHAT_ID: ${CONSENSUS_TG_CHAT_ID:-}
       # Never alert the group about tokens the website hides (Elysium mainnet USDC).
       CONSENSUS_HIDDEN_TOKENS: "0xb47c4c8f73f009cc0c0d3f92b388d13e293f0b65"
+      # Muted wallets count as cohort wallets on Consensus cards (public addresses).
+      TRACKING_MUTED_WALLETS: *muted-wallets
     volumes:
       - ./config:/config:ro
     depends_on:

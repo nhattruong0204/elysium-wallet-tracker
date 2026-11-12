@@ -59,7 +59,7 @@ VERSION = "labels-v1"
 
 STATUSES = ("blocked", "contract", "cohort", "bundler", "farm", "automated", "dormant",
             "unknown", "organic")
-FLAGS = STATUSES[:6]
+FLAGS = (*STATUSES[:6], "muted")      # muted is a flag only: the status says what the wallet is
 STYLES = ("sniper", "scalper", "swing", "holder", "mover", "mixed", "thin")
 STYLE_TAGS = ("high_frequency", "high_churn", "accumulator", "early_buyer", "concentrated",
               "diversified", "linked")
@@ -320,7 +320,8 @@ def classify(wallet: str, f: Mapping[str, Any] | None, rules: LabelRules, *,
              blocked: frozenset[str] | set[str] = frozenset(),
              cohort: Mapping[str, Any] | None = None,
              bundle: Mapping[str, Any] | None = None,
-             quality: str | None = None) -> dict[str, Any]:
+             quality: str | None = None,
+             muted: frozenset[str] | set[str] = frozenset()) -> dict[str, Any]:
     """One wallet's labels. `f`: its FEATURES_SQL row (None: no legs in the lookback).
     `cohort`: {"id", "size", "launches"} when the wallet is a cohort member; `bundle`: its
     `bundle_partners` entry; `quality`: the wallet's data-quality class (intel.classify_quality),
@@ -379,7 +380,11 @@ def classify(wallet: str, f: Mapping[str, Any] | None, rules: LabelRules, *,
     age_d = (now - last_own).total_seconds() / 86400 if last_own else None
     activity = ("dormant" if age_d is None or age_d > rules.cooling_days else
                 "cooling" if age_d > rules.active_days else "active")
-    status = next((s for s in FLAGS if s in flags), None)
+    if wallet in muted and wallet not in blocked:
+        flags.append("muted")
+        conf["muted"] = "confirmed"
+        reasons.append("muted: on the operator mute list (tracked and shown here, never alerted)")
+    status = next((s for s in STATUSES[:6] if s in flags), None)
     if status is None:
         # no evidence of coordination is only a finding when there was enough trading to see
         status = ("dormant" if last_own is None else
@@ -501,7 +506,7 @@ def classify(wallet: str, f: Mapping[str, Any] | None, rules: LabelRules, *,
 
 def compute_labels(conn: Any, *, chain_id: int, rules: LabelRules, now: datetime,
                    enrollment: Mapping[str, str], blocked: Iterable[str] = (),
-                   quality: Mapping[str, str] | None = None,
+                   quality: Mapping[str, str] | None = None, muted: Iterable[str] = (),
                    cohorts: Iterable[Any] = (), skip_tokens: Iterable[str] = ()
                    ) -> dict[str, dict[str, Any]]:
     """Labels for every wallet in `enrollment` ({wallet: enrollment status}). Two read-only
@@ -519,8 +524,10 @@ def compute_labels(conn: Any, *, chain_id: int, rules: LabelRules, now: datetime
     co = {w: {"id": c.key, "size": len(c.wallets), "launches": len(c.tokens)}
           for c in cohorts for w in c.wallets}
     bl = frozenset(blocked)
+    mu = frozenset(muted)
     return {w: classify(w, feats.get(w), rules, enrollment=st, now=now, blocked=bl,
-                        cohort=co.get(w), bundle=bundles.get(w), quality=(quality or {}).get(w))
+                        cohort=co.get(w), bundle=bundles.get(w), quality=(quality or {}).get(w),
+                        muted=mu)
             for w, st in enrollment.items()}
 
 

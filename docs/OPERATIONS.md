@@ -488,7 +488,7 @@ database migration, no new table, nothing written.
 | Family | Values |
 |---|---|
 | `label_status` (one per wallet, first match wins) | `blocked` (operator block list) · `contract` · `cohort` (launch-cohort detector) · `bundler` (5+ same-block buys on 3+ tokens with the **same** other tracked wallet) · `farm` (5+ same-transaction transfers with 2+ tracked wallets, 10%+ of its legs) · `automated` (the tracker's machine-timing rule) · `dormant` (no action of its own; airdrop receipts do not count) · `unknown` (active, but < 8 decoded buys/sells: no verdict) · `organic` (enough trading seen, no coordination evidence) |
-| `label_flags` | every coordination flag that applies (a cohort wallet is usually a bundler too) |
+| `label_flags` | every coordination flag that applies (a cohort wallet is usually a bundler too), plus `muted` for wallets on the operator mute list |
 | `relationship` | `launch_cohort` · `bundle_pair` · `transfer_linked` · `none_detected` · `unknown` (too little to say; never the same as none detected) |
 | `style` | `sniper` (first buy within 60 s of the token's first tracked trade on 50%+ of 5+ observed launches) · `scalper` (median hold <= 15 min) · `swing` (15 min to 3 days) · `holder` (<= 0.25 sells per buy, or > 3 days) · `mover` (20+ transfers, few decoded trades) · `mixed` · `thin` (< 8 decoded buys/sells) |
 | `style_tags` | `high_frequency` (40+ legs per active day, about the top 6% of wallets) · `high_churn` (20+ round trips, median hold <= 5 min, sells about equal to buys: consistent with volume farming, not proof) · `accumulator` (3+ buys per token, few sells) · `early_buyer` · `concentrated` · `diversified` · `linked` |
@@ -530,3 +530,26 @@ are not classified here by design.
 
 Thresholds live in `LabelRules`; changing one changes what a label means, so bump `VERSION`.
 Flags are inferences from on-chain patterns, not proof of common control or misconduct.
+
+## Muted wallets (tracked, never alerted; 2026-11-12)
+
+`TRACKING_MUTED_WALLETS` (`tracking.muted_wallets`) is the middle ground between following a
+wallet normally and blocking it. A muted wallet is still scanned, indexed, scored and shown on
+Wallet intelligence (flag `muted`, next to whatever it is: `cohort`, `bundler`, ...), but:
+
+| Where | Effect |
+|---|---|
+| Telegram trade / transfer alerts | none for its own activity |
+| Leaderboard rank / PnL alerts | none |
+| Cluster and strong-signal alerts | it never counts as an independent buyer; a token 2+ muted wallets traded carries the cohort warning on other wallets' alerts |
+| Consensus page and Telegram channel | counted as a cohort wallet: badge on the card, and a card with 2+ of them is not posted |
+| Website Activity feed and overview "recent" | left out by default; `?wallet=<address>`, a full-address search, a transaction search, its wallet page and token pages still show its rows |
+
+Unlike the launch-cohort detector (7-day lookback) the list does not expire when the pattern
+stops, and it works with `ALERTS_COHORT_FILTER=off`. The same list goes to the tracker, web and
+consensus-alerts services by YAML anchor. A wallet on both lists is blocked.
+
+Listed 2026-11-12: launch cohort 1 (16 wallets, issue #132; taken off the block list, so the
+tracker scans them again from the next leaderboard refresh and their data quality shows a gap
+for the hours they were blocked) and launch cohort 2 (7 wallets, issue #133). The block list is
+back to the five machine wallets. To unmute, delete the address and redeploy the three services.

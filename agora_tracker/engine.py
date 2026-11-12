@@ -9,6 +9,7 @@ from __future__ import annotations
 import html
 import logging
 import time
+from collections.abc import Iterable
 from decimal import Decimal
 
 from . import cards
@@ -49,8 +50,11 @@ def short(addr: str) -> str:
 class Engine:
     def __init__(self, store: Store, tokens: TokenCache, chain_cfg: ChainConfig,
                  alert_cfg: AlertConfig, labels: dict[str, str], value_unit: str = "USD",
-                 links: Links | None = None, intel: IntelConfig | None = None):
+                 links: Links | None = None, intel: IntelConfig | None = None,
+                 muted_wallets: Iterable[str] = ()):
         self.store, self.tokens = store, tokens
+        # operator mute list (TrackingConfig.muted_wallets): treated as cohort wallets, always
+        self._muted_wallets: dict[str, str] = {w: "muted" for w in muted_wallets}
         self.intel = intel or IntelConfig()
         self._muted = set(alert_cfg.mute_tokens)
         self._tg_muted = set(alert_cfg.telegram_mute_tokens)   # Telegram-only (signals kept)
@@ -315,7 +319,13 @@ class Engine:
 
     def cohort_wallets(self) -> dict[str, str]:
         """wallet -> cohort key for coordinated launch cohorts (agora_tracker/cohorts.py);
-        refreshed every cohort_refresh_s. A failed refresh keeps the last verdict."""
+        refreshed every cohort_refresh_s. A failed refresh keeps the last verdict. Wallets on
+        the operator mute list are always included (also with the detector switched off)."""
+        if self._muted_wallets:
+            return {**self._detected_cohorts(), **self._muted_wallets}
+        return self._detected_cohorts()
+
+    def _detected_cohorts(self) -> dict[str, str]:
         ic = self.intel
         if not ic.cohort_filter:
             return {}
