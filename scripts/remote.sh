@@ -694,96 +694,15 @@ PY
     tracker_alive
     ;;
   wallet-probe)
-    # Read-only dry run of the launch-cohort rule (agora_tracker/cohorts.py defaults).
+    # Read-only: does the second detected cohort look coordinated?
     need_docker
-    psql_admin -At -c "COPY ( WITH first AS ( SELECT token, wallet, min(block_time) AS f FROM trades WHERE chain_id = 99901 AND block_time >= now() - interval '7 days' AND token NOT IN ('0xb47c4c8f73f009cc0c0d3f92b388d13e293f0b65','0xba876237b0f021a6c6d852d6c26e107997cc5e81','0xe45a355d9e9cad2ad85f2d03e3ee3102a036acf0') GROUP BY token, wallet), t0 AS (SELECT token, min(f) AS m FROM first GROUP BY token), burst AS ( SELECT f.token, f.wallet FROM first f JOIN t0 ON t0.token = f.token WHERE f.f <= t0.m + make_interval(secs => 10)) SELECT b.token, b.wallet FROM burst b WHERE b.token IN (SELECT token FROM burst GROUP BY token HAVING count(*) >= 5) ) TO STDOUT WITH CSV" > /tmp/bursts.csv
-    echo "  burst memberships: $(wc -l < /tmp/bursts.csv)"
-    psql_admin -At -c "COPY (SELECT address, coalesce(last_rank::text,''), status, coalesce(excluded_reason,'') FROM wallet_enrollment) TO STDOUT WITH CSV" > /tmp/enroll.csv
-    python3 - /tmp/bursts.csv /tmp/enroll.csv <<'PY'
-import csv, sys
-from collections import defaultdict
-from dataclasses import dataclass
-from itertools import combinations
-from typing import Any, Iterable
-
-@dataclass(frozen=True)
-class Cohort:
-    wallets: frozenset[str]
-    tokens: frozenset[str]
-
-    @property
-    def key(self) -> str:
-        """Stable label for logs and the API: the lowest member address."""
-        return min(self.wallets)
-
-    def as_dict(self) -> dict[str, Any]:
-        return {"id": self.key, "size": len(self.wallets), "wallets": sorted(self.wallets),
-                "tokens": sorted(self.tokens), "launches": len(self.tokens)}
-
-
-def find_cohorts(rows: Iterable[tuple[str, str]], *, min_shared: int = 5,
-                 min_overlap: float = 0.6, min_size: int = 5,
-                 min_members: int = 3, min_overlap_busy: float = 0.3) -> list[Cohort]:
-    """rows: (token, wallet) launch-burst memberships. Pure function; largest cohort first."""
-    by_token: dict[str, set[str]] = defaultdict(set)
-    by_wallet: dict[str, set[str]] = defaultdict(set)
-    for token, wallet in rows:
-        by_token[token].add(wallet)
-        by_wallet[wallet].add(token)
-    shared: dict[tuple[str, str], int] = defaultdict(int)
-    for ws in by_token.values():
-        for a, b in combinations(sorted(ws), 2):
-            shared[(a, b)] += 1
-    parent: dict[str, str] = {}
-
-    def root(x: str) -> str:
-        while parent.get(x, x) != x:
-            parent[x] = parent.get(parent[x], parent[x])
-            x = parent[x]
-        return x
-
-    linked: set[str] = set()
-    for (a, b), n in shared.items():
-        la, lb = len(by_wallet[a]), len(by_wallet[b])
-        if (n >= min_shared and n >= min_overlap * min(la, lb)
-                and n >= min_overlap_busy * max(la, lb)):
-            linked.update((a, b))
-            ra, rb = root(a), root(b)
-            if ra != rb:
-                parent[max(ra, rb)] = min(ra, rb)
-    groups: dict[str, set[str]] = defaultdict(set)
-    for w in linked:
-        groups[root(w)].add(w)
-    out = []
-    for ws in groups.values():
-        if len(ws) < min_size:
-            continue
-        toks = frozenset(t for t, members in by_token.items() if len(members & ws) >= min_members)
-        out.append(Cohort(frozenset(ws), toks))
-    out.sort(key=lambda c: (-len(c.wallets), c.key))
-    return out
-
-
-
-rows = [tuple(r) for r in csv.reader(open(sys.argv[1]))]
-meta = {r[0]: (r[1], r[2], r[3]) for r in csv.reader(open(sys.argv[2]))}
-print("  tokens with a launch burst:", len({t for t, _ in rows}), " wallets in bursts:", len({w for _, w in rows}))
-found = find_cohorts(rows)
-print("  cohorts:", len(found))
-for c in found:
-    ranks = sorted(int(meta[w][0]) for w in c.wallets if w in meta and meta[w][0])
-    blocked = sum(1 for w in c.wallets if meta.get(w, ("", "", ""))[2] == "blocked")
-    print(f"  - cohort {c.key[:10]}: {len(c.wallets)} wallets, {len(c.tokens)} launches, ranks {ranks[:16]}, already blocked {blocked}")
-    for w in sorted(c.wallets):
-        r = meta.get(w, ("?", "?", ""))
-        print(f"      {w} rank={r[0] or '-'} status={r[1]} {r[2]}")
-loose = find_cohorts(rows, min_shared=3, min_overlap=0.5, min_size=4)
-keys = {frozenset(c.wallets) for c in found}
-for c in loose:
-    if frozenset(c.wallets) not in keys:
-        print(f"  near miss (looser rule only): {len(c.wallets)} wallets, {len(c.tokens)} launches")
-PY
-    rm -f /tmp/bursts.csv /tmp/enroll.csv
+    q() { echo "--- $1"; psql_admin -P pager=off -c "$2" 2>&1 | sed 's/^/  /' || true; }
+    W="('0x5732b9e35e5c5bc4889bbafce634545247601c9d','0x8bfee4f379d78955c5a42e9335af361a7e9101e3','0x8f8952ce273546d8db48586e20aa884adcb95945','0xb0dc4980d62543f761554427debd832919b9f7a7','0xbc7d33197d06917f8f8e50f79b5fd55dbb7f49ca','0xd8ba9e5886b7000bace2c9dbdd0be98ac77d4a28','0xdd88b3e5c8000c19514b8c30a8adf83223d784ab')"
+    q "what they do (7 days)" "SELECT t.wallet, e.last_rank rank, count(*) FILTER (WHERE kind='BUY') buys, count(*) FILTER (WHERE kind='SELL') sells, round(coalesce(sum(hype_wei) FILTER (WHERE kind='BUY'),0)/1e18,1) buy_hype, round(coalesce(sum(hype_wei) FILTER (WHERE kind='SELL'),0)/1e18,1) sell_hype, count(*) FILTER (WHERE kind LIKE 'TRANSFER%') xfers, count(DISTINCT token) tokens FROM trades t LEFT JOIN wallet_enrollment e ON e.address=t.wallet WHERE t.wallet IN $W AND t.block_time >= now() - interval '7 days' GROUP BY 1,2 ORDER BY 2"
+    q "contracts they call" "SELECT x.to_address, count(*) txs, count(DISTINCT x.from_address) of_7, (SELECT count(DISTINCT x2.from_address) FROM transactions x2 WHERE x2.to_address = x.to_address AND x2.inserted_at >= now() - interval '7 days') all_tracked_callers FROM transactions x WHERE x.from_address IN $W AND x.inserted_at >= now() - interval '7 days' GROUP BY 1 ORDER BY 2 DESC LIMIT 6"
+    q "launches they entered together: timing (latest 12)" "SELECT f.token, p.symbol, p.launchpad, count(*) of_7, round(extract(epoch from max(f.f)-min(f.f))) spread_s, to_char(min(f.f) at time zone 'utc','MM-DD HH24:MI:SS') first_utc FROM (SELECT token, wallet, min(block_time) f FROM trades WHERE wallet IN $W AND block_time >= now() - interval '7 days' GROUP BY 1,2) f LEFT JOIN token_profiles p ON p.address=f.token GROUP BY 1,2,3 HAVING count(*) >= 4 ORDER BY min(f.f) DESC LIMIT 12"
+    q "transfers between them, ever" "SELECT count(*) token_transfers, (SELECT count(*) FROM transactions WHERE from_address IN $W AND to_address IN $W AND value_wei > 0) hype_txs FROM token_transfers WHERE from_address IN $W AND to_address IN $W AND from_address <> to_address"
+    q "same-block entries (first buy in the same block as another member)" "SELECT count(*) entries, count(*) FILTER (WHERE shared) same_block FROM (SELECT token, wallet, min(block_number) b, count(*) OVER (PARTITION BY token, min(block_number)) > 1 shared FROM trades WHERE wallet IN $W AND block_time >= now() - interval '7 days' GROUP BY 1,2) x"
     ;;
   ui-smoke)
     docker compose run --rm --no-deps ui --ui-smoke
