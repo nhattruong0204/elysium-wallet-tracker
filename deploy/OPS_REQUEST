@@ -1,3 +1,3 @@
 action=web-hotfix
-commit=main 3469a79 (PR #131 merged)
-requested=2026-11-12 owner: wallet labels - website only
+commit=main 3469a79 (PR #131 merged) + rollback-tag fallback in remote.sh
+requested=2026-11-12 owner: wallet labels - website only (retry)

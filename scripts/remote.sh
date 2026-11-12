@@ -324,10 +324,15 @@ case "$ACTION" in
     web_state
     prev=$(docker inspect -f '{{.Image}}' elysium-web 2>/dev/null || true)
     [ -n "$prev" ] || { echo "no running elysium-web container: use the web action" >&2; exit 1; }
-    if docker tag "$prev" elysium-wallet-tracker:pre-web-hotfix; then
+    # The running image id is not always taggable (image record pruned while the container
+    # keeps running); then fall back to the current :latest (the previous deploy's build), as
+    # the tracker action does.
+    if docker tag "$prev" elysium-wallet-tracker:pre-web-hotfix 2>/dev/null; then
       echo "  rollback image: elysium-wallet-tracker:pre-web-hotfix = $prev"
+    elif docker tag elysium-wallet-tracker:latest elysium-wallet-tracker:pre-web-hotfix 2>/dev/null; then
+      echo "  WARNING: running dashboard image not taggable; rollback image = previous :latest"
     else
-      echo "cannot tag the running dashboard image $prev for rollback: refusing to deploy" >&2; exit 1
+      echo "no rollback image could be tagged: refusing to deploy" >&2; exit 1
     fi
     db_stats
     tracker_alive
