@@ -49,7 +49,10 @@ class Tracker:
         self.market = AgoraMarket(cfg.market)
         self.engine = Engine(self.store, self.follower.tokens, c, cfg.alerts, self.watchlist,
                              value_unit=cfg.leaderboard.value_unit, links=self.links,
-                             intel=cfg.intel)
+                             intel=cfg.intel, muted_wallets=cfg.tracking.muted_wallets)
+        if cfg.tracking.muted_wallets:
+            log.info("operator mute list: %d wallet(s) tracked but never alerted",
+                     len(cfg.tracking.muted_wallets))
         ic = cfg.intel
         self.dd = DueDiligence(
             self.rpc, wrapped=ic.wrapped_native, factories=ic.dd_factories,
@@ -230,7 +233,8 @@ class Tracker:
                                                rank_change=self.cfg.alerts.rank_change,
                                                pnl_change=self.cfg.alerts.pnl_change,
                                                unit=self.cfg.leaderboard.value_unit)
-                    changes = [ch for ch in changes if ch[2].address not in blocked]
+                    quiet = blocked | set(self.cfg.tracking.muted_wallets)
+                    changes = [ch for ch in changes if ch[2].address not in quiet]
                     if self.cfg.alerts.leaderboard_alerts and changes:
                         self.engine.leaderboard_alerts(changes)
                     top = {t.address for t in traders}

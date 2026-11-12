@@ -138,7 +138,8 @@ class Dashboard:
                 "concentration_top3": o["concentration_top3"],
                 "coverage": self.rep.coverage(tr, now),
                 "health": public_health(self.rep.health(now), self.w),
-                "recent": self.rep.trades(tr, limit=15, hidden=self.rep.hidden_tokens),
+                "recent": self.rep.trades(tr, limit=15, hidden=self.rep.hidden_tokens,
+                                          hidden_wallets=self.rep.hidden_wallets),
             }
         hit = self._cached(("overview", range_key(tr)), build)
         return {**hit.value, "meta": self._meta(hit, tr, now)}
@@ -212,6 +213,11 @@ class Dashboard:
                 log.warning("launch cohort refresh failed", exc_info=True)
         return self._cohorts
 
+    def _quiet_wallets(self, found: list[Cohort]) -> dict[str, str]:
+        """Wallets whose trades are not a signal: detected cohort members plus the operator's
+        mute list (tracking.muted_wallets), which does not expire with the detector."""
+        return {**{w: "muted" for w in self.cfg.tracking.muted_wallets}, **members_of(found)}
+
     def cohort_api(self, now: datetime) -> dict[str, Any]:
         found = self.cohorts(now)
         ic = self.cfg.intel
@@ -227,7 +233,7 @@ class Dashboard:
         """Cohort warning for one token: cohort wallets among `wallets` that traded it, and
         whether a cohort was in its launch burst. None when there is nothing to warn about."""
         found = self.cohorts(now)
-        of = members_of(found)
+        of = self._quiet_wallets(found)
         hit = sorted({w for w in wallets if w in of})
         launch = [c.key for c in found if token in c.tokens]
         if len(hit) < self.cfg.intel.cohort_warn_min and not launch:
@@ -238,7 +244,8 @@ class Dashboard:
         size = self.w.page_size
         # same default visibility as Activity; a token page (token=...) still lists that token
         rows = self.rep.trades(tr, limit=size + 1, offset=(page - 1) * size,
-                               hidden=self.rep.hidden_tokens, **kw)
+                               hidden=self.rep.hidden_tokens,
+                               hidden_wallets=self.rep.hidden_wallets, **kw)
         return {"items": rows[:size], "page": page, "has_next": len(rows) > size, "size": size}
 
     # --- smart money ------------------------------------------------------------------------------------
@@ -309,7 +316,7 @@ class Dashboard:
                 log.warning("consensus: bundle wallet refresh failed", exc_info=True)
         bundles = self._bundles
         hit = self._cached(("consensus", p.key()), lambda: self.rep.consensus(p, now, bundles))
-        of = members_of(self.cohorts(now))
+        of = self._quiet_wallets(self.cohorts(now))
         value = dict(hit.value)
         if of and value.get("cards"):
             value["cards"] = [{**k, "cohort_wallets": sum(1 for m in k["members"]
@@ -333,6 +340,7 @@ class Dashboard:
                         c, chain_id=self.rep.chain_id, rules=self.label_rules, now=now,
                         enrollment=enrollment, quality=quality,
                         blocked=self.cfg.tracking.blocked_wallets,
+                        muted=self.cfg.tracking.muted_wallets,
                         cohorts=cohorts, skip_tokens=self.rep.hidden_tokens)
                 self._labels_as_of = now
             except Exception:  # noqa: BLE001 - the table renders without labels
