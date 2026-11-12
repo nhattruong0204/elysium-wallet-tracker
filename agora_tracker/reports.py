@@ -440,13 +440,17 @@ class Reports:
 
     def trades(self, tr: TimeRange, *, wallet: str | None = None, token: str | None = None,
                limit: int = 50, offset: int = 0,
-               hidden: Sequence[str] = ()) -> list[dict[str, Any]]:
+               hidden: Sequence[str] = (),
+               hidden_wallets: Sequence[str] = ()) -> list[dict[str, Any]]:
         """Transaction-level evidence, newest first (deterministic order). `hidden` tokens are
         left out (the website's default-visibility list) unless `token` names one of them."""
         cond = ""
         hide = [h for h in hidden if h != token]
         if hide:
             cond += " AND t.token <> ALL(:hidden)"
+        quiet = [] if (wallet or token) else list(hidden_wallets)   # only the unfiltered lists
+        if quiet:
+            cond += " AND t.wallet <> ALL(:hidden_wallets)"
         if wallet:
             cond += " AND t.wallet = :w"
         if token:
@@ -460,7 +464,8 @@ class Reports:
                 WHERE t.chain_id = :c AND t.block_time >= :s AND t.block_time < :e {cond}
                 ORDER BY t.block_time DESC, t.block_number DESC, t.id DESC
                 LIMIT :lim OFFSET :off""", s=tr.start, e=tr.end, w=wallet, tok=token,
-                lim=int(limit), off=int(offset), hidden=hide)
+                lim=int(limit), off=int(offset), hidden=hide,
+                         hidden_wallets=quiet)
             names = self.token_names(c, sorted({r["token"] for r in rows}))
         for r in rows:
             m = names.get(r["token"], {})

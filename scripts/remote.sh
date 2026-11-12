@@ -698,47 +698,6 @@ PY
     consensus_state
     tracker_alive
     ;;
-  wallet-probe)
-    # Read-only: tracked wallets with transfers but no decoded buy/sell in 30 days, and how they group.
-    need_docker
-    python3 - <<'PY_RUN'
-import csv, io, json, time, urllib.request
-with urllib.request.urlopen(f"http://127.0.0.1:8100/api/v1/leaderboard.csv?window=all&_cb={time.time()}", timeout=60) as r:
-    rows = list(csv.DictReader(io.StringIO(r.read().decode())))
-keep = "wallet status rank best_rank agora_pnl_hype legs tokens label_status label_flags style style_tags activity quality lb_legs lb_trade_legs lb_transfer_share lb_legs_per_active_day lb_internal_transfers lb_transfer_peers lb_bot_txs lb_bot_fast_share first_seen_at last_trade_at".split()
-for x in rows:
-    if x["lb_trade_legs"] in ("0", "") and int(x["lb_legs"] or 0) >= 20:
-        print("DATA|mover|" + json.dumps({k: x[k] for k in keep if x.get(k, "") != ""}))
-PY_RUN
-    psql_admin -At -F'|' <<'SQL'
-SET default_transaction_read_only = on; SET statement_timeout = '90s';
-WITH m AS (SELECT wallet FROM trades WHERE chain_id = 99901 AND block_time > now() - interval '30 days'
-       GROUP BY wallet HAVING count(*) FILTER (WHERE kind IN ('BUY','SELL')) = 0 AND count(*) >= 20),
-x AS (SELECT t.wallet, coalesce(tx.to_address, '?') AS dest, count(DISTINCT t.tx_hash) AS n,
-             count(DISTINCT t.tx_hash) FILTER (WHERE tx.from_address = t.wallet) AS own
-        FROM trades t JOIN m USING (wallet)
-        LEFT JOIN transactions tx ON tx.chain_id = t.chain_id AND tx.tx_hash = t.tx_hash
-       WHERE t.chain_id = 99901 AND t.block_time > now() - interval '30 days' GROUP BY 1, 2),
-r AS (SELECT *, row_number() OVER (PARTITION BY wallet ORDER BY n DESC) AS k,
-             sum(n) OVER (PARTITION BY wallet) AS total FROM x)
-SELECT 'DATA', 'dest', wallet, dest, n, own, total FROM r WHERE k <= 2 ORDER BY wallet, k;
-WITH m AS (SELECT wallet FROM trades WHERE chain_id = 99901 AND block_time > now() - interval '30 days'
-       GROUP BY wallet HAVING count(*) FILTER (WHERE kind IN ('BUY','SELL')) = 0 AND count(*) >= 20),
-e AS (SELECT DISTINCT t.wallet, t.token, t.block_time FROM trades t JOIN m USING (wallet)
-       WHERE t.chain_id = 99901 AND t.block_time > now() - interval '30 days'),
-n AS (SELECT wallet, count(DISTINCT token) AS toks FROM e GROUP BY 1)
-SELECT 'DATA', 'pair', a.wallet, b.wallet, count(DISTINCT a.token), count(*), na.toks, nb.toks
-  FROM e a JOIN e b ON a.token = b.token AND a.wallet < b.wallet
-   AND b.block_time BETWEEN a.block_time - interval '10 seconds' AND a.block_time + interval '10 seconds'
-  JOIN n na ON na.wallet = a.wallet JOIN n nb ON nb.wallet = b.wallet
- GROUP BY a.wallet, b.wallet, na.toks, nb.toks HAVING count(DISTINCT a.token) >= 3;
-WITH m AS (SELECT wallet FROM trades WHERE chain_id = 99901 AND block_time > now() - interval '30 days'
-       GROUP BY wallet HAVING count(*) FILTER (WHERE kind IN ('BUY','SELL')) = 0 AND count(*) >= 20)
-SELECT 'DATA', 'kind', t.wallet, count(*) FILTER (WHERE kind = 'TRANSFER_IN'), count(*) FILTER (WHERE kind = 'TRANSFER_OUT'),
-       count(DISTINCT token), count(DISTINCT date_trunc('day', block_time)), min(block_time)::date, max(block_time)::timestamp(0)
-  FROM trades t JOIN m USING (wallet) WHERE t.chain_id = 99901 AND t.block_time > now() - interval '30 days' GROUP BY 1;
-SQL
-    ;;
   ui-smoke)
     docker compose run --rm --no-deps ui --ui-smoke
     ;;

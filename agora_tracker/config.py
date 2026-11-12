@@ -250,6 +250,14 @@ class TrackingConfig:
     # is kept. Also read from TRACKING_BLOCKED_WALLETS on the tracker service; taking an address
     # off the list reinstates it on the next leaderboard refresh.
     blocked_wallets: list[str] = field(default_factory=list)
+    # Wallets that stay tracked, indexed and visible on Wallet intelligence, but are never
+    # alerted on (exact addresses): no trade/transfer/leaderboard alerts of their own, they never
+    # count as independent buyers, tokens 2+ of them traded carry the cohort warning, Consensus
+    # treats them as cohort wallets, and the website's default Activity feed leaves them out
+    # (their wallet page and an explicit wallet filter still show everything). Unlike the
+    # launch-cohort detector this does not expire when the pattern stops. Also read from
+    # TRACKING_MUTED_WALLETS (tracker, web and consensus-alerts services). Blocked wins.
+    muted_wallets: list[str] = field(default_factory=list)
     # Scanner lag (blocks behind head) that counts as "falling behind" in the health output.
     lag_warn_blocks: int = 3000
 
@@ -447,6 +455,9 @@ def load_config(path: str | Path) -> Config:
     env_blocked = os.environ.get("TRACKING_BLOCKED_WALLETS", "").replace(",", " ").split()
     tracking.blocked_wallets = sorted({_norm_addr(a) for a in [*tracking.blocked_wallets,
                                                                *env_blocked]})
+    env_muted = os.environ.get("TRACKING_MUTED_WALLETS", "").replace(",", " ").split()
+    tracking.muted_wallets = sorted({_norm_addr(a) for a in [*tracking.muted_wallets, *env_muted]}
+                                    - set(tracking.blocked_wallets))
     scoring = ScoringConfig(**(raw.get("scoring") or {}))
     intel.wrapped_native = _norm_addr(intel.wrapped_native)
     intel.dd_factories = [_norm_addr(a) for a in intel.dd_factories]
