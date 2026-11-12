@@ -442,3 +442,36 @@ all through the same private router `0x3e328152…28d4` (used by no other tracke
 from the Uniswap v4 pool without paying from the wallet itself, then selling in small pieces
 over ~15 minutes. No direct transfers between them were found. Addresses are in
 `docker-compose.yml` (`TRACKING_BLOCKED_WALLETS`).
+
+## Launch-cohort detector (2026-11-12)
+
+`agora_tracker/cohorts.py` finds groups of tracked wallets that keep entering new tokens together:
+
+1. **Launch burst** of a token: the wallets whose first trade of it is within 10 s of the first
+   tracked trade of it, if at least 5 wallets did so.
+2. **Linked wallets:** in the same burst on at least 5 tokens, which is at least 60% of the
+   less active wallet's bursts and at least 30% of the busier one's (keeps a sniper that enters
+   every launch out of whichever group it happens to share launches with).
+3. **Cohort:** a connected group of at least 5 linked wallets (7-day lookback, refreshed every
+   15 minutes). Thresholds: `IntelConfig.cohort_*`.
+
+Effect (no database migration; every view computes it from the trades it already reads):
+
+| Where | What happens |
+|---|---|
+| Telegram trade alerts | a cohort wallet's own alerts are not sent; alerts by others on a token 2+ cohort wallets traded carry a warning line |
+| Cluster / strong-signal alerts | cohort wallets count as one operator; the card carries the warning |
+| Token page / `GET /api/v1/tokens/{a}` | red banner listing the cohort wallets; `cohort` field |
+| `GET /api/v1/cohorts` | every cohort, its wallets and launches, and the rule: the exclusion list for your own trading or bots |
+| Consensus page | `⚠️ launch cohort ×N` badge on the card |
+| Consensus Telegram channel | a card with 2+ cohort wallets among its traders is not posted |
+
+Still indexed and on the website like any wallet. Off switch: `ALERTS_COHORT_FILTER=off` (tracker
+and web read the same setting). A cohort is a flag, not a block: to stop tracking a cohort's
+wallets entirely, add them to `TRACKING_BLOCKED_WALLETS`.
+
+Production dry run, 2026-11-12: 64 tokens with a launch burst, 2 cohorts. (1) 14 of the 16
+wallets blocked the same morning, 21 launches. (2) 7 active wallets (ranks 25-99), 34 launches,
+5-7 of them in the same block on most launches, a contract no other tracked wallet calls, and
+13 token transfers between them; unlike (1) they really trade, so this may be one operator or
+clients of one copy-trading bot.

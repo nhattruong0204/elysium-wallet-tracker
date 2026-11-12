@@ -44,7 +44,8 @@
   <header class="cons-hd">
     <div><b class="cons-title">Consensus</b> <span class="badge ok">{{ k.traders }} trader{{ '' if k.traders == 1 else 's' }}</span>
       <span class="badge {{ 'ok' if k.independent >= d.p.min_traders else 'est' }}" title="Same-block buyers and known bundle wallets count once">{{ k.independent }} independent</span>
-      {% if k.bundled %}<span class="badge est" title="At least one known bundle wallet joined">bundle wallet</span>{% endif %}</div>
+      {% if k.bundled %}<span class="badge est" title="At least one known bundle wallet joined">bundle wallet</span>{% endif %}
+      {% if k.cohort_wallets %}<span class="badge warn" title="Wallets that keep entering new launches together: likely coordinated, not independent demand">⚠️ launch cohort ×{{ k.cohort_wallets }}</span>{% endif %}</div>
     <div class="cons-tok"><a href="/tokens/{{ k.token }}"><b>{{ k.symbol or k.token|short }}</b></a>
       <span class="faint">{{ k.trigger_at|ts(true) }} · {{ k.trigger_at|ago(d.meta.generated_at) }}</span></div>
   </header>

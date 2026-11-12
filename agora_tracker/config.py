@@ -292,6 +292,21 @@ class IntelConfig:
     airdrop_min_wallets: int = 5
     airdrop_window_h: float = 24.0
     airdrop_max_trade_share: float = 0.1
+    # Coordinated launch cohorts (agora_tracker/cohorts.py): wallets that keep entering new
+    # tokens together within seconds. Their own alerts are not sent, they count as one operator
+    # for independence, and alerts / pages / Consensus cards for tokens they traded carry a
+    # warning (Consensus channel: skipped). Still indexed. Off: ALERTS_COHORT_FILTER=off.
+    cohort_filter: bool = True
+    cohort_lookback_days: int = 7
+    cohort_window_s: float = 10.0
+    cohort_min_burst: int = 5
+    cohort_min_shared: int = 5
+    cohort_min_overlap: float = 0.6
+    cohort_min_overlap_busy: float = 0.3
+    cohort_min_size: int = 5
+    cohort_min_members: int = 3
+    cohort_warn_min: int = 2         # cohort wallets on a token before an alert gets the warning
+    cohort_refresh_s: float = 900.0
     # forward measurement of the strong signal (no orders are ever placed)
     paper_enabled: bool = True
     paper_slippage_pct: float = 10.0
@@ -426,6 +441,8 @@ def load_config(path: str | Path) -> Config:
         intel.bot_filter = False
     if os.environ.get("ALERTS_AIRDROP_FILTER", "").strip().lower() in ("off", "0", "false", "no"):
         intel.airdrop_filter = False
+    if os.environ.get("ALERTS_COHORT_FILTER", "").strip().lower() in ("off", "0", "false", "no"):
+        intel.cohort_filter = False
     tracking = TrackingConfig(**(raw.get("tracking") or {}))
     env_blocked = os.environ.get("TRACKING_BLOCKED_WALLETS", "").replace(",", " ").split()
     tracking.blocked_wallets = sorted({_norm_addr(a) for a in [*tracking.blocked_wallets,

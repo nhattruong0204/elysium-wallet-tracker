@@ -15,6 +15,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
 
+from ..cohorts import Cohort, load_cohorts, members_of
 from ..config import Config
 from ..timerange import TimeRange
 from .activity import (
@@ -72,6 +73,8 @@ class Dashboard:
         self.links: Any = None        # set by create_app (needs the Links helper)
         self._bundles: set[str] = set()
         self._bundles_at = float("-inf")
+        self._cohorts: list[Cohort] = []
+        self._cohorts_at = float("-inf")
 
     # --- plumbing ----------------------------------------------------------------------------
     def _cached(self, key: tuple, fn: Callable[[], Any]) -> Hit:
@@ -170,11 +173,53 @@ class Dashboard:
         trades = self._cached(("token_trades", addr, range_key(tr), page), lambda: self._trades(
             tr, page, token=addr))
         v = hit.value
-        return {"token": addr, "meta_token": v["detail"]["meta"], "flow": v["detail"]["flow"],
+        cohort = self.token_cohort(addr, [b.get("wallet") for b in v["buyers"]], now)
+        return {"token": addr, "cohort": cohort,
+                "meta_token": v["detail"]["meta"], "flow": v["detail"]["flow"],
                 "info": v["detail"]["info"], "perf": v["detail"]["perf"],
                 "universe": v["detail"]["universe"], "buyers": v["buyers"], "series": v["series"],
                 "seen": v["seen"], "market_cap": v["market_cap"], "trades": trades.value,
                 "meta": self._meta(hit, tr, now)}
+
+    # --- coordinated launch cohorts (agora_tracker/cohorts.py) --------------------------------
+    def cohorts(self, now: datetime) -> list[Cohort]:
+        """Same rule as the tracker, on the read-only trades view; refreshed every
+        intel.cohort_refresh_s, a failed refresh keeps the last result."""
+        ic = self.cfg.intel
+        if not ic.cohort_filter:
+            return []
+        if time.monotonic() - self._cohorts_at > ic.cohort_refresh_s:
+            self._cohorts_at = time.monotonic()
+            try:
+                with self.rep.ro() as c:
+                    self._cohorts = load_cohorts(
+                        c, table="public_api.trades", chain_id=self.rep.chain_id, ic=ic,
+                        skip_tokens=self.rep.hidden_tokens, now=now)
+            except Exception:  # noqa: BLE001 - pages render without the label
+                log.warning("launch cohort refresh failed", exc_info=True)
+        return self._cohorts
+
+    def cohort_api(self, now: datetime) -> dict[str, Any]:
+        found = self.cohorts(now)
+        ic = self.cfg.intel
+        return {"cohorts": [c.as_dict() for c in found],
+                "wallets": sorted(members_of(found)),
+                "tokens": sorted({t for c in found for t in c.tokens}),
+                "rule": {"lookback_days": ic.cohort_lookback_days, "window_s": ic.cohort_window_s,
+                         "min_burst": ic.cohort_min_burst, "min_shared": ic.cohort_min_shared,
+                         "min_overlap": ic.cohort_min_overlap, "min_size": ic.cohort_min_size},
+                "generated_at": now}
+
+    def token_cohort(self, token: str, wallets: Any, now: datetime) -> dict[str, Any] | None:
+        """Cohort warning for one token: cohort wallets among `wallets` that traded it, and
+        whether a cohort was in its launch burst. None when there is nothing to warn about."""
+        found = self.cohorts(now)
+        of = members_of(found)
+        hit = sorted({w for w in wallets if w in of})
+        launch = [c.key for c in found if token in c.tokens]
+        if len(hit) < self.cfg.intel.cohort_warn_min and not launch:
+            return None
+        return {"wallets": hit, "n": len(hit), "launch_cohorts": launch}
 
     def _trades(self, tr: TimeRange, page: int, **kw: Any) -> dict[str, Any]:
         size = self.w.page_size
@@ -251,7 +296,13 @@ class Dashboard:
                 log.warning("consensus: bundle wallet refresh failed", exc_info=True)
         bundles = self._bundles
         hit = self._cached(("consensus", p.key()), lambda: self.rep.consensus(p, now, bundles))
-        return {**hit.value, "bundle_wallets": len(bundles),
+        of = members_of(self.cohorts(now))
+        value = dict(hit.value)
+        if of and value.get("cards"):
+            value["cards"] = [{**k, "cohort_wallets": sum(1 for m in k["members"]
+                                                          if m["wallet"] in of)}
+                              for k in value["cards"]]
+        return {**value, "bundle_wallets": len(bundles),
                 "meta": {"generated_at": now, "age_s": round(hit.age_s), "stale": hit.stale}}
 
     # --- wallet intelligence -----------------------------------------------------------------------
