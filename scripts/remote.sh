@@ -701,7 +701,6 @@ PY
     psql_admin -At -c "COPY (SELECT address, coalesce(last_rank::text,''), status, coalesce(excluded_reason,'') FROM wallet_enrollment) TO STDOUT WITH CSV" > /tmp/enroll.csv
     python3 - /tmp/bursts.csv /tmp/enroll.csv <<'PY'
 import csv, sys
-from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass
 from itertools import combinations
