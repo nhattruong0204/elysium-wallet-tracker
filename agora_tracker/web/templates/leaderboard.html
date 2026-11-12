@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% from "_macros.html" import kpi, pager, badge, empty, th, copy with context %}
-{% set pg = d.page %}{% set p = d.params %}{% set k = d.kpis %}
+{% set pg = d.page %}{% set p = d.params %}{% set k = d.kpis %}{% set lk = d.label_kpis %}
+{% set skind = {'blocked': 'bad', 'contract': '', 'cohort': 'bad', 'bundler': 'warn', 'farm': 'warn', 'automated': 'warn', 'dormant': '', 'unknown': '', 'organic': 'ok'} %}
 {% block body %}
 <h1>Wallet intelligence</h1>
 <p class="lead">Every wallet that has <b>ever</b> been on Agora's Top 100, not only today's list. <b>Agora PnL</b> is Agora's own accounting; <b>measured PnL</b> is what we recomputed from on-chain trades and covers only sells whose cost basis we know, inside the chosen window. They are shown side by side and never combined. Nothing here is a prediction or a recommendation.</p>
@@ -14,9 +15,23 @@
   {{ kpi('Bought in window', k.bought_hype|hype, 'verified amounts only', 'HYPE') }}
 </section>
 
+{% set ls = d.label_summary %}
+<section class="chips label-mix" aria-label="Wallet labels">
+  <span class="faint" title="One overall label per wallet, most severe first (these counts add up to the total). Computed every 15 min over the last {{ d.label_rules.lookback_days }} days, independent of the window below.">Labels:</span>
+  {% for s in d.label_statuses %}<a class="badge {{ skind[s] }}{% if s in p.label %} sel{% endif %}" href="/leaderboard{{ qs(label=None if s in p.label else s, page=None) }}" title="{{ d.label_notes[s] }}">{{ s }} {{ lk[s]|number }}</a>{% endfor %}
+  {% if d.labels_as_of %}<span class="faint">as of {{ d.labels_as_of|ts }}</span>{% else %}<span class="faint">labels not computed yet</span>{% endif %}
+</section>
+{% if d.labels_as_of %}<p class="faint label-sum"><b>{{ ls.classified|number }}</b> classified · <b>{{ ls.insufficient|number }}</b> with insufficient evidence · <b>{{ ls.cohorts }}</b> launch cohort{{ '' if ls.cohorts == 1 else 's' }} ({{ ls.in_cohorts }} wallets) · {{ ls.bundle_pair_wallets }} in same-block pairs · <a href="/leaderboard{{ qs(tier='consistent_winner', flag='clean', label=None, page=None) }}" title="Measured closes only: 10+ closes, positive, 50%+ wins, profit factor 1.5+, and no coordination flag">{{ ls.consistent_winners_clean }} consistent winners without a flag</a> · styles: {% for s, n in ls.styles.items() %}<a href="/leaderboard{{ qs(style=s, page=None) }}">{{ s }} {{ n }}</a>{{ ', ' if not loop.last }}{% endfor %} <span title="Flags and traits overlap: one wallet can carry several. Only the label counts above are mutually exclusive.">(flags overlap)</span></p>{% endif %}
+
 <form class="controls act-filters" method="get" action="/leaderboard" id="intel-form">
   <label>Window <select name="window">{% for x in d.windows %}<option value="{{ x }}"{% if p.window == x %} selected{% endif %}>{{ x }}</option>{% endfor %}</select></label>
   <label>Membership <select name="membership">{% for x in d.memberships %}<option value="{{ x }}"{% if p.membership == x %} selected{% endif %}>{{ x|capitalize }}</option>{% endfor %}</select></label>
+  <label title="Overall label (most severe first). The URL accepts several, comma-separated.">Label <select name="label"><option value="all">All</option>{% for x in d.label_statuses %}<option value="{{ x }}"{% if p.label == (x,) %} selected{% endif %}>{{ x|capitalize }}</option>{% endfor %}{% if p.label|length > 1 %}<option value="{{ p.label|join(',') }}" selected>{{ p.label|join(' or ') }}</option>{% endif %}</select></label>
+  <label title="Primary trading style over the label lookback">Style <select name="style"><option value="all">All</option>{% for x in d.label_styles %}<option value="{{ x }}"{% if p.style == (x,) %} selected{% endif %}>{{ x|capitalize }}</option>{% endfor %}{% if p.style|length > 1 %}<option value="{{ p.style|join(',') }}" selected>{{ p.style|join(' or ') }}</option>{% endif %}</select></label>
+  <label title="Any flag or trait, even when it is not the overall label; Clean: no coordination flag at all">Flag / trait <select name="flag"><option value="all">All</option>{% for x in ['clean'] + d.label_flags + d.label_tags %}<option value="{{ x }}"{% if p.flag == (x,) %} selected{% endif %}>{{ 'Clean (no flag)' if x == 'clean' else x|replace('_', ' ')|capitalize }}</option>{% endfor %}{% if p.flag|length > 1 %}<option value="{{ p.flag|join(',') }}" selected>{{ p.flag|join(' or ') }}</option>{% endif %}</select></label>
+  <label title="From measured closes in the label lookback only; never from Agora's PnL">Performance <select name="tier"><option value="all">All</option>{% for x in d.label_tiers %}<option value="{{ x }}"{% if p.tier == (x,) %} selected{% endif %}>{{ x|replace('_', ' ')|capitalize }}</option>{% endfor %}{% if p.tier|length > 1 %}<option value="{{ p.tier|join(',') }}" selected>{{ p.tier|join(' or ') }}</option>{% endif %}</select></label>
+  <label title="Heuristic from evidence count and data quality, not a probability">Confidence <select name="confidence"><option value="all">All</option>{% for x in d.label_confidences %}<option value="{{ x }}"{% if p.confidence == (x,) %} selected{% endif %}>{{ x|capitalize }}</option>{% endfor %}{% if p.confidence|length > 1 %}<option value="{{ p.confidence|join(',') }}" selected>{{ p.confidence|join(' or ') }}</option>{% endif %}</select></label>
+  {% if p.cohort %}<input type="hidden" name="cohort" value="{{ p.cohort }}">{% endif %}
   <label>Data quality <select name="quality">{% for x in d.qualities %}<option value="{{ x }}"{% if p.quality == x %} selected{% endif %}>{{ x|capitalize }}</option>{% endfor %}</select></label>
   <label>Min trades <input type="text" name="min_trades" value="{{ p.min_trades or '' }}" inputmode="numeric" pattern="[0-9]{1,7}" size="5" placeholder="0"></label>
   <label>Rank from <input type="text" name="min_rank" value="{{ p.min_rank or '' }}" inputmode="numeric" pattern="[0-9]{1,6}" size="4" placeholder="1"></label>
@@ -29,7 +44,8 @@
   <input class="grow" type="search" name="q" value="{{ p.q }}" placeholder="Wallet address or start of one" maxlength="44" aria-label="Search wallets" autocomplete="off" spellcheck="false">
   <button class="btn primary" type="submit">Apply</button>
   <a class="btn" href="/leaderboard">Reset</a>
-  <a class="btn" href="/api/v1/leaderboard.csv{{ qs(page=None) }}" rel="nofollow">Export CSV</a>
+  <a class="btn" href="/api/v1/leaderboard.csv{{ qs(page=None) }}" rel="nofollow" title="The wallets matching these filters, every column and label">Export CSV</a>
+  <a class="btn" href="/api/v1/leaderboard.csv?window={{ p.window }}" rel="nofollow" title="Every tracked wallet ({{ d.tracked|number }}), every column and label, ignoring the filters">Export all wallets</a>
 </form>
 
 {% if d.truncated %}<div class="banner warn">More wallets are tracked than this view can load; the list is cut at the first {{ d.tracked|number }} by address.</div>{% endif %}
@@ -41,7 +57,7 @@
 {% else %}
   <div class="tw"><table>
     <thead><tr>
-      {{ th('Rank', 'rank', p.sort, p.desc, qs, True) }}<th>Wallet</th><th>Status</th>
+      {{ th('Rank', 'rank', p.sort, p.desc, qs, True) }}<th>Wallet</th><th>Status</th><th>Style</th><th>Cohort / flags</th><th title="Heuristic from evidence count and data quality, not a probability">Conf.</th>
       {{ th('Best', 'best_rank', p.sort, p.desc, qs, True) }}{{ th('Seen', 'appearances', p.sort, p.desc, qs, True) }}
       {{ th('Agora PnL', 'pnl', p.sort, p.desc, qs, True) }}{{ th('Trades', 'legs', p.sort, p.desc, qs, True) }}<th class="r">Buys / sells</th>
       {{ th('Bought', 'buy', p.sort, p.desc, qs, True) }}{{ th('Measured PnL', 'realized', p.sort, p.desc, qs, True) }}
@@ -51,6 +67,11 @@
       <td class="r">{{ w.rank if w.rank else '–' }}</td>
       <td><span class="addr"><a href="/leaderboard/{{ w.wallet }}" title="{{ w.wallet }}">{{ w.wallet|short }}</a>{{ copy(w.wallet) }}</span></td>
       <td>{{ badge('ok' if w.status == 'current' else 'est', w.status) }}{% if w.re_entered %} <span class="faint" title="left and re-entered the list {{ w.entries - 1 }} time(s)">↺{{ w.entries - 1 }}</span>{% endif %}</td>
+      {% if w.label_status %}{% set why = (w.label_reasons or ['no flag; ' ~ (w.label_metrics.lookback_trade_legs or 0) ~ ' decoded buys/sells in the lookback'])|join('\n') %}
+      <td class="labels" title="{{ why }}"><span class="badge est">{{ w.style }}</span>{% if w.size_tier %} <span class="faint">{{ w.size_tier }}</span>{% endif %}{% for t in w.style_tags %} <span class="faint">· {{ t|replace('_', ' ') }}</span>{% endfor %}{% if w.performance_tier in ('consistent_winner', 'persistent_loser') %} <span class="badge {{ 'ok' if w.performance_tier == 'consistent_winner' else 'bad' }}" title="measured closes in {{ d.label_rules.lookback_days }} days: {{ w.label_metrics.lookback_closes }}">{{ w.performance_tier|replace('_', ' ') }}</span>{% endif %}</td>
+      <td class="labels" title="{{ why }}"><a class="badge {{ skind[w.label_status] }}" href="/leaderboard{{ qs(label=w.label_status, page=None) }}">{{ w.label_status }}</a>{% if w.cohort_id %} <a class="faint" href="/cohorts/{{ w.cohort_id }}" title="launch cohort {{ w.cohort_id }}: open its page">{{ w.cohort_id[:8] }}… ×{{ w.cohort_size }}</a>{% endif %}{% for f in w.label_flags if f != w.label_status %} <span class="badge {{ skind[f] }}">{{ f }}</span>{% endfor %}</td>
+      <td title="flag confidence: {{ w.flag_confidence or 'none' }}; style: {{ w.style_confidence }}">{{ badge('ok' if w.label_confidence in ('confirmed', 'high') else 'est' if w.label_confidence == 'medium' else '', w.label_confidence) }}</td>
+      {% else %}<td>–</td><td>–</td><td>–</td>{% endif %}
       <td class="r">{{ w.best_rank }}</td><td class="r">{{ w.appearances|number }}</td>
       <td class="r {{ w.agora_pnl|tone }}">{{ w.agora_pnl|signed if w.agora_pnl is not none else '–' }}</td>
       <td class="r">{{ w.legs|number }}</td><td class="r">{{ w.buys }} / {{ w.sells }}</td>
@@ -66,5 +87,6 @@
 {% endif %}
 </div>
 <p class="faint note">Score ({{ d.score_version }}): a weighted mean of up to five documented components, 0-100, computed only from data older than its timestamp. It describes past observed behaviour, not future results, and is empty when there is not enough evidence. <a href="/about#scores">Method</a>.</p>
+<p class="faint note">Labels ({{ d.label_version }}, last {{ d.label_rules.lookback_days }} days, rule-based, evidence on hover and in the CSV's <code>label_reasons</code>): {% for key in d.label_statuses %}<b>{{ key }}</b> – {{ d.label_notes[key] }}{{ '; ' if not loop.last else '. ' }}{% endfor %}Styles: {% for key, note in d.style_notes.items() %}<b>{{ key }}</b> – {{ note }}{{ '; ' if not loop.last else '. ' }}{% endfor %}<b>Confidence</b> is a heuristic from the amount of evidence and the data quality (confirmed = an operator or chain fact), not a probability; <b>unknown</b> and <b>insufficient</b> mean too little was observed, never that a wallet is clean. Coordination flags are inferences from on-chain patterns, not proof of common control or of misconduct. Not labelled because the data cannot support it yet: momentum, diamond hands, shared funders, insiders, wash trading. <a href="/api/v1/cohorts">Cohorts (JSON)</a>.</p>
 <p class="faint note">Data quality: {% for key, note in d.quality_notes.items() %}<b>{{ key }}</b> – {{ note }} {% endfor %}Amounts are HYPE. A dash means unknown, never zero.</p>
 {% endblock %}

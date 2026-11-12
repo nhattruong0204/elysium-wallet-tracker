@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% from "_macros.html" import kpi, badge, copy, taddr with context %}
+{% block body %}
+<h1>Launch cohort <span class="addr">{{ d.id|short(10, 6) }}{{ copy(d.id) }}</span></h1>
+<p class="lead">{{ badge('warn', 'launch cohort') }} {{ badge('ok' if d.confidence == 'high' else 'est', 'confidence ' ~ d.confidence) }}
+  <b>{{ d.size }}</b> tracked wallets that entered <b>{{ d.launches }}</b> token launches together in the last {{ d.rule.lookback_days }} days (first trade within {{ d.rule.window_s|int }} s of each other, on {{ d.rule.min_shared }}+ launches, {{ (d.rule.min_overlap * 100)|int }}%+ overlap). {{ d.note }}</p>
+<p><a href="/leaderboard?window=all&amp;cohort={{ d.id }}">Members in Wallet intelligence</a> · <a href="/api/v1/leaderboard.csv?window=all&amp;cohort={{ d.id }}" rel="nofollow">Members CSV</a> · <a href="/api/v1/cohorts/{{ d.id }}">JSON</a> · <a href="/leaderboard">All wallets</a></p>
+<section class="kpis" aria-label="Cohort">
+  {{ kpi('Members', d.size, d.blocked ~ ' on the block list') }}
+  {{ kpi('Shared launches', d.launches, 'tokens with 3+ members in the launch burst') }}
+  {{ kpi('Styles', d.styles|length, d.styles.items()|map('join', ' ')|join(', ')) }}
+  {{ kpi('Performance tiers', d.tiers|length, d.tiers.items()|map('join', ' ')|join(', ')|replace('_', ' ')) }}
+</section>
+<h2>Members</h2>
+<div class="panel flush"><div class="tw"><table>
+  <thead><tr><th class="r">Rank</th><th>Wallet</th><th>Label</th><th>Style</th><th>Performance (measured)</th><th class="r">Measured PnL</th><th class="r">Agora PnL</th><th>Last trade</th></tr></thead>
+  <tbody>{% for w in d.members %}
+  <tr><td class="r">{{ w.rank if w.rank else '–' }}</td>
+    <td><span class="addr"><a href="/leaderboard/{{ w.wallet }}" title="{{ w.wallet }}">{{ w.wallet|short }}</a>{{ copy(w.wallet) }}</span></td>
+    <td>{% for f in w.label_flags %}{{ badge('bad' if f in ('blocked', 'cohort') else 'warn', f) }} {% endfor %}</td>
+    <td>{{ w.style }}</td><td>{{ w.performance_tier|replace('_', ' ') }}</td>
+    <td class="r {{ w.measured_pnl|tone }}">{{ w.measured_pnl|signed if w.measured_pnl is not none else '–' }}</td>
+    <td class="r {{ w.agora_pnl|tone }}">{{ w.agora_pnl|signed if w.agora_pnl is not none else '–' }}</td>
+    <td>{{ w.last_trade_at|ts if w.last_trade_at else '–' }}</td></tr>
+  {% endfor %}</tbody>
+</table></div></div>
+<p class="faint note">Per-wallet figures only. They are deliberately not added up: tokens moved between members would be counted twice.</p>
+<h2>Shared launches</h2>
+<p>{% for t in d.tokens %}<a class="badge" href="/tokens/{{ t.token }}" title="{{ t.token }}">{{ t.symbol or t.token|short }}</a> {% endfor %}</p>
+<p class="faint note">The id is the cohort's lowest member address; cohorts are recomputed every 15 minutes, so an id can change when membership changes. Nothing is stored yet: there is no membership history.</p>
+{% endblock %}

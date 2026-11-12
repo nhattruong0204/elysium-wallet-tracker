@@ -475,3 +475,58 @@ wallets blocked the same morning, 21 launches. (2) 7 active wallets (ranks 25-99
 5-7 of them in the same block on most launches, a contract no other tracked wallet calls, and
 13 token transfers between them; unlike (1) they really trade, so this may be one operator or
 clients of one copy-trading bot.
+
+## Wallet labels on Wallet intelligence (2026-11-12)
+
+`agora_tracker/web/labels.py` (`labels-v1`) gives every tracked wallet labels on
+https://onchainflow.app/leaderboard: what kind of wallet it is, not only how it performed. All
+labels are rule-based, computed by the website from the read-only `public_api` views over a fixed
+**30-day lookback** (independent of the page's window), refreshed every 15 minutes with the
+cohorts, and each one carries its evidence (hover on the page, `label_reasons` in the CSV). No
+database migration, no new table, nothing written.
+
+| Family | Values |
+|---|---|
+| `label_status` (one per wallet, first match wins) | `blocked` (operator block list) · `contract` · `cohort` (launch-cohort detector) · `bundler` (5+ same-block buys on 3+ tokens with the **same** other tracked wallet) · `farm` (5+ same-transaction transfers with 2+ tracked wallets, 10%+ of its legs) · `automated` (the tracker's machine-timing rule) · `dormant` (no action of its own; airdrop receipts do not count) · `unknown` (active, but < 8 decoded buys/sells: no verdict) · `organic` (enough trading seen, no coordination evidence) |
+| `label_flags` | every coordination flag that applies (a cohort wallet is usually a bundler too) |
+| `relationship` | `launch_cohort` · `bundle_pair` · `transfer_linked` · `none_detected` · `unknown` (too little to say; never the same as none detected) |
+| `style` | `sniper` (first buy within 60 s of the token's first tracked trade on 50%+ of 5+ observed launches) · `scalper` (median hold <= 15 min) · `swing` (15 min to 3 days) · `holder` (<= 0.25 sells per buy, or > 3 days) · `mover` (20+ transfers, few decoded trades) · `mixed` · `thin` (< 8 decoded buys/sells) |
+| `style_tags` | `high_frequency` (40+ legs per active day, about the top 6% of wallets) · `high_churn` (20+ round trips, median hold <= 5 min, sells about equal to buys: consistent with volume farming, not proof) · `accumulator` (3+ buys per token, few sells) · `early_buyer` · `concentrated` · `diversified` · `linked` |
+| `performance_tier` | measured closes in the lookback only, never Agora's PnL: `consistent_winner` (10+ closes, positive, 50%+ wins, profit factor 1.5+) · `emerging` (3-9 closes, positive, 50%+ wins) · `persistent_loser` (10+ closes, negative, < 40% wins) · `mixed` · `insufficient_history` (< 3 closes) |
+| `label_confidence` | `confirmed` (operator or chain fact) · `high` · `medium` · `low` · `insufficient`: a heuristic from evidence count, capped at `low` when data quality is `gaps`/`unscanned`. Not a probability. |
+| other tiers | `size_tier` by median verified buy (<1 / 1-5 / 5-25 / 25-100 / 100+ HYPE) · `activity` (own leg within 7 d / 30 d / none) |
+
+Page: a label strip (mutually exclusive counts, click to filter), a summary line (classified vs
+insufficient evidence, cohorts, same-block pairs, flag-free consistent winners, style mix),
+filters `?label= ?style= ?flag= ?tier= ?confidence= ?cohort=` (each accepts several values,
+comma-separated = any of them; different filters AND together; `flag=clean` = no coordination
+flag), Style / Cohort-flags / Conf. columns, a Labels section with partners and evidence on each
+wallet page, and a page per launch cohort at `/cohorts/{id}` (`/api/v1/cohorts/{id}`): members,
+their labels, shared launches. Member PnL is never summed.
+
+CSV: **Export CSV** = the filtered wallets across all pages; **Export all wallets** = every
+tracked wallet. Both keep the 32 earlier columns and append the label columns, the `lb_*`
+metrics behind each rule, and `chain_id`, `label_confidence`, `flag_confidence`,
+`style_confidence`, `relationship`, `bundle_partner_wallets`, `label_lookback_days`,
+`labels_as_of`, `exported_at`. Lists are `;`-separated; unknown is empty, never 0.
+
+The web service now also receives `TRACKING_BLOCKED_WALLETS` (the same YAML anchor as the
+tracker: a public list of addresses, no secret) so blocked wallets are labelled as such.
+
+Production, 2026-11-12 (610 wallets, 0.9 s): 228 classified, 382 insufficient evidence
+(206 unknown, 176 dormant); 181 organic; 2 launch cohorts (21 wallets); 25 wallets in same-block
+pairs, 18 of them outside any cohort, forming seven small groups (two triangles of high-churn
+snipers holding 1-3 minutes); 34 consistent winners, 23 without any flag; 30 persistent losers.
+The median wallet has 9 legs in 30 days and 1 decoded buy/sell; the rest are transfers
+(including the 0x6f0954 airdrop spam), which is why receipts never count as activity or style.
+
+Deliberately not labelled, because stored rows cannot support them yet: momentum (no entry-time
+market history per trade), diamond hands (history starts 2026-11-02), shared funders (native-coin
+funding transfers are not indexed), insider and wash-trading labels. Not built in this version
+(need a reviewed migration): stored label history ("what was it 7 days ago"), hysteresis,
+manual review/override, persistent cluster ids. Cohort ids are the lowest member address and can
+change when membership changes. Private (manual/Telegram) wallets are outside `public_api` and
+are not classified here by design.
+
+Thresholds live in `LabelRules`; changing one changes what a label means, so bump `VERSION`.
+Flags are inferences from on-chain patterns, not proof of common control or misconduct.
