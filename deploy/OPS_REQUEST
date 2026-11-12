@@ -1,2 +1,3 @@
-action=wallet-probe
-requested=2026-11-12 read-only: is the launch-cohort detector live (re-trigger)
+action=status
+commit=main ca86c5b (PR #130 merged; identical to the running tree)
+requested=2026-11-12 owner: deploy PR #130 - already running; read-only status

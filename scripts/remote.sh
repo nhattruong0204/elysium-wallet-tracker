@@ -693,19 +693,6 @@ PY
     consensus_state
     tracker_alive
     ;;
-  wallet-probe)
-    # Read-only: is the launch-cohort detector live?
-    need_docker
-    docker logs elysium-wallet-tracker 2>&1 | grep -E "launch cohorts:|cohort refresh failed" | tail -2 | cut -c1-400 | sed 's/^/  tracker| /'
-    curl -s -m 30 "https://onchainflow.app/api/v1/cohorts?_cb=$(date +%s)" | python3 -c 'import json,sys; d=json.load(sys.stdin); print("  api cohorts:", [(c["id"][:10], c["size"], c["launches"]) for c in d["cohorts"]], "wallets", len(d["wallets"]), "tokens", len(d["tokens"]))'
-    for t in 0x7acea1b69a8e70c57fdc695387b77dcc2b6f92df 0x0233722e99196c355fd8c0bc76a3b694e6c61bbe 0x6f0954d9f9ed79fd5f5c745bd3dd6b14aec68af6; do
-      H=$(curl -s -m 30 "https://onchainflow.app/tokens/$t?_cb=$(date +%s)")
-      echo "  /tokens/${t:0:10}: banner=$(printf '%s' "$H" | grep -c 'Coordinated launch cohort') $(printf '%s' "$H" | grep -o 'Coordinated launch cohort.</b>[^<]*' | head -1 | cut -c1-140)"
-    done
-    C=$(curl -s -m 30 "https://onchainflow.app/consensus?_cb=$(date +%s)")
-    echo "  /consensus: cohort badges $(printf '%s' "$C" | grep -o 'launch cohort ×[0-9]*' | sort | uniq -c | tr '\n' ' ')"
-    docker ps --format '  {{.Names}}: {{.Status}}' | grep elysium
-    ;;
   ui-smoke)
     docker compose run --rm --no-deps ui --ui-smoke
     ;;
