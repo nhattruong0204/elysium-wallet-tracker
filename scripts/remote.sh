@@ -693,6 +693,466 @@ PY
     consensus_state
     tracker_alive
     ;;
+  wallet-probe)
+    # Read-only calibration of the wallet-label rules, as dashboard_ro in the web image.
+    need_docker
+    rm -rf /tmp/elysium-probe && mkdir -p /tmp/elysium-probe && chmod 755 /tmp/elysium-probe
+    cat > /tmp/elysium-probe/labels.py <<'PY_LABELS'
+"""Wallet labels: what kind of wallet each tracked address is, not only how it performed.
+
+Read model only, rule-based and explainable. Every label is computed from our own stored rows
+(the website's read-only `public_api` views), over a fixed lookback (`LabelRules.lookback_days`,
+independent of the table's window, so a wallet's labels do not change when you switch the
+window), and carries the evidence that produced it (`label_reasons`).
+
+Three families, all on one record:
+
+* status   one overall verdict, first match wins (most severe first):
+           blocked    on the operator block list (TRACKING_BLOCKED_WALLETS)
+           contract   not followed: the address is a contract (pool, router, vault)
+           cohort     member of a coordinated launch cohort (agora_tracker/cohorts.py)
+           bundler    repeatedly buys a token in the same block as 2+ other tracked wallets
+           farm       a large share of its legs are token transfers to/from other tracked
+                      wallets in the same transaction (moving bags around, not trading)
+           automated  machine-like transaction timing with almost no decoded buys/sells
+                      (the tracker's automated-wallet rule)
+           dormant    no trade in the lookback
+           organic    none of the above
+  `flags` lists every one of blocked/contract/cohort/bundler/farm/automated that applies (a
+  cohort wallet is often a bundler too); `status` is only the most severe.
+* style    one primary trading style from the lookback's legs: sniper | scalper | swing |
+           holder | mover | mixed | thin (too few legs to say). `style_tags` adds the secondary
+           traits: high_frequency, early_buyer, concentrated, diversified, linked.
+* tiers    size (median verified buy: micro | small | mid | large | whale), activity
+           (active | cooling | dormant, from the last trade ever seen) and edge (measured PnL
+           over the lookback: proven | profitable | losing | flat | unmeasured).
+
+Caveats, shown on the page: "launch" means the first trade of the token *we* recorded (tokens
+first seen in the first day of our history are not counted as observed launches); hold time is
+first buy to first later sell of the token; transfers and same-block buys are evidence of
+coordination, not proof of common control.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Iterable, Mapping
+from dataclasses import asdict, dataclass
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal
+from typing import Any
+
+UTC = timezone.utc
+E18 = Decimal(10) ** 18
+VERSION = "labels-v1"
+
+STATUSES = ("blocked", "contract", "cohort", "bundler", "farm", "automated", "dormant",
+            "organic")
+FLAGS = STATUSES[:6]
+STYLES = ("sniper", "scalper", "swing", "holder", "mover", "mixed", "thin")
+STYLE_TAGS = ("high_frequency", "early_buyer", "concentrated", "diversified", "linked")
+SIZES = ("micro", "small", "mid", "large", "whale")
+ACTIVITY = ("active", "cooling", "dormant")
+EDGES = ("proven", "profitable", "losing", "flat", "unmeasured")
+
+
+@dataclass(frozen=True)
+class LabelRules:
+    """Thresholds. Changing any of them changes what the labels mean: bump VERSION."""
+    lookback_days: int = 30
+    launch_window_s: int = 60           # first buy this close to the token's first trade = early
+    history_grace_h: int = 24           # tokens first seen this soon after history began are not
+    #                                     observed launches (they existed before we looked)
+    min_style_legs: int = 8             # BUY+SELL legs needed to name a style
+    sniper_min_launches: int = 5        # observed launches bought
+    sniper_share: float = 0.5           # ...of which bought early
+    early_share: float = 0.25           # secondary tag
+    scalper_hold_s: int = 15 * 60       # median first-buy -> first-sell
+    swing_hold_s: int = 3 * 86400       # above: holder
+    min_round_trips: int = 4
+    holder_sell_ratio: float = 0.25     # sells per buy at or below: holder
+    mover_transfer_share: float = 0.7   # transfers / legs at or above: mover
+    hf_legs_per_day: float = 40.0       # legs per active day
+    concentrated_share: float = 0.5     # top token's share of verified buy HYPE
+    min_concentrated_buys: int = 5
+    diversified_tokens: int = 30
+    linked_min: int = 3                 # same-tx transfers with other tracked wallets
+    farm_min: int = 10
+    farm_share: float = 0.2             # ...and at least this share of all legs
+    bundle_min_wallets: int = 3         # tracked wallets buying one token in one block
+    bundle_min_blocks: int = 5          # such blocks the wallet was in
+    bundle_share: float = 0.25          # ...and at least this share of the tokens it bought
+    size_edges_hype: tuple[float, ...] = (1.0, 5.0, 25.0, 100.0)    # micro|small|mid|large|whale
+    active_days: int = 7
+    cooling_days: int = 30
+    proven_min_closes: int = 10
+    proven_win_rate: float = 0.5
+    edge_min_closes: int = 3
+    # automated: the tracker's rule (IntelConfig.bot_*), copied in by `from_intel`
+    bot_lookback_days: int = 7
+    bot_min_txs: int = 100
+    bot_fast_gap_s: float = 2.0
+    bot_fast_share: float = 0.15
+    bot_max_trade_share: float = 0.05
+
+    @classmethod
+    def from_intel(cls, ic: Any, **kw: Any) -> LabelRules:
+        return cls(bot_lookback_days=ic.bot_lookback_days, bot_min_txs=ic.bot_min_txs,
+                   bot_fast_gap_s=ic.bot_fast_gap_s, bot_fast_share=ic.bot_fast_share,
+                   bot_max_trade_share=ic.bot_max_trade_share, **kw)
+
+    def describe(self) -> dict[str, Any]:
+        return {"version": VERSION, **asdict(self)}
+
+
+# One pass over the lookback's legs of public wallets. Unqualified names: the website's
+# search_path is public_api, so this runs on the privacy-filtered views.
+FEATURES_SQL = """
+WITH t AS (
+  SELECT wallet, token, kind, confidence, hype_wei, block_number, block_time, tx_hash
+    FROM trades
+   WHERE chain_id = :c AND block_time >= :since
+     AND NOT (token = ANY(CAST(:skip AS text[])))),
+hist AS (SELECT min(block_time) AS h FROM trades WHERE chain_id = :c),
+t0 AS (
+  SELECT token, min(block_time) AS t0 FROM trades
+   WHERE chain_id = :c AND token IN (SELECT DISTINCT token FROM t) GROUP BY token),
+leg AS (
+  SELECT wallet, count(*) AS legs,
+    count(*) FILTER (WHERE kind = 'BUY') AS buys,
+    count(*) FILTER (WHERE kind = 'SELL') AS sells,
+    count(*) FILTER (WHERE kind IN ('TRANSFER_IN', 'TRANSFER_OUT')) AS transfers,
+    count(DISTINCT token) AS tokens,
+    count(DISTINCT token) FILTER (WHERE kind = 'BUY') AS bought_tokens,
+    count(DISTINCT date_trunc('day', block_time)) AS active_days,
+    percentile_cont(0.5) WITHIN GROUP (ORDER BY hype_wei)
+      FILTER (WHERE kind = 'BUY' AND confidence = 'high' AND hype_wei > 0) AS med_buy_wei,
+    count(*) FILTER (WHERE kind = 'BUY' AND confidence = 'high' AND hype_wei > 0) AS verified_buys,
+    coalesce(sum(hype_wei) FILTER (WHERE kind = 'BUY' AND confidence = 'high'), 0) AS buy_wei
+  FROM t GROUP BY wallet),
+tok AS (
+  SELECT wallet, token,
+    min(block_time) FILTER (WHERE kind = 'BUY') AS first_buy,
+    coalesce(sum(hype_wei) FILTER (WHERE kind = 'BUY' AND confidence = 'high'), 0) AS buy_wei
+  FROM t GROUP BY wallet, token),
+exit AS (
+  SELECT k.wallet, k.token, min(s.block_time) AS first_sell
+    FROM tok k JOIN t s ON s.wallet = k.wallet AND s.token = k.token AND s.kind = 'SELL'
+                       AND s.block_time > k.first_buy
+   GROUP BY k.wallet, k.token),
+per AS (
+  SELECT k.wallet,
+    count(*) FILTER (WHERE k.first_buy IS NOT NULL
+                     AND t0.t0 >= (SELECT h FROM hist) + make_interval(hours => :grace))
+      AS launches,
+    count(*) FILTER (WHERE k.first_buy IS NOT NULL
+                     AND t0.t0 >= (SELECT h FROM hist) + make_interval(hours => :grace)
+                     AND k.first_buy <= t0.t0 + make_interval(secs => :lw)) AS early,
+    count(x.first_sell) AS round_trips,
+    percentile_cont(0.5) WITHIN GROUP (ORDER BY extract(epoch FROM x.first_sell - k.first_buy))
+      AS med_hold_s,
+    max(k.buy_wei) AS top_buy_wei
+  FROM tok k JOIN t0 ON t0.token = k.token
+  LEFT JOIN exit x ON x.wallet = k.wallet AND x.token = k.token
+  GROUP BY k.wallet),
+xfer AS (
+  SELECT o.wallet, count(*) AS internal, count(DISTINCT i.wallet) AS peers
+    FROM t o JOIN t i ON i.tx_hash = o.tx_hash AND i.token = o.token AND i.wallet <> o.wallet
+     AND ((o.kind = 'TRANSFER_OUT' AND i.kind = 'TRANSFER_IN')
+       OR (o.kind = 'TRANSFER_IN' AND i.kind = 'TRANSFER_OUT'))
+   GROUP BY o.wallet),
+blk AS (
+  SELECT token, block_number FROM t WHERE kind = 'BUY'
+   GROUP BY token, block_number HAVING count(DISTINCT wallet) >= :bw),
+bund AS (
+  SELECT b.wallet, count(DISTINCT (b.token, b.block_number)) AS bundle_blocks,
+         count(DISTINCT b.token) AS bundle_tokens
+    FROM t b JOIN blk ON blk.token = b.token AND blk.block_number = b.block_number
+   WHERE b.kind = 'BUY' GROUP BY b.wallet),
+tx AS (
+  SELECT wallet, tx_hash, min(block_time) AS bt, bool_or(kind IN ('BUY', 'SELL')) AS traded
+    FROM t WHERE block_time >= :since_bot GROUP BY wallet, tx_hash),
+gap AS (
+  SELECT wallet, traded,
+         extract(epoch FROM bt - lag(bt) OVER (PARTITION BY wallet ORDER BY bt, tx_hash)) AS s
+    FROM tx),
+bot AS (
+  SELECT wallet, count(*) AS txs,
+         avg(CASE WHEN s < :gap THEN 1.0 ELSE 0.0 END) FILTER (WHERE s IS NOT NULL) AS fast
+    FROM gap GROUP BY wallet),
+botleg AS (
+  SELECT wallet, avg(CASE WHEN kind IN ('BUY', 'SELL') THEN 1.0 ELSE 0.0 END) AS trade_share
+    FROM t WHERE block_time >= :since_bot GROUP BY wallet),
+rp AS (
+  SELECT r.wallet, count(*) FILTER (WHERE r.status = 'measured') AS closes,
+    count(*) FILTER (WHERE r.status = 'measured' AND r.pnl_wei > 0) AS wins,
+    coalesce(sum(r.pnl_wei) FILTER (WHERE r.status = 'measured'), 0) AS pnl_wei
+  FROM realized_pnl r JOIN trades tt ON tt.id = r.trade_id
+  WHERE r.chain_id = :c AND tt.block_time >= :since GROUP BY r.wallet)
+SELECT l.wallet, l.legs, l.buys, l.sells, l.transfers, l.tokens, l.bought_tokens,
+       l.active_days, l.med_buy_wei, l.verified_buys, l.buy_wei,
+       coalesce(p.launches, 0) AS launches, coalesce(p.early, 0) AS early,
+       coalesce(p.round_trips, 0) AS round_trips, p.med_hold_s, p.top_buy_wei,
+       coalesce(x.internal, 0) AS internal, coalesce(x.peers, 0) AS peers,
+       coalesce(b.bundle_blocks, 0) AS bundle_blocks, coalesce(b.bundle_tokens, 0) AS bundle_tokens,
+       coalesce(bo.txs, 0) AS bot_txs, bo.fast AS bot_fast, bl.trade_share AS bot_trade_share,
+       coalesce(rp.closes, 0) AS closes, coalesce(rp.wins, 0) AS wins,
+       coalesce(rp.pnl_wei, 0) AS pnl_wei
+  FROM leg l
+  LEFT JOIN per p ON p.wallet = l.wallet
+  LEFT JOIN xfer x ON x.wallet = l.wallet
+  LEFT JOIN bund b ON b.wallet = l.wallet
+  LEFT JOIN bot bo ON bo.wallet = l.wallet
+  LEFT JOIN botleg bl ON bl.wallet = l.wallet
+  LEFT JOIN rp ON rp.wallet = l.wallet
+"""
+
+
+def feature_params(rules: LabelRules, chain_id: int, now: datetime,
+                   skip_tokens: Iterable[str] = ()) -> dict[str, Any]:
+    return {"c": chain_id, "since": now - timedelta(days=rules.lookback_days),
+            "since_bot": now - timedelta(days=rules.bot_lookback_days),
+            "skip": sorted(set(skip_tokens)), "grace": int(rules.history_grace_h),
+            "lw": float(rules.launch_window_s), "bw": int(rules.bundle_min_wallets),
+            "gap": float(rules.bot_fast_gap_s)}
+
+
+def _f(v: Any) -> float | None:
+    return None if v is None else float(v)
+
+
+def _share(a: float, b: float) -> float | None:
+    return (a / b) if b else None
+
+
+def classify(wallet: str, f: Mapping[str, Any] | None, rules: LabelRules, *,
+             enrollment: str = "active", last_trade_at: datetime | None = None,
+             now: datetime, blocked: frozenset[str] | set[str] = frozenset(),
+             cohort: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """One wallet's labels. `f`: its FEATURES_SQL row (None: no legs in the lookback).
+    `cohort`: {"id", "size", "launches"} when the wallet is a cohort member. Pure."""
+    f = dict(f or {})
+    n = lambda k: int(f.get(k) or 0)  # noqa: E731
+    legs, buys, sells, transfers = n("legs"), n("buys"), n("sells"), n("transfers")
+    trade_legs = buys + sells
+    reasons: list[str] = []
+    flags: list[str] = []
+
+    # --- flags (coordination / non-trader evidence) --------------------------------------------
+    if wallet in blocked:
+        flags.append("blocked")
+        reasons.append("blocked: on the operator block list")
+    if enrollment == "excluded" and wallet not in blocked:
+        flags.append("contract")
+        reasons.append("contract: a contract address, not followed")
+    if cohort:
+        flags.append("cohort")
+        reasons.append(f"cohort: one of {cohort['size']} wallets entering {cohort['launches']} "
+                       f"launches together (cohort {cohort['id'][:10]})")
+    bblocks, btoks, bought = n("bundle_blocks"), n("bundle_tokens"), n("bought_tokens")
+    if bblocks >= rules.bundle_min_blocks and bought and btoks / bought >= rules.bundle_share:
+        flags.append("bundler")
+        reasons.append(f"bundler: bought in the same block as {rules.bundle_min_wallets - 1}+ "
+                       f"other tracked wallets {bblocks} times ({btoks} of {bought} tokens)")
+    internal, peers = n("internal"), n("peers")
+    if internal >= rules.farm_min and legs and internal / legs >= rules.farm_share:
+        flags.append("farm")
+        reasons.append(f"farm: {internal} of {legs} legs are transfers with {peers} other "
+                       "tracked wallet(s) in the same transaction")
+    fast, tshare = _f(f.get("bot_fast")), _f(f.get("bot_trade_share"))
+    if (n("bot_txs") >= rules.bot_min_txs and fast is not None and fast >= rules.bot_fast_share
+            and tshare is not None and tshare <= rules.bot_max_trade_share):
+        flags.append("automated")
+        reasons.append(f"automated: {n('bot_txs')} txs in {rules.bot_lookback_days}d, "
+                       f"{fast:.0%} under {rules.bot_fast_gap_s:g}s apart, {tshare:.0%} buys/sells")
+
+    # --- activity ------------------------------------------------------------------------------
+    age_d = (now - last_trade_at).total_seconds() / 86400 if last_trade_at else None
+    activity = ("dormant" if age_d is None or age_d > rules.cooling_days else
+                "cooling" if age_d > rules.active_days else "active")
+    status = next((s for s in FLAGS if s in flags), None)
+    if status is None:
+        status = "dormant" if legs == 0 else "organic"
+
+    # --- style ---------------------------------------------------------------------------------
+    launches, early = n("launches"), n("early")
+    rt, hold = n("round_trips"), _f(f.get("med_hold_s"))
+    tags: list[str] = []
+    if legs == 0:
+        style = "thin"
+    elif legs and transfers / legs >= rules.mover_transfer_share:
+        style = "mover"
+        reasons.append(f"mover: {transfers} of {legs} legs are transfers, not trades")
+    elif trade_legs < rules.min_style_legs:
+        style = "thin"
+    elif launches >= rules.sniper_min_launches and early / launches >= rules.sniper_share:
+        style = "sniper"
+        reasons.append(f"sniper: first buy within {rules.launch_window_s}s of launch on {early} "
+                       f"of {launches} observed launches")
+    elif rt >= rules.min_round_trips and hold is not None and hold <= rules.scalper_hold_s:
+        style = "scalper"
+        reasons.append(f"scalper: median hold {hold / 60:.0f} min over {rt} round trips")
+    elif buys and (sells / buys <= rules.holder_sell_ratio
+                   or (rt >= rules.min_round_trips and hold is not None
+                       and hold > rules.swing_hold_s)):
+        style = "holder"
+        reasons.append(f"holder: {sells} sells per {buys} buys" + (
+            f", median hold {hold / 3600:.0f} h" if hold is not None else ""))
+    elif rt >= rules.min_round_trips and hold is not None:
+        style = "swing"
+        reasons.append(f"swing: median hold {hold / 3600:.1f} h over {rt} round trips")
+    else:
+        style = "mixed"
+    days = n("active_days")
+    if days and legs / days >= rules.hf_legs_per_day:
+        tags.append("high_frequency")
+    if style != "sniper" and launches >= rules.sniper_min_launches and \
+            early / launches >= rules.early_share:
+        tags.append("early_buyer")
+    buy_wei, top = Decimal(f.get("buy_wei") or 0), Decimal(f.get("top_buy_wei") or 0)
+    if n("verified_buys") >= rules.min_concentrated_buys and buy_wei > 0 \
+            and top / buy_wei >= Decimal(str(rules.concentrated_share)):
+        tags.append("concentrated")
+    if bought >= rules.diversified_tokens:
+        tags.append("diversified")
+    if internal >= rules.linked_min:
+        tags.append("linked")
+
+    # --- size and edge -------------------------------------------------------------------------
+    med = f.get("med_buy_wei")
+    med_buy = (Decimal(str(med)) / E18) if med is not None else None
+    size = None
+    if med_buy is not None:
+        size = SIZES[sum(1 for e in rules.size_edges_hype if med_buy >= Decimal(str(e)))]
+    closes, wins = n("closes"), n("wins")
+    pnl = Decimal(f.get("pnl_wei") or 0) / E18
+    if closes >= rules.proven_min_closes and pnl > 0 and wins / closes >= rules.proven_win_rate:
+        edge = "proven"
+    elif closes >= rules.edge_min_closes:
+        edge = "profitable" if pnl > 0 else "losing" if pnl < 0 else "flat"
+    else:
+        edge = "unmeasured"
+    return {
+        "label_status": status, "label_flags": flags, "style": style, "style_tags": tags,
+        "size_tier": size, "activity": activity, "edge": edge,
+        "label_reasons": reasons,
+        "cohort_id": cohort["id"] if cohort else None,
+        "cohort_size": cohort["size"] if cohort else None,
+        "label_metrics": {
+            "lookback_legs": legs, "lookback_trade_legs": trade_legs,
+            "transfer_share": _share(transfers, legs), "observed_launches": launches,
+            "early_launches": early, "early_share": _share(early, launches),
+            "round_trips": rt, "median_hold_min": (hold / 60) if hold is not None else None,
+            "legs_per_active_day": _share(legs, days),
+            "median_buy_hype": med_buy,
+            "top_token_share": (top / buy_wei) if buy_wei > 0 else None,
+            "internal_transfers": internal, "transfer_peers": peers,
+            "bundle_blocks": bblocks, "bundle_tokens": btoks,
+            "bot_txs": n("bot_txs"), "bot_fast_share": fast, "bot_trade_share": tshare,
+            "lookback_closes": closes, "lookback_wins": wins,
+            "lookback_measured_pnl": pnl if closes else None},
+    }
+PY_LABELS
+    cat > /tmp/elysium-probe/run.py <<'PY_RUN'
+"""Read-only calibration of the wallet-label rules on production (runs as dashboard_ro)."""
+import os
+import sys
+import time
+from collections import Counter
+from datetime import datetime, timezone
+from decimal import Decimal
+
+import sqlalchemy as sa
+
+sys.path.insert(0, "/probe")
+from labels import FEATURES_SQL, LabelRules, classify, feature_params  # noqa: E402
+
+E18 = Decimal(10) ** 18
+eng = sa.create_engine(os.environ["DATABASE_URL"])
+now = datetime.now(timezone.utc)
+R = LabelRules()
+HIDDEN = ["0xb47c4c8f73f009cc0c0d3f92b388d13e293f0b65", "0xba876237b0f021a6c6d852d6c26e107997cc5e81",
+          "0xe45a355d9e9cad2ad85f2d03e3ee3102a036acf0"]
+BLOCKED = set(os.environ.get("BLOCKED", "").split())
+with eng.connect() as c:
+    c.execute(sa.text("SET statement_timeout = '120s'"))
+    t = time.monotonic()
+    rows = [dict(r) for r in c.execute(sa.text(FEATURES_SQL),
+                                        feature_params(R, 99901, now, HIDDEN)).mappings()]
+    print(f"features: {len(rows)} wallets in {time.monotonic() - t:.1f}s")
+    enr = {r.address: (r.status, r.last_trade_at) for r in c.execute(sa.text("""
+        SELECT e.address, e.status, (SELECT max(block_time) FROM trades t
+          WHERE t.chain_id = 99901 AND t.wallet = e.address) AS last_trade_at
+        FROM wallet_enrollment e WHERE e.chain_id = 99901"""))}
+    print(f"enrolled: {len(enr)}; excluded: {sum(1 for s, _ in enr.values() if s == 'excluded')}")
+
+
+def q(vals, ps=(0.1, 0.25, 0.5, 0.75, 0.9, 0.95, 0.99)):
+    v = sorted(x for x in vals if x is not None)
+    if not v:
+        return "n=0"
+    return f"n={len(v)} " + " ".join(f"p{int(p * 100)}={float(v[min(len(v) - 1, int(p * len(v)))]):.3g}"
+                                     for p in ps)
+
+
+f = {r["wallet"]: r for r in rows}
+tl = lambda r: r["buys"] + r["sells"]  # noqa: E731
+print("legs        ", q([r["legs"] for r in rows]))
+print("trade legs  ", q([tl(r) for r in rows]))
+print("transfer sh ", q([r["transfers"] / r["legs"] for r in rows if r["legs"]]))
+print("med buy HYPE", q([Decimal(str(r["med_buy_wei"])) / E18 for r in rows if r["med_buy_wei"] is not None]))
+print("launches    ", q([r["launches"] for r in rows]))
+print("early share ", q([r["early"] / r["launches"] for r in rows if r["launches"] >= 5]))
+print("round trips ", q([r["round_trips"] for r in rows]))
+print("hold min    ", q([r["med_hold_s"] / 60 for r in rows if r["med_hold_s"] is not None and r["round_trips"] >= 4]))
+print("sell/buy    ", q([r["sells"] / r["buys"] for r in rows if r["buys"] >= 5]))
+print("legs/day    ", q([r["legs"] / r["active_days"] for r in rows if r["active_days"]]))
+print("bought toks ", q([r["bought_tokens"] for r in rows]))
+print("top share   ", q([Decimal(r["top_buy_wei"]) / Decimal(r["buy_wei"]) for r in rows if r["buy_wei"] and r["verified_buys"] >= 5]))
+print("internal    ", q([r["internal"] for r in rows]))
+print("intern share", q([r["internal"] / r["legs"] for r in rows if r["internal"]]))
+print("bundle blks ", q([r["bundle_blocks"] for r in rows]))
+print("bundle share", q([r["bundle_tokens"] / r["bought_tokens"] for r in rows if r["bought_tokens"] and r["bundle_blocks"]]))
+print("bot txs     ", q([r["bot_txs"] for r in rows]))
+print("closes      ", q([r["closes"] for r in rows]))
+
+# cohort membership via the same rule as production
+sys.path.insert(0, "/app")
+from agora_tracker.cohorts import load_cohorts  # noqa: E402
+from agora_tracker.config import IntelConfig  # noqa: E402
+with eng.connect() as c:
+    cohorts = load_cohorts(c, table="public_api.trades", chain_id=99901, ic=IntelConfig(),
+                           skip_tokens=HIDDEN, now=now)
+co = {w: {"id": k.key, "size": len(k.wallets), "launches": len(k.tokens)} for k in cohorts for w in k.wallets}
+print("cohorts:", [(k.key[:10], len(k.wallets)) for k in cohorts])
+labels = {w: classify(w, f.get(w), R, enrollment=s, last_trade_at=lt, now=now, blocked=BLOCKED,
+                      cohort=co.get(w)) for w, (s, lt) in enr.items()}
+for key in ("label_status", "style", "size_tier", "activity", "edge"):
+    print(f"{key:13s}", Counter(v[key] for v in labels.values()).most_common())
+print("flags        ", Counter(x for v in labels.values() for x in v["label_flags"]).most_common())
+print("tags         ", Counter(x for v in labels.values() for x in v["style_tags"]).most_common())
+print("flags combos ", Counter(tuple(v["label_flags"]) for v in labels.values() if v["label_flags"]).most_common(12))
+for st in ("bundler", "farm", "automated", "cohort"):
+    ex = [(w, v) for w, v in labels.items() if st in v["label_flags"]][:4]
+    for w, v in ex:
+        m = v["label_metrics"]
+        print(f"  {st:9s} {w} style={v['style']} legs={m['lookback_legs']} bundle={m['bundle_blocks']}/{m['bundle_tokens']} "
+              f"internal={m['internal_transfers']}/{m['transfer_peers']} early={m['early_launches']}/{m['observed_launches']} "
+              f"edge={v['edge']} pnl={m['lookback_measured_pnl']}")
+for sty in ("sniper", "scalper", "swing", "holder", "mover"):
+    ex = [(w, v) for w, v in labels.items() if v["style"] == sty][:3]
+    for w, v in ex:
+        m = v["label_metrics"]
+        print(f"  {sty:8s} {w[:12]} legs={m['lookback_legs']} rt={m['round_trips']} hold={m['median_hold_min']} "
+              f"early={m['early_launches']}/{m['observed_launches']} buy={m['median_buy_hype']} edge={v['edge']}")
+# organic & profitable: who is left after removing coordinated wallets
+good = [(w, v) for w, v in labels.items() if v["label_status"] == "organic" and v["edge"] in ("proven", "profitable")]
+print("organic with edge:", len(good), Counter(v["style"] for _, v in good).most_common())
+PY_RUN
+    chmod 644 /tmp/elysium-probe/*.py
+    BL=$(docker inspect elysium-wallet-tracker --format '{{range .Config.Env}}{{println .}}{{end}}' | grep '^TRACKING_BLOCKED_WALLETS=' | cut -d= -f2-)
+    docker compose run -T --rm --no-deps -e BLOCKED="$BL" -v /tmp/elysium-probe:/probe:ro --entrypoint python web /probe/run.py 2>&1 | grep -v "^ Container\|Creating\|Created" | cut -c1-400
+    rm -rf /tmp/elysium-probe
+    ;;
   ui-smoke)
     docker compose run --rm --no-deps ui --ui-smoke
     ;;
