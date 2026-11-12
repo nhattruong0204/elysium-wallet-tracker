@@ -693,17 +693,6 @@ PY
     consensus_state
     tracker_alive
     ;;
-  wallet-probe)
-    # Read-only: does the second detected cohort look coordinated?
-    need_docker
-    q() { echo "--- $1"; psql_admin -P pager=off -c "$2" 2>&1 | sed 's/^/  /' || true; }
-    W="('0x5732b9e35e5c5bc4889bbafce634545247601c9d','0x8bfee4f379d78955c5a42e9335af361a7e9101e3','0x8f8952ce273546d8db48586e20aa884adcb95945','0xb0dc4980d62543f761554427debd832919b9f7a7','0xbc7d33197d06917f8f8e50f79b5fd55dbb7f49ca','0xd8ba9e5886b7000bace2c9dbdd0be98ac77d4a28','0xdd88b3e5c8000c19514b8c30a8adf83223d784ab')"
-    q "what they do (7 days)" "SELECT t.wallet, e.last_rank rank, count(*) FILTER (WHERE kind='BUY') buys, count(*) FILTER (WHERE kind='SELL') sells, round(coalesce(sum(hype_wei) FILTER (WHERE kind='BUY'),0)/1e18,1) buy_hype, round(coalesce(sum(hype_wei) FILTER (WHERE kind='SELL'),0)/1e18,1) sell_hype, count(*) FILTER (WHERE kind LIKE 'TRANSFER%') xfers, count(DISTINCT token) tokens FROM trades t LEFT JOIN wallet_enrollment e ON e.address=t.wallet WHERE t.wallet IN $W AND t.block_time >= now() - interval '7 days' GROUP BY 1,2 ORDER BY 2"
-    q "contracts they call" "SELECT x.to_address, count(*) txs, count(DISTINCT x.from_address) of_7, (SELECT count(DISTINCT x2.from_address) FROM transactions x2 WHERE x2.to_address = x.to_address AND x2.inserted_at >= now() - interval '7 days') all_tracked_callers FROM transactions x WHERE x.from_address IN $W AND x.inserted_at >= now() - interval '7 days' GROUP BY 1 ORDER BY 2 DESC LIMIT 6"
-    q "launches they entered together: timing (latest 12)" "SELECT f.token, p.symbol, p.launchpad, count(*) of_7, round(extract(epoch from max(f.f)-min(f.f))) spread_s, to_char(min(f.f) at time zone 'utc','MM-DD HH24:MI:SS') first_utc FROM (SELECT token, wallet, min(block_time) f FROM trades WHERE wallet IN $W AND block_time >= now() - interval '7 days' GROUP BY 1,2) f LEFT JOIN token_profiles p ON p.address=f.token GROUP BY 1,2,3 HAVING count(*) >= 4 ORDER BY min(f.f) DESC LIMIT 12"
-    q "transfers between them, ever" "SELECT count(*) token_transfers, (SELECT count(*) FROM transactions WHERE from_address IN $W AND to_address IN $W AND value_wei > 0) hype_txs FROM token_transfers WHERE from_address IN $W AND to_address IN $W AND from_address <> to_address"
-    q "same-block entries (first buy in the same block as another member)" "SELECT count(*) entries, count(*) FILTER (WHERE shared) same_block FROM (SELECT token, wallet, min(block_number) b, count(*) OVER (PARTITION BY token, min(block_number)) > 1 shared FROM trades WHERE wallet IN $W AND block_time >= now() - interval '7 days' GROUP BY 1,2) x"
-    ;;
   ui-smoke)
     docker compose run --rm --no-deps ui --ui-smoke
     ;;

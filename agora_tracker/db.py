@@ -576,6 +576,29 @@ class Store:
         return find_bundle_wallets(((int(b), tok, w) for b, tok, w in rows),
                                    min_wallets=min_wallets, min_hits=min_hits)
 
+    def launch_cohorts(self, ic: Any, skip_tokens: Iterable[str] = ()) -> list[Any]:
+        from .cohorts import load_cohorts
+        with self.engine.connect() as c:
+            return load_cohorts(c, table="trades", chain_id=self.chain_id, ic=ic,
+                                skip_tokens=skip_tokens)
+
+    def wallets_on_tokens(self, tokens: Iterable[str], wallets: Iterable[str],
+                          since_days: int) -> dict[str, set[str]]:
+        """Per token: which of `wallets` traded it in the last `since_days` (committed rows)."""
+        toks, ws = sorted(set(tokens)), sorted(set(wallets))
+        if not toks or not ws:
+            return {}
+        since = utc(int(datetime.now(timezone.utc).timestamp() - since_days * 86400))
+        with self.engine.connect() as c:
+            rows = c.execute(sa.text(
+                "SELECT token, wallet FROM trades WHERE chain_id = :c AND token = ANY(:t) "
+                "AND wallet = ANY(:w) AND block_time >= :since GROUP BY token, wallet"),
+                {"c": self.chain_id, "t": toks, "w": ws, "since": since}).all()
+        out: dict[str, set[str]] = {}
+        for r in rows:
+            out.setdefault(r.token, set()).add(r.wallet)
+        return out
+
     def unsolicited_receipts(self, tokens: Iterable[str], window_h: float
                              ) -> dict[str, tuple[set[str], int]]:
         """Per token, within the window: the tracked wallets that received it in a transaction

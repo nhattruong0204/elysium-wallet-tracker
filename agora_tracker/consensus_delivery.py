@@ -39,6 +39,8 @@ LOCK_ID = 0x434F4E53   # 'CONS', separate from the tracker and Stage C locks
 POLL_SECONDS = 45
 MAX_EVENTS = 10
 MAX_SENDS = 5
+# Consensus cards with this many launch-cohort wallets among the traders are never posted.
+COHORT_SKIP_MIN = 2
 # Liveness for the container health check: written after every cycle that completed (enabled
 # or not); a cycle that raised does not refresh it. /tmp is the container's tmpfs.
 HEARTBEAT = "/tmp/consensus-heartbeat"
@@ -172,6 +174,8 @@ class ConsensusSettingsStore:
                     continue
                 if not PATTERN.fullmatch(token) or not tx.startswith("0x"):
                     continue
+                if int(card.get("cohort_wallets") or 0) >= COHORT_SKIP_MIN:
+                    continue                # a launch cohort is in: not a signal to follow
                 body, buttons = render_card(card, links)
                 key = f"{token}:{at.isoformat()}:{tx}"
                 result = c.execute(sa.text(f"""
