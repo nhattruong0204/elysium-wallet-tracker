@@ -62,12 +62,14 @@ from .intel import (
 )
 from .intel import QUALITY_NOTES as INTEL_QUALITY_NOTES
 from .jsonutil import to_jsonable
+from .labels import CONFIDENCES as LABEL_CONFIDENCES
 from .labels import FLAGS as LABEL_FLAGS
 from .labels import STATUS_NOTES as LABEL_STATUS_NOTES
 from .labels import STATUSES as LABEL_STATUSES
 from .labels import STYLE_NOTES as LABEL_STYLE_NOTES
 from .labels import STYLE_TAGS as LABEL_STYLE_TAGS
 from .labels import STYLES as LABEL_STYLES
+from .labels import TIERS as LABEL_TIERS
 from .labels import VERSION as LABEL_VERSION
 from .params import ADDR_RE, PRESET_ORDER, ParamError, list_params, parse_range
 from .reports import launchpad_label
@@ -307,6 +309,7 @@ def create_app(cfg: Config, dash: Dashboard, engine: Engine | None = None,
                "page_sizes": PAGE_SIZES, "label_statuses": list(LABEL_STATUSES),
                "label_styles": list(LABEL_STYLES), "label_flags": list(LABEL_FLAGS),
                "label_tags": list(LABEL_STYLE_TAGS), "label_notes": LABEL_STATUS_NOTES,
+               "label_tiers": list(LABEL_TIERS), "label_confidences": list(LABEL_CONFIDENCES),
                "style_notes": LABEL_STYLE_NOTES, "label_version": LABEL_VERSION}
         return page(request, "leaderboard.html", "intel", ctx, None, title="Wallet intelligence")
 
@@ -316,6 +319,12 @@ def create_app(cfg: Config, dash: Dashboard, engine: Engine | None = None,
         d = await run(request, lambda: dash.intel_wallet(addr, rank_step(request), now_utc()))
         return page(request, "leaderboard_wallet.html", "intel", d, None,
                     title=fmt.short_addr(addr))
+
+    @guarded
+    async def cohort_page(request: Request) -> Response:
+        addr = addr_or_404(request.path_params["addr"])
+        d = await run(request, lambda: dash.cohort_detail(addr, now_utc()))
+        return page(request, "cohort.html", "intel", d, None, title="Launch cohort")
 
     def api_intel(request: Request) -> Any:
         d = dash.intel_table(intel_params(request), now_utc())
@@ -331,8 +340,8 @@ def create_app(cfg: Config, dash: Dashboard, engine: Engine | None = None,
     @guarded
     async def intel_csv(request: Request) -> Response:
         p = intel_params(request)
-        rows = await run(request, lambda: dash.intel_export(p))
-        body = to_csv(rows[:MAX_ROWS], p.window, cfg.scoring.version)
+        rows, meta = await run(request, lambda: dash.intel_export(p))
+        body = to_csv(rows[:MAX_ROWS], p.window, cfg.scoring.version, meta)
         return Response(body, media_type="text/csv; charset=utf-8", headers={
             "Content-Disposition": (f'attachment; filename="wallet-intelligence-{p.window}-'
                                     f'{now_utc():%Y%m%d-%H%M}.csv"'),
@@ -523,6 +532,8 @@ def create_app(cfg: Config, dash: Dashboard, engine: Engine | None = None,
                                            "styles": LABEL_STYLE_NOTES,
                                            "flags": list(LABEL_FLAGS),
                                            "style_tags": list(LABEL_STYLE_TAGS),
+                                           "performance_tiers": list(LABEL_TIERS),
+                                           "confidences": list(LABEL_CONFIDENCES),
                                            "rules": dash.label_rules.describe()}},
                 "units": {"market_cap_usd": "USD", "amount_hype": "HYPE",
                           "decimals": "exact decimals are strings"}}
@@ -573,6 +584,9 @@ def create_app(cfg: Config, dash: Dashboard, engine: Engine | None = None,
             "relationships", "relationships_note"))),
         Route("/api/v1/tokens", api(api_tokens)),
         Route("/api/v1/cohorts", api(lambda r: dash.cohort_api(now_utc()))),
+        Route("/api/v1/cohorts/{addr}", api(lambda r: dash.cohort_detail(
+            addr_or_404(r.path_params["addr"]), now_utc()))),
+        Route("/cohorts/{addr}", cohort_page),
         Route("/api/v1/tokens/{addr}", api(api_token)),
         Route("/api/v1/smart-money", api(lambda r: dash.smart_money(
             get_range(r), r.query_params.get("view", "net"), page_num(r), now_utc()))),

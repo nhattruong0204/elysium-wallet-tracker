@@ -29,7 +29,7 @@ from .intel import SORTS as INTEL_SORTS
 from .intel import IntelParams, WalletIntel
 from .intel import matches as intel_matches
 from .intel import order as intel_order
-from .labels import LabelRules, compute_labels, label_kpis, unlabeled
+from .labels import LabelRules, compute_labels, label_kpis, label_summary, unlabeled
 from .params import ListParams, paginate, range_dict, range_key
 from .reports import PublicReports, sort_key
 
@@ -59,6 +59,14 @@ class NotFound(LookupError):
 
 class Busy(RuntimeError):
     """Too many page builds are already running; the caller should retry shortly."""
+
+
+def _count(values: Any) -> dict[str, int]:
+    out: dict[str, int] = {}
+    for x in values:
+        if x:
+            out[x] = out.get(x, 0) + 1
+    return dict(sorted(out.items(), key=lambda kv: (-kv[1], kv[0])))
 
 
 class Dashboard:
@@ -311,7 +319,8 @@ class Dashboard:
                 "meta": {"generated_at": now, "age_s": round(hit.age_s), "stale": hit.stale}}
 
     # --- wallet intelligence -----------------------------------------------------------------------
-    def wallet_labels(self, enrollment: dict[str, str], now: datetime) -> dict[str, dict[str, Any]]:
+    def wallet_labels(self, enrollment: dict[str, str], now: datetime,
+                      quality: dict[str, str] | None = None) -> dict[str, dict[str, Any]]:
         """Labels (agora_tracker/web/labels.py) for every tracked wallet, refreshed every
         intel.cohort_refresh_s like the cohorts they include; a failed refresh keeps the last
         result (the page then shows the older labels with their as-of time)."""
@@ -322,7 +331,8 @@ class Dashboard:
                 with self.rep.ro() as c:
                     self._labels = compute_labels(
                         c, chain_id=self.rep.chain_id, rules=self.label_rules, now=now,
-                        enrollment=enrollment, blocked=self.cfg.tracking.blocked_wallets,
+                        enrollment=enrollment, quality=quality,
+                        blocked=self.cfg.tracking.blocked_wallets,
                         cohorts=cohorts, skip_tokens=self.rep.hidden_tokens)
                 self._labels_as_of = now
             except Exception:  # noqa: BLE001 - the table renders without labels
@@ -333,17 +343,19 @@ class Dashboard:
         hit = self._cached(("intel", p.window), lambda: self.intel.table(p.window, datetime.now(UTC)))
         v = hit.value
         labels = self.wallet_labels({w["wallet"]: w["enrollment"] for w in v["wallets"]},
-                                    datetime.now(UTC))
+                                    datetime.now(UTC),
+                                    {w["wallet"]: w["quality"] for w in v["wallets"]})
         blank = unlabeled()
         wallets = [{**w, **labels.get(w["wallet"], blank)} for w in v["wallets"]]
         v = {**v, "wallets": wallets, "label_kpis": label_kpis(wallets),
-             "labels_as_of": self._labels_as_of}
+             "label_summary": label_summary(wallets), "labels_as_of": self._labels_as_of}
         return v, intel_order([w for w in wallets if intel_matches(w, p)], p), hit
 
     def intel_table(self, p: IntelParams, now: datetime) -> dict[str, Any]:
         v, rows, hit = self._intel_rows(p)
         return {"params": p, "page": paginate(rows, p.page, p.size), "kpis": v["kpis"],
-                "label_kpis": v["label_kpis"], "labels_as_of": v["labels_as_of"],
+                "label_kpis": v["label_kpis"], "label_summary": v["label_summary"],
+                "labels_as_of": v["labels_as_of"],
                 "label_rules": self.label_rules.describe(),
                 "snapshot": v["snapshot"], "truncated": v["truncated"], "window": p.window,
                 "since": v["since"], "filtered": len(rows), "tracked": len(v["wallets"]),
@@ -352,8 +364,40 @@ class Dashboard:
                 "meta": {"generated_at": now, "age_s": round(hit.age_s), "stale": hit.stale,
                          "timezone": "UTC"}}
 
-    def intel_export(self, p: IntelParams) -> list[dict[str, Any]]:
-        return self._intel_rows(p)[1]
+    def intel_export(self, p: IntelParams) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        """The filtered rows (all pages) and the snapshot they describe."""
+        v, rows, _ = self._intel_rows(p)
+        return rows, {"chain_id": self.rep.chain_id, "labels_as_of": v["labels_as_of"],
+                      "lookback_days": self.label_rules.lookback_days,
+                      "exported_at": datetime.now(UTC)}
+
+    def cohort_detail(self, cohort_id: str, now: datetime) -> dict[str, Any]:
+        """One launch cohort: its members with their labels, and the launches they shared."""
+        found = next((c for c in self.cohorts(now) if c.key == cohort_id), None)
+        if found is None:
+            raise NotFound("no such launch cohort (cohorts are recomputed; ids can change "
+                           "when the lowest member address leaves)")
+        v, _, _ = self._intel_rows(IntelParams(window="all"))
+        members = sorted((w for w in v["wallets"] if w["wallet"] in found.wallets),
+                         key=lambda w: (w["rank"] is None, w["rank"] or 0, w["wallet"]))
+        with self.rep.ro() as c:
+            names = self.rep.token_names(c, sorted(found.tokens))
+        ic = self.cfg.intel
+        return {"id": found.key, "type": "launch_cohort", "size": len(found.wallets),
+                "launches": len(found.tokens), "members": members,
+                "untracked_members": sorted(found.wallets - {w["wallet"] for w in members}),
+                "confidence": ("high" if len(found.tokens) >= self.label_rules.cohort_high_launches
+                               else "medium"),
+                "tokens": [{"token": t, **names.get(t, {})} for t in sorted(found.tokens)],
+                "styles": _count(w["style"] for w in members),
+                "tiers": _count(w["performance_tier"] for w in members),
+                "blocked": sum(1 for w in members if "blocked" in w["label_flags"]),
+                "rule": {"lookback_days": ic.cohort_lookback_days, "window_s": ic.cohort_window_s,
+                         "min_shared": ic.cohort_min_shared, "min_overlap": ic.cohort_min_overlap,
+                         "min_size": ic.cohort_min_size},
+                "note": "Evidence of coordinated entries, not proof of common control. Member "
+                        "PnL is not summed: transfers between members would be double-counted.",
+                "meta": {"generated_at": now, "timezone": "UTC"}}
 
     def intel_wallet(self, addr: str, step: str, now: datetime) -> dict[str, Any]:
         v, _, _ = self._intel_rows(IntelParams(window="all"))     # outside the build: no nesting

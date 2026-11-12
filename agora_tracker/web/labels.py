@@ -25,8 +25,18 @@ Three families, all on one record:
            holder | mover | mixed | thin (too few decoded buys/sells to say). `style_tags` adds the secondary
            traits: high_frequency, early_buyer, concentrated, diversified, linked.
 * tiers    size (median verified buy: micro | small | mid | large | whale), activity
-           (active | cooling | dormant, from its last own leg; receipts do not count) and edge (measured PnL
-           over the lookback: proven | profitable | losing | flat | unmeasured).
+           (active | cooling | dormant, from its last own leg; receipts do not count) and
+           performance_tier (measured closes in the lookback only, never Agora's PnL:
+           consistent_winner | emerging | mixed | persistent_loser | insufficient_history).
+* evidence every label has its reason text; `label_confidence` (confirmed | high | medium | low |
+           insufficient) is a documented heuristic from evidence count and data quality, not a
+           probability; `relationship` separates "none_detected" (enough trading seen, nothing
+           found) from "unknown" (too little to say).
+
+Not derivable from stored rows today, so deliberately absent rather than guessed: momentum
+(no reliable entry-time market history), diamond hands (our history is shorter than any honest
+holding horizon), shared funders (native-coin funding transfers are not indexed), insider and
+wash-trading labels (no independent evidence to anchor them).
 
 Caveats, shown on the page: "launch" means the first trade of the token *we* recorded (tokens
 first seen in the first day of our history are not counted as observed launches); hold time is
@@ -48,13 +58,16 @@ E18 = Decimal(10) ** 18
 VERSION = "labels-v1"
 
 STATUSES = ("blocked", "contract", "cohort", "bundler", "farm", "automated", "dormant",
-            "organic")
+            "unknown", "organic")
 FLAGS = STATUSES[:6]
 STYLES = ("sniper", "scalper", "swing", "holder", "mover", "mixed", "thin")
-STYLE_TAGS = ("high_frequency", "early_buyer", "concentrated", "diversified", "linked")
+STYLE_TAGS = ("high_frequency", "high_churn", "accumulator", "early_buyer", "concentrated",
+              "diversified", "linked")
 SIZES = ("micro", "small", "mid", "large", "whale")
 ACTIVITY = ("active", "cooling", "dormant")
-EDGES = ("proven", "profitable", "losing", "flat", "unmeasured")
+TIERS = ("consistent_winner", "emerging", "mixed", "persistent_loser", "insufficient_history")
+CONFIDENCES = ("confirmed", "high", "medium", "low", "insufficient")
+RELATIONSHIPS = ("launch_cohort", "bundle_pair", "transfer_linked", "none_detected", "unknown")
 
 STATUS_NOTES = {
     "blocked": "on the operator block list: not followed, no alerts",
@@ -64,7 +77,8 @@ STATUS_NOTES = {
     "farm": "a large share of its legs are transfers with other tracked wallets",
     "automated": "machine-like timing, almost no decoded buys/sells",
     "dormant": "no action of its own in the lookback",
-    "organic": "no coordination flag",
+    "unknown": "active, but too few decoded buys/sells to say anything about it",
+    "organic": "enough observed trading and no coordination evidence found",
 }
 STYLE_NOTES = {
     "sniper": "first buy within a minute of most launches it bought",
@@ -108,9 +122,21 @@ class LabelRules:
     size_edges_hype: tuple[float, ...] = (1.0, 5.0, 25.0, 100.0)    # micro|small|mid|large|whale
     active_days: int = 7
     cooling_days: int = 30
-    proven_min_closes: int = 10
+    churn_min_round_trips: int = 20     # high_churn: this many round trips,
+    churn_hold_s: int = 5 * 60          # ...median hold at most this,
+    churn_balance: float = 0.8          # ...and sells/buys within [x, 1/x] (flat net position)
+    accumulator_buys_per_token: float = 3.0
+    accumulator_min_tokens: int = 3
+    accumulator_sell_ratio: float = 0.5
+    proven_min_closes: int = 10         # consistent_winner / persistent_loser need this many
     proven_win_rate: float = 0.5
-    edge_min_closes: int = 3
+    proven_profit_factor: float = 1.5   # gross measured wins / gross measured losses
+    loser_win_rate: float = 0.4
+    edge_min_closes: int = 3            # fewer measured closes: insufficient_history
+    high_conf_trade_legs: int = 40      # style confidence: high from this many decoded legs
+    cohort_high_launches: int = 10      # flag confidence thresholds (heuristic, not a probability)
+    bundle_high_blocks: int = 10
+    farm_medium_transfers: int = 10
     # automated: the tracker's rule (IntelConfig.bot_*), copied in by `from_intel`
     bot_lookback_days: int = 7
     bot_min_txs: int = 100
@@ -202,7 +228,9 @@ botleg AS (
 rp AS (
   SELECT r.wallet, count(*) FILTER (WHERE r.status = 'measured') AS closes,
     count(*) FILTER (WHERE r.status = 'measured' AND r.pnl_wei > 0) AS wins,
-    coalesce(sum(r.pnl_wei) FILTER (WHERE r.status = 'measured'), 0) AS pnl_wei
+    coalesce(sum(r.pnl_wei) FILTER (WHERE r.status = 'measured'), 0) AS pnl_wei,
+    coalesce(sum(r.pnl_wei) FILTER (WHERE r.status = 'measured' AND r.pnl_wei > 0), 0) AS win_wei,
+    coalesce(-sum(r.pnl_wei) FILTER (WHERE r.status = 'measured' AND r.pnl_wei < 0), 0) AS loss_wei
   FROM realized_pnl r JOIN trades tt ON tt.id = r.trade_id
   WHERE r.chain_id = :c AND tt.block_time >= :since GROUP BY r.wallet)
 SELECT l.wallet, l.legs, l.buys, l.sells, l.transfers, l.tokens, l.bought_tokens,
@@ -212,7 +240,8 @@ SELECT l.wallet, l.legs, l.buys, l.sells, l.transfers, l.tokens, l.bought_tokens
        coalesce(x.internal, 0) AS internal, coalesce(x.peers, 0) AS peers,
        coalesce(bo.txs, 0) AS bot_txs, bo.fast AS bot_fast, bl.trade_share AS bot_trade_share,
        coalesce(rp.closes, 0) AS closes, coalesce(rp.wins, 0) AS wins,
-       coalesce(rp.pnl_wei, 0) AS pnl_wei
+       coalesce(rp.pnl_wei, 0) AS pnl_wei, coalesce(rp.win_wei, 0) AS win_wei,
+       coalesce(rp.loss_wei, 0) AS loss_wei
   FROM leg l
   LEFT JOIN per p ON p.wallet = l.wallet
   LEFT JOIN xfer x ON x.wallet = l.wallet
@@ -242,7 +271,9 @@ def bundle_partners(rows: Iterable[tuple[str, str, int]], *, min_blocks: int,
     tracked wallet bought the same token in the same block as it at least `min_blocks` times,
     on at least `min_tokens` different tokens. Sharing a busy block with whoever else sniped
     it is common; doing it again and again with the same partner is not. Pure function.
-    Returns {wallet: {"partners", "blocks", "tokens"}} (blocks/tokens: with the best partner)."""
+    Pairs are reported as pairs: A-B and B-C never make A-C related (no transitive merging).
+    Returns {wallet: {"partners", "blocks", "tokens", "with"}} (blocks/tokens: with the best
+    partner; with: the partner addresses)."""
     by_block: dict[tuple[str, int], set[str]] = {}
     for w, tok, blk in rows:
         by_block.setdefault((tok, int(blk)), set()).add(w)
@@ -260,8 +291,9 @@ def bundle_partners(rows: Iterable[tuple[str, str, int]], *, min_blocks: int,
         if nb < min_blocks or nt < min_tokens:
             continue
         for w in (a, b):
-            cur = out.setdefault(w, {"partners": 0, "blocks": 0, "tokens": 0})
+            cur = out.setdefault(w, {"partners": 0, "blocks": 0, "tokens": 0, "with": []})
             cur["partners"] += 1
+            cur["with"].append(b if w == a else a)
             if (nb, nt) > (cur["blocks"], cur["tokens"]):
                 cur["blocks"], cur["tokens"] = nb, nt
     return out
@@ -287,11 +319,17 @@ def classify(wallet: str, f: Mapping[str, Any] | None, rules: LabelRules, *,
              enrollment: str = "active", now: datetime,
              blocked: frozenset[str] | set[str] = frozenset(),
              cohort: Mapping[str, Any] | None = None,
-             bundle: Mapping[str, int] | None = None) -> dict[str, Any]:
+             bundle: Mapping[str, Any] | None = None,
+             quality: str | None = None) -> dict[str, Any]:
     """One wallet's labels. `f`: its FEATURES_SQL row (None: no legs in the lookback).
     `cohort`: {"id", "size", "launches"} when the wallet is a cohort member; `bundle`: its
-    `bundle_partners` entry. Pure."""
+    `bundle_partners` entry; `quality`: the wallet's data-quality class (intel.classify_quality),
+    which caps the confidence when our history of the wallet has holes. Pure.
+
+    Confidence is a documented heuristic from evidence count and data quality (confirmed: an
+    operator or chain fact; high / medium / low; insufficient), NOT a calibrated probability."""
     f = dict(f or {})
+    conf: dict[str, str] = {}
     n = lambda k: int(f.get(k) or 0)  # noqa: E731
     legs, buys, sells, transfers = n("legs"), n("buys"), n("sells"), n("transfers")
     trade_legs = buys + sells
@@ -301,12 +339,15 @@ def classify(wallet: str, f: Mapping[str, Any] | None, rules: LabelRules, *,
     # --- flags (coordination / non-trader evidence) --------------------------------------------
     if wallet in blocked:
         flags.append("blocked")
+        conf["blocked"] = "confirmed"
         reasons.append("blocked: on the operator block list")
     if enrollment == "excluded" and wallet not in blocked:
         flags.append("contract")
+        conf["contract"] = "confirmed"
         reasons.append("contract: a contract address, not followed")
     if cohort:
         flags.append("cohort")
+        conf["cohort"] = "high" if cohort["launches"] >= rules.cohort_high_launches else "medium"
         reasons.append(f"cohort: one of {cohort['size']} wallets entering {cohort['launches']} "
                        f"launches together (cohort {cohort['id'][:10]})")
     bought = n("bought_tokens")
@@ -314,18 +355,21 @@ def classify(wallet: str, f: Mapping[str, Any] | None, rules: LabelRules, *,
     bblocks, btoks, partners = (int(bundle.get(k, 0)) for k in ("blocks", "tokens", "partners"))
     if partners:
         flags.append("bundler")
+        conf["bundler"] = "high" if bblocks >= rules.bundle_high_blocks else "medium"
         reasons.append(f"bundler: {bblocks} same-block buys on {btoks} tokens with the same "
                        f"tracked wallet ({partners} such partner{'s' if partners != 1 else ''})")
     internal, peers = n("internal"), n("peers")
     if (internal >= rules.farm_min and peers >= rules.farm_min_peers and legs
             and internal / legs >= rules.farm_share):
         flags.append("farm")
+        conf["farm"] = "medium" if internal >= rules.farm_medium_transfers else "low"
         reasons.append(f"farm: {internal} of {legs} legs are transfers with {peers} other "
                        "tracked wallet(s) in the same transaction")
     fast, tshare = _f(f.get("bot_fast")), _f(f.get("bot_trade_share"))
     if (n("bot_txs") >= rules.bot_min_txs and fast is not None and fast >= rules.bot_fast_share
             and tshare is not None and tshare <= rules.bot_max_trade_share):
         flags.append("automated")
+        conf["automated"] = "high" if n("bot_txs") >= 3 * rules.bot_min_txs else "medium"
         reasons.append(f"automated: {n('bot_txs')} txs in {rules.bot_lookback_days}d, "
                        f"{fast:.0%} under {rules.bot_fast_gap_s:g}s apart, {tshare:.0%} buys/sells")
 
@@ -337,7 +381,12 @@ def classify(wallet: str, f: Mapping[str, Any] | None, rules: LabelRules, *,
                 "cooling" if age_d > rules.active_days else "active")
     status = next((s for s in FLAGS if s in flags), None)
     if status is None:
-        status = "dormant" if last_own is None else "organic"
+        # no evidence of coordination is only a finding when there was enough trading to see
+        status = ("dormant" if last_own is None else
+                  "unknown" if trade_legs < rules.min_style_legs else "organic")
+    relationship = ("launch_cohort" if cohort else "bundle_pair" if partners else
+                    "transfer_linked" if internal >= rules.linked_min else
+                    "unknown" if trade_legs < rules.min_style_legs else "none_detected")
 
     # --- style ---------------------------------------------------------------------------------
     launches, early = n("launches"), n("early")
@@ -371,6 +420,15 @@ def classify(wallet: str, f: Mapping[str, Any] | None, rules: LabelRules, *,
     days = n("active_days")
     if days and legs / days >= rules.hf_legs_per_day:
         tags.append("high_frequency")
+    if (rt >= rules.churn_min_round_trips and hold is not None and hold <= rules.churn_hold_s
+            and buys and rules.churn_balance <= sells / buys <= 1 / rules.churn_balance):
+        tags.append("high_churn")
+        reasons.append(f"high_churn: {rt} round trips, median hold {hold / 60:.0f} min, "
+                       f"{sells} sells per {buys} buys (flat net position; consistent with "
+                       "volume farming, not proof of it)")
+    if (bought >= rules.accumulator_min_tokens and buys / bought >= rules.accumulator_buys_per_token
+            and sells / buys <= rules.accumulator_sell_ratio):
+        tags.append("accumulator")
     if style != "sniper" and launches >= rules.sniper_min_launches and \
             early / launches >= rules.early_share:
         tags.append("early_buyer")
@@ -391,15 +449,37 @@ def classify(wallet: str, f: Mapping[str, Any] | None, rules: LabelRules, *,
         size = SIZES[sum(1 for e in rules.size_edges_hype if med_buy >= Decimal(str(e)))]
     closes, wins = n("closes"), n("wins")
     pnl = Decimal(f.get("pnl_wei") or 0) / E18
-    if closes >= rules.proven_min_closes and pnl > 0 and wins / closes >= rules.proven_win_rate:
-        edge = "proven"
-    elif closes >= rules.edge_min_closes:
-        edge = "profitable" if pnl > 0 else "losing" if pnl < 0 else "flat"
+    win, loss = Decimal(f.get("win_wei") or 0), Decimal(f.get("loss_wei") or 0)
+    pf = (win / loss) if loss > 0 else None           # None: no measured loss (or no closes)
+    wr = (wins / closes) if closes else None
+    # measured closes only (sells whose cost basis we know); Agora's PnL is never used here
+    if closes < rules.edge_min_closes:
+        tier = "insufficient_history"
+    elif (closes >= rules.proven_min_closes and pnl > 0 and wr >= rules.proven_win_rate
+          and (pf is None or pf >= Decimal(str(rules.proven_profit_factor)))):
+        tier = "consistent_winner"
+    elif closes >= rules.proven_min_closes and pnl < 0 and wr < rules.loser_win_rate:
+        tier = "persistent_loser"
+    elif pnl > 0 and wr >= rules.proven_win_rate and closes < rules.proven_min_closes:
+        tier = "emerging"
     else:
-        edge = "unmeasured"
+        tier = "mixed"
+
+    # --- confidence ------------------------------------------------------------------------------
+    style_conf = ("insufficient" if style == "thin" else
+                  "high" if trade_legs >= rules.high_conf_trade_legs else "medium")
+    if style == "mover":
+        style_conf = "low"                 # undecoded activity: we see that it moves, not why
+    overall = conf.get(status) or ("insufficient" if status in ("unknown", "dormant")
+                                   else style_conf)
+    if quality in ("gaps", "unscanned") and overall in ("high", "medium"):
+        overall = "low"                    # holes in our history of the wallet
+        reasons.append(f"confidence capped: data quality is '{quality}'")
     return {
         "label_status": status, "label_flags": flags, "style": style, "style_tags": tags,
-        "size_tier": size, "activity": activity, "edge": edge,
+        "size_tier": size, "activity": activity, "performance_tier": tier,
+        "label_confidence": overall, "flag_confidence": conf, "style_confidence": style_conf,
+        "relationship": relationship, "bundle_with": sorted(bundle.get("with", ())),
         "label_reasons": reasons,
         "cohort_id": cohort["id"] if cohort else None,
         "cohort_size": cohort["size"] if cohort else None,
@@ -414,13 +494,14 @@ def classify(wallet: str, f: Mapping[str, Any] | None, rules: LabelRules, *,
             "internal_transfers": internal, "transfer_peers": peers,
             "bundle_blocks": bblocks, "bundle_tokens": btoks, "bundle_partners": partners,
             "bot_txs": n("bot_txs"), "bot_fast_share": fast, "bot_trade_share": tshare,
-            "lookback_closes": closes, "lookback_wins": wins,
+            "lookback_closes": closes, "lookback_wins": wins, "profit_factor": pf,
             "lookback_measured_pnl": pnl if closes else None},
     }
 
 
 def compute_labels(conn: Any, *, chain_id: int, rules: LabelRules, now: datetime,
                    enrollment: Mapping[str, str], blocked: Iterable[str] = (),
+                   quality: Mapping[str, str] | None = None,
                    cohorts: Iterable[Any] = (), skip_tokens: Iterable[str] = ()
                    ) -> dict[str, dict[str, Any]]:
     """Labels for every wallet in `enrollment` ({wallet: enrollment status}). Two read-only
@@ -439,14 +520,16 @@ def compute_labels(conn: Any, *, chain_id: int, rules: LabelRules, now: datetime
           for c in cohorts for w in c.wallets}
     bl = frozenset(blocked)
     return {w: classify(w, feats.get(w), rules, enrollment=st, now=now, blocked=bl,
-                        cohort=co.get(w), bundle=bundles.get(w))
+                        cohort=co.get(w), bundle=bundles.get(w), quality=(quality or {}).get(w))
             for w, st in enrollment.items()}
 
 
 def unlabeled() -> dict[str, Any]:
     """Placeholder when labels could not be computed yet: every field present, all unknown."""
     return {"label_status": None, "label_flags": [], "style": None, "style_tags": [],
-            "size_tier": None, "activity": None, "edge": None, "label_reasons": [],
+            "size_tier": None, "activity": None, "performance_tier": None,
+            "label_confidence": None, "flag_confidence": {}, "style_confidence": None,
+            "relationship": None, "bundle_with": [], "label_reasons": [],
             "cohort_id": None, "cohort_size": None, "label_metrics": {}}
 
 
@@ -457,3 +540,32 @@ def label_kpis(rows: Iterable[Mapping[str, Any]]) -> dict[str, int]:
         if w.get("label_status") in out:
             out[w["label_status"]] += 1
     return out
+
+
+def label_summary(rows: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
+    """The classification summary above the table. `status` counts are mutually exclusive;
+    `flags`, `tags` and the cluster counts overlap (one wallet can be in several)."""
+    rows = list(rows)
+    done = [w for w in rows if w.get("label_status")]
+
+    def tally(key: str) -> dict[str, int]:
+        out: dict[str, int] = {}
+        for w in done:
+            vals = w.get(key)
+            for x in (vals if isinstance(vals, list) else [vals]):
+                if x:
+                    out[x] = out.get(x, 0) + 1
+        return out
+    return {
+        "wallets": len(rows), "labelled": len(done),
+        "insufficient": sum(1 for w in done if w["label_confidence"] == "insufficient"),
+        "classified": sum(1 for w in done if w["label_confidence"] != "insufficient"),
+        "cohorts": len({w["cohort_id"] for w in done if w.get("cohort_id")}),
+        "in_cohorts": sum(1 for w in done if w.get("cohort_id")),
+        "bundle_pair_wallets": sum(1 for w in done if "bundler" in w["label_flags"]),
+        "consistent_winners_clean": sum(
+            1 for w in done if w["performance_tier"] == "consistent_winner"
+            and not w["label_flags"]),
+        "styles": tally("style"), "flags": tally("label_flags"), "tags": tally("style_tags"),
+        "tiers": tally("performance_tier"), "confidence": tally("label_confidence"),
+        "relationships": tally("relationship")}

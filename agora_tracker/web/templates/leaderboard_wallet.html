@@ -16,11 +16,13 @@
 </section>{% endif %}
 
 {% if s and s.label_status %}{% set sk = {'blocked': 'bad', 'cohort': 'bad', 'bundler': 'warn', 'farm': 'warn', 'automated': 'warn', 'organic': 'ok'} %}
-<h2>Labels <small class="faint">rule-based, last 30 days</small></h2>
+<h2>Labels <small class="faint">rule-based, last 30 days · confidence {{ s.label_confidence }}</small></h2>
 <p>{{ badge(sk.get(s.label_status, ''), s.label_status) }}{% for f in s.label_flags if f != s.label_status %} {{ badge(sk.get(f, ''), f) }}{% endfor %}
-  · style <b>{{ s.style }}</b>{% for t in s.style_tags %} · {{ t|replace('_', ' ') }}{% endfor %}{% if s.size_tier %} · size <b>{{ s.size_tier }}</b>{% endif %} · {{ s.activity }} · edge <b>{{ s.edge }}</b>
-  {% if s.cohort_id %} · <a href="/api/v1/cohorts">launch cohort</a> of {{ s.cohort_size }} wallets{% endif %}</p>
+  · style <b>{{ s.style }}</b> <span class="faint">({{ s.style_confidence }})</span>{% for t in s.style_tags %} · {{ t|replace('_', ' ') }}{% endfor %}{% if s.size_tier %} · size <b>{{ s.size_tier }}</b>{% endif %} · {{ s.activity }} · performance <b>{{ s.performance_tier|replace('_', ' ') }}</b> · relationships <b>{{ s.relationship|replace('_', ' ') }}</b></p>
+{% if s.cohort_id %}<p>Member of <a href="/cohorts/{{ s.cohort_id }}">launch cohort {{ s.cohort_id|short }}</a> ({{ s.cohort_size }} wallets, confidence {{ s.flag_confidence.cohort }}).</p>{% endif %}
+{% if s.bundle_with %}<p>Same-block buying partner{{ 's' if s.bundle_with|length > 1 }}: {% for a in s.bundle_with %}<a href="/leaderboard/{{ a }}" title="{{ a }}">{{ a|short }}</a>{{ ', ' if not loop.last }}{% endfor %} <span class="faint">(pairs only: a partner's partner is not implied to be related)</span></p>{% endif %}
 {% if s.label_reasons %}<ul class="faint">{% for r in s.label_reasons %}<li>{{ r }}</li>{% endfor %}</ul>{% endif %}
+<p class="faint note">Labels are inferences from recorded on-chain activity, with a heuristic confidence; they are not proof of who controls a wallet or of misconduct. Data quality for this wallet: {{ s.quality }}.</p>
 {% endif %}
 
 <h2>Score <small class="faint">{{ d.score_version }}</small></h2>

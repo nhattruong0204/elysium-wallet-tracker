@@ -24,10 +24,12 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
+from .labels import CONFIDENCES as LABEL_CONFIDENCES
 from .labels import FLAGS as LABEL_FLAGS
 from .labels import STATUSES as LABEL_STATUSES
 from .labels import STYLE_TAGS as LABEL_STYLE_TAGS
 from .labels import STYLES as LABEL_STYLES
+from .labels import TIERS as LABEL_TIERS
 from .labels import VERSION as LABEL_VERSION
 from .params import ADDR_RE, ParamError
 
@@ -64,9 +66,14 @@ class IntelParams:
     min_pnl: Decimal | None = None          # Agora-reported PnL, HYPE
     min_score: Decimal | None = None        # 0-100; a wallet with no score never matches
     q: str = ""                             # address fragment
-    label: str = "all"                      # overall label status (labels.STATUSES)
-    style: str = "all"                      # primary style (labels.STYLES)
-    flag: str = "all"                       # any flag (labels.FLAGS) or style tag; "clean": no flag
+    # label filters: each is a tuple of accepted values (comma-separated in the URL: any of
+    # them matches); empty = no filter. Different filters combine with AND.
+    label: tuple[str, ...] = ()             # overall label status (labels.STATUSES)
+    style: tuple[str, ...] = ()             # primary style (labels.STYLES)
+    flag: tuple[str, ...] = ()              # any flag (labels.FLAGS) or style tag; "clean": no flag
+    tier: tuple[str, ...] = ()              # performance tier (labels.TIERS)
+    confidence: tuple[str, ...] = ()        # label confidence (labels.CONFIDENCES)
+    cohort: str = ""                        # launch-cohort id (its lowest member address)
     sort: str = "rank"
     desc: bool = False
     page: int = 1
@@ -86,6 +93,17 @@ def _int(raw: str | None, name: str, lo: int, hi: int) -> int | None:
     if not lo <= v <= hi:
         raise ParamError(f"{name} must be between {lo} and {hi}")
     return v
+
+
+def _multi(raw: str | None, name: str, allowed: tuple[str, ...]) -> tuple[str, ...]:
+    """'a,b' -> ('a', 'b'); '' or 'all' -> () (no filter). Unknown values are rejected."""
+    vals = tuple(dict.fromkeys(v.strip().lower() for v in (raw or "").split(",") if v.strip()))
+    if not vals or vals == ("all",):
+        return ()
+    bad = [v for v in vals if v not in allowed]
+    if bad or len(vals) > len(allowed):
+        raise ParamError(f"{name} must be one or more of {', '.join(allowed)} (comma-separated)")
+    return vals
 
 
 def parse_intel(q: Mapping[str, str], *, default_size: int = 50) -> IntelParams:
@@ -131,22 +149,22 @@ def parse_intel(q: Mapping[str, str], *, default_size: int = 50) -> IntelParams:
     text = (q.get("q") or "").strip().lower()[:44]
     if text and not re.fullmatch(r"(0x)?[0-9a-f]{1,40}", text):
         raise ParamError("q must be an address or the start of one (hex)")
-    label = (q.get("label") or "all").strip().lower()
-    if label not in ("all", *LABEL_STATUSES):
-        raise ParamError(f"label must be one of all, {', '.join(LABEL_STATUSES)}")
-    style = (q.get("style") or "all").strip().lower()
-    if style not in ("all", *LABEL_STYLES):
-        raise ParamError(f"style must be one of all, {', '.join(LABEL_STYLES)}")
-    flag = (q.get("flag") or "all").strip().lower()
-    if flag not in ("all", "clean", *LABEL_FLAGS, *LABEL_STYLE_TAGS):
-        raise ParamError("flag must be all, clean, a flag or a style tag")
+    label = _multi(q.get("label"), "label", LABEL_STATUSES)
+    style = _multi(q.get("style"), "style", LABEL_STYLES)
+    flag = _multi(q.get("flag"), "flag", ("clean", *LABEL_FLAGS, *LABEL_STYLE_TAGS))
+    tier = _multi(q.get("tier"), "tier", LABEL_TIERS)
+    confidence = _multi(q.get("confidence"), "confidence", LABEL_CONFIDENCES)
+    cohort = (q.get("cohort") or "").strip().lower()
+    if cohort and not ADDR_RE.match(cohort):
+        raise ParamError("cohort must be a cohort id (a full 0x address)")
     size = _int(q.get("limit"), "limit", 1, 100) or default_size
     page = _int(q.get("page"), "page", 1, 10_000) or 1
     return IntelParams(window=window, membership=membership, quality=quality,
                        active=active_raw in ("1", "true"),
                        min_trades=_int(q.get("min_trades"), "min_trades", 0, 1_000_000) or 0,
                        min_rank=min_rank, max_rank=max_rank, min_pnl=min_pnl, min_score=min_score, q=text,
-                       label=label, style=style, flag=flag,
+                       label=label, style=style, flag=flag, tier=tier, confidence=confidence,
+                       cohort=cohort,
                        sort=sort, desc=desc, page=page, size=size)
 
 
@@ -320,15 +338,21 @@ def matches(w: Mapping[str, Any], p: IntelParams) -> bool:
     if p.min_score is not None and (w["score"] is None or w["score"] < p.min_score):
         return False
     # label filters: a wallet whose labels are not computed yet never matches a label filter
-    if p.label != "all" and w.get("label_status") != p.label:
+    if p.label and w.get("label_status") not in p.label:
         return False
-    if p.style != "all" and w.get("style") != p.style:
+    if p.style and w.get("style") not in p.style:
         return False
-    if p.flag == "clean" and (w.get("label_status") is None or w.get("label_flags")):
+    if p.tier and w.get("performance_tier") not in p.tier:
         return False
-    if p.flag not in ("all", "clean") and p.flag not in (*w.get("label_flags", ()),
-                                                          *w.get("style_tags", ())):
+    if p.confidence and w.get("label_confidence") not in p.confidence:
         return False
+    if p.cohort and w.get("cohort_id") != p.cohort:
+        return False
+    if p.flag:
+        have = {*w.get("label_flags", ()), *w.get("style_tags", ())}
+        clean = w.get("label_status") is not None and not w.get("label_flags")
+        if not (have & set(p.flag) or ("clean" in p.flag and clean)):
+            return False
     if p.q:
         frag = p.q if p.q.startswith("0x") else "0x" + p.q
         if not w["wallet"].startswith(frag) and p.q not in w["wallet"]:
@@ -386,13 +410,16 @@ CSV_COLUMNS = (
     "score", "score_quality", "score_weight_available", "score_version", "score_as_of",
     # labels (agora_tracker/web/labels.py), over their own fixed lookback
     "label_version", "label_status", "label_flags", "cohort_id", "cohort_size", "style",
-    "style_tags", "size_tier", "activity", "edge", "label_reasons",
+    "style_tags", "size_tier", "activity", "performance_tier", "label_reasons",
     "lb_legs", "lb_trade_legs", "lb_transfer_share", "lb_observed_launches",
     "lb_early_launches", "lb_early_share", "lb_round_trips", "lb_median_hold_min",
     "lb_legs_per_active_day", "lb_median_buy_hype", "lb_top_token_share",
     "lb_internal_transfers", "lb_transfer_peers", "lb_bundle_blocks", "lb_bundle_tokens",
     "lb_bundle_partners", "lb_bot_txs", "lb_bot_fast_share", "lb_bot_trade_share",
-    "lb_closes", "lb_wins", "lb_measured_pnl_hype")
+    "lb_closes", "lb_wins", "lb_measured_pnl_hype", "lb_profit_factor",
+    # classification metadata
+    "chain_id", "label_confidence", "flag_confidence", "style_confidence", "relationship",
+    "bundle_partner_wallets", "label_lookback_days", "labels_as_of", "exported_at")
 _METRIC_KEYS = (
     "lookback_legs", "lookback_trade_legs", "transfer_share", "observed_launches",
     "early_launches", "early_share", "round_trips", "median_hold_min", "legs_per_active_day",
@@ -423,7 +450,11 @@ def csv_cell(v: Any) -> Any:
     return "'" + s if s.startswith(_FORMULA) else s
 
 
-def to_csv(rows: list[dict[str, Any]], window: str, score_version: str = "") -> str:
+def to_csv(rows: list[dict[str, Any]], window: str, score_version: str = "",
+           meta: Mapping[str, Any] | None = None) -> str:
+    """`meta`: chain_id, lookback_days, labels_as_of, exported_at (the same on every row, so a
+    file that is passed around still says what it is a snapshot of)."""
+    meta = meta or {}
     out = io.StringIO()
     wr = csv.writer(out, lineterminator="\n", quoting=csv.QUOTE_MINIMAL)
     wr.writerow(CSV_COLUMNS)
@@ -439,9 +470,16 @@ def to_csv(rows: list[dict[str, Any]], window: str, score_version: str = "") -> 
             score_version if w["score"] is not None else None, w["score_as_of"],
             LABEL_VERSION if w.get("label_status") else None, w.get("label_status"),
             w.get("label_flags") or [], w.get("cohort_id"), w.get("cohort_size"), w.get("style"),
-            w.get("style_tags") or [], w.get("size_tier"), w.get("activity"), w.get("edge"),
-            " | ".join(w.get("label_reasons") or []),
-            *((w.get("label_metrics") or {}).get(k) for k in _METRIC_KEYS))])
+            w.get("style_tags") or [], w.get("size_tier"), w.get("activity"),
+            w.get("performance_tier"), " | ".join(w.get("label_reasons") or []),
+            *((w.get("label_metrics") or {}).get(k) for k in _METRIC_KEYS),
+            (w.get("label_metrics") or {}).get("profit_factor"),
+            meta.get("chain_id"), w.get("label_confidence"),
+            [f"{k}={v}" for k, v in (w.get("flag_confidence") or {}).items()],
+            w.get("style_confidence"), w.get("relationship"), w.get("bundle_with") or [],
+            meta.get("lookback_days") if w.get("label_status") else None,
+            meta.get("labels_as_of") if w.get("label_status") else None,
+            meta.get("exported_at"))])
     return out.getvalue()
 
 
