@@ -63,6 +63,7 @@ services:
       # In order: 5 machine wallets (2026-11-10); then 2026-11-12, all transfer-only (no
       # decoded buy or sell): launch cohort 1 on router 0x3e328152 (16), three more wallets
       # using only that router, and the 7-wallet group on contract 0x1b341fdd.
+      # Last: 0xc57bf04f (2026-11-12), buys ~60% of a launch then splits it across 50 wallets.
       # (No comment lines inside the list: a folded scalar would read them as addresses.)
       TRACKING_BLOCKED_WALLETS: &blocked-wallets >-
         0xf70da97812cb96acdf810712aa562db8dfa3dbef
@@ -96,6 +97,7 @@ services:
         0xe3c9ecc9b67e90646de40813a608e895c4d0cddb
         0xf25d0310cc65c3638a9582cf7dcb0ce41645bd30
         0xfdde597156af67e7ab5c76edeef91cb292d2e017
+        0xc57bf04f886c7cc754f66fd30fdc39373e6b9947
     volumes:
       - ./config:/config:ro        # config.yaml + watchlist.txt
       - tracker-data:/data         # v0.1/v0.2 SQLite file lives here (for --import-sqlite)

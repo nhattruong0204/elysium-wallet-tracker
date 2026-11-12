@@ -478,7 +478,7 @@ clients of one copy-trading bot.
 
 ## Wallet labels on Wallet intelligence (2026-11-12)
 
-`agora_tracker/web/labels.py` (`labels-v1`) gives every tracked wallet labels on
+`agora_tracker/web/labels.py` (`labels-v2`; v1 until the `distributor` flag) gives every tracked wallet labels on
 https://onchainflow.app/leaderboard: what kind of wallet it is, not only how it performed. All
 labels are rule-based, computed by the website from the read-only `public_api` views over a fixed
 **30-day lookback** (independent of the page's window), refreshed every 15 minutes with the
@@ -570,3 +570,24 @@ days, 20+ legs, zero decoded trades): 32 leaderboard wallets. Blocked, 26 in all
 Left alone, for the owner to decide (single wallets or pairs, no group evidence): see the wiki
 page "Transfer-only scan". Records of every group live in the repo wiki, whose source is
 `docs/wiki/` (published by `.github/workflows/wiki.yml` on every push to main).
+
+## Transfer bursts and the `distributor` label (2026-11-12)
+
+Wallet `0xc57bf04f886c7cc754f66fd30fdc39373e6b9947` bought about 60% of two launches (JELLY,
+Catbalio) and split each bag over 50 wallets in ~30 seconds: 50 Telegram alerts per launch.
+
+**Alerts** (`agora_tracker/bursts.py`, tracker): the first 3 outgoing transfers of a wallet and
+token alert as usual. The 4th within 120 s starts a burst: one `SPLITTING` summary replaces it,
+later transfers of the burst are counted silently, and after 90 s without another one a
+`SPLIT DONE` summary reports the totals (transfers, recipients, quantity, share of what the
+wallet held). 50 transfers become 5 alerts. Everything is still indexed. State is in memory: a
+tracker restart mid-burst starts counting again. Thresholds: `intel.burst_min`,
+`burst_window_s`, `burst_quiet_s`. Off: `ALERTS_TRANSFER_BURST=off` on the tracker.
+
+**Label** (`labels-v2`): flag and status `distributor` when, in the 30-day lookback, a wallet
+bought a token and sent it out 10+ times within an hour of that first buy. Medium confidence on
+one token, high on two or more. It ranks below `bundler` and above `farm`. CSV: `lb_split_tokens`,
+`lb_split_max_transfers`.
+
+The wallet itself is on the block list (32 addresses now). Record: wiki page
+"Launch distributor 0xc57bf04f".

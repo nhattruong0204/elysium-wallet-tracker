@@ -9,6 +9,7 @@ Findings about tracked wallets, kept out of the issue tracker so they stay reada
 | [Launch cohort 2: same-block launch snipers](Launch-cohort-2-same-block-snipers) | 7 | followed as usual |
 | [Transfer-only group on contract 0x1b341fdd](Transfer-only-group-0x1b341fdd) | 7 | blocked (transfer-only) |
 | [Same-block pair groups](Same-block-pair-groups) | 18 in 7 groups | followed, labelled |
+| [Launch distributor 0xc57bf04f](Launch-distributor-0xc57bf04f) | 1 | blocked |
 
 ## Scans
 - [Transfer-only scan (2026-11-12)](Transfer-only-scan)

@@ -182,6 +182,17 @@ def test_bundler_needs_the_same_partner_again_and_again():
     assert bundle_partners(crowd, min_blocks=5, min_tokens=3, max_block_wallets=50) == {}
 
 
+def test_distributor_flag():
+    x = lab(feat(buys=10, sells=10, split_tokens=1, split_max=50))
+    assert x["label_status"] == "distributor" and x["flag_confidence"]["distributor"] == "medium"
+    assert any("not proof" in r and "50 transfers" in r for r in x["label_reasons"])
+    assert lab(feat(buys=10, sells=10, split_tokens=2, split_max=50))["label_confidence"] == "high"
+    assert lab(feat(buys=10, sells=10))["label_flags"] == []
+    co = {"id": "0x" + "0a" * 20, "size": 6, "launches": 6}
+    both = lab(feat(buys=10, sells=10, split_tokens=1, split_max=12), cohort=co)
+    assert both["label_status"] == "cohort" and "distributor" in both["label_flags"]
+
+
 def test_unlabeled_and_kpis():
     assert set(unlabeled()) == set(lab(None))
     assert label_kpis([{"label_status": "cohort"}, {"label_status": None},
@@ -201,8 +212,8 @@ def test_params():
 
 
 # --- database, page, CSV ----------------------------------------------------------------------
-SNIPER, BUN1, BUN2, MOVER, SPAM, BLOCK = ("0x" + h * 20 for h in ("c1", "c2", "c3", "c4", "c5",
-                                                                  "c6"))
+SNIPER, BUN1, BUN2, MOVER, SPAM, BLOCK, SPLIT = ("0x" + h * 20 for h in (
+    "c1", "c2", "c3", "c4", "c5", "c6", "c7"))
 
 
 def tk(i: int) -> str:
@@ -213,9 +224,9 @@ def tk(i: int) -> str:
 def labelled(seeded):
     s = seeded
     s.record_snapshot([Trader(address=a, rank=i + 3, pnl=10.0) for i, a in
-                       enumerate((SNIPER, BUN1, BUN2, MOVER, SPAM, BLOCK))] +
+                       enumerate((SNIPER, BUN1, BUN2, MOVER, SPAM, BLOCK, SPLIT))] +
                       [Trader(address=PUB1, rank=1, pnl=500.0), Trader(address=PUB2, rank=2, pnl=1.0)],
-                      source="agora", status="ok", complete=True, row_count=8)
+                      source="agora", status="ok", complete=True, row_count=9)
     n = [0]
 
     def leg(c, kind, wallet, token, at, hype=1.0, block=None):
@@ -240,6 +251,12 @@ def labelled(seeded):
         for i in range(3):
             leg(c, "TRANSFER_IN", SPAM, tk(30 + i), ago(hours=2))
         leg(c, "BUY", BLOCK, tk(40), ago(hours=3))
+        leg(c, "BUY", SPLIT, tk(50), ago(hours=5), hype=50)             # buys, then splits it
+        for i in range(12):
+            leg(c, "TRANSFER_OUT", SPLIT, tk(50), ago(hours=5) + 60 + i)
+        leg(c, "BUY", MOVER, tk(21), ago(hours=9))                      # 9 transfers: below 10
+        for i in range(9):
+            leg(c, "TRANSFER_OUT", MOVER, tk(21), ago(hours=9) + 60 + i)
     return s
 
 
@@ -263,13 +280,16 @@ def test_labels_from_real_rows(live):
     assert got[BUN1]["bundle_with"] == [BUN2] and got[BUN1]["relationship"] == "bundle_pair"
     assert got[PUB2]["label_status"] == "unknown"                # a couple of buys: no verdict
     s = j["label_summary"]
-    assert s["wallets"] == 8 and s["classified"] + s["insufficient"] == s["labelled"] == 8
+    assert s["wallets"] == 9 and s["classified"] + s["insufficient"] == s["labelled"] == 9
     assert s["bundle_pair_wallets"] == 2 and s["cohorts"] == 0
     assert got[SNIPER]["label_metrics"]["early_launches"] == 6
     assert got[BUN1]["label_status"] == got[BUN2]["label_status"] == "bundler"
     assert got[MOVER]["style"] == "mover" and got[MOVER]["activity"] == "active"
     assert got[SPAM]["label_status"] == "dormant" and got[SPAM]["activity"] == "dormant"
     assert got[BLOCK]["label_status"] == "blocked"
+    assert got[SPLIT]["label_status"] == "distributor"
+    assert got[SPLIT]["label_metrics"]["split_max_transfers"] == 12
+    assert "distributor" not in got[MOVER]["label_flags"]
     assert j["label_kpis"]["bundler"] == 2 and j["labels_as_of"]
     assert j["label_rules"]["version"] == VERSION
     assert PRIV not in got and PRIV not in str(j)

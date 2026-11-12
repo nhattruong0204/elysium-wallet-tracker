@@ -644,6 +644,42 @@ def _holds_line(p: dict, info: TokenInfo | None, hype_usd: float | None, dec: in
     return s
 
 
+def _span(seconds: int) -> str:
+    return f"{seconds} s" if seconds < 120 else f"{seconds / 60:.0f} min"
+
+
+def render_burst(p: dict, L: Links, info: TokenInfo | None = None,
+                 hype_usd: float | None = None, now: float | None = None) -> tuple[str, dict]:
+    """One wallet splitting a token across many wallets (agora_tracker/bursts.py)."""
+    token = p["token"]
+    sym = (info.symbol if info and info.symbol else None) or p.get("symbol") or token[:8]
+    dec = int(p.get("decimals") or 18)
+    qty = int(p["qty"]) / 10 ** dec
+    done = p.get("stage") == "finished"
+    n, rc = int(p["count"]), int(p.get("recipients") or 0)
+    tok = a(L.agora_token(token), esc(sym))
+    lines = [f"📤📤 <b>{'SPLIT DONE' if done else 'SPLITTING'}</b> "
+             + a(L.agora_token(token), "<b>" + esc(sym) + "</b>")]
+    if p.get("cohort_wallets"):
+        lines.append("<b>" + esc(warning_line(int(p["cohort_wallets"]))) + "</b>")
+    lines += [who(L, p, hype_usd), ""]
+    to = f" to <b>{rc} wallets</b>" if rc > 1 else ""
+    lines.append(f"🔹 {name_of(p)} sent <b>{qty_str(qty)}</b> {tok} in <b>{n} transfers</b>{to} "
+                 f"within {_span(int(p.get('span_s') or 0))}" + ("" if done else " so far"))
+    start = int(p["start_qty"]) if p.get("start_qty") else 0
+    if start > 0:
+        lines.append(f"📊 {min(100.0, int(p['qty']) / start * 100):.0f}% of what it held")
+    lines += ["", "<i>⚠️ One holder spreading a token over many wallets, often a launch bag "
+                  "being split before it is sold. "
+              + ("" if done else "Further transfers of this burst are not alerted one by one; "
+                                  "a final summary follows.") + "</i>", ""]
+    if (m := market_line(info, hype_usd)) is not None:
+        lines.append(m)
+    lines.append(link_bar(L, token, sym, info, hype_usd, now))
+    lines.append(f"<code>{esc(token)}</code>")
+    return "\n".join(lines), keyboard(L, token, sym, info, p.get("tx"))
+
+
 def render_cluster(p: dict, L: Links, info: TokenInfo | None = None,
                    hype_usd: float | None = None, now: float | None = None,
                    dd: Any = None) -> tuple[str, dict]:
@@ -744,4 +780,6 @@ def render(payload: dict | None, L: Links, info: TokenInfo | None = None,
         return render_cluster(payload, L, info, hype_usd, dd=dd)
     if payload.get("type") == "launch":
         return render_launch(payload, L, info, hype_usd, dd=dd)
+    if payload.get("type") == "burst":
+        return render_burst(payload, L, info, hype_usd)
     return None

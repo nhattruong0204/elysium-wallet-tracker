@@ -13,6 +13,8 @@ Three families, all on one record:
            cohort     member of a coordinated launch cohort (agora_tracker/cohorts.py)
            bundler    keeps buying the same token in the same block as the same other tracked
                       wallet (5+ blocks on 3+ tokens with one partner)
+           distributor buys a token and then sends it out 10+ times within the hour
+                      (splitting a launch bag across wallets)
            farm       a large share of its legs are token transfers to/from other tracked
                       wallets in the same transaction (moving bags around, not trading)
            automated  machine-like transaction timing with almost no decoded buys/sells
@@ -55,11 +57,12 @@ from typing import Any
 
 UTC = timezone.utc
 E18 = Decimal(10) ** 18
-VERSION = "labels-v1"
+VERSION = "labels-v2"      # v2: + distributor
 
-STATUSES = ("blocked", "contract", "cohort", "bundler", "farm", "automated", "dormant",
-            "unknown", "organic")
-FLAGS = (*STATUSES[:6], "muted")      # muted is a flag only: the status says what the wallet is
+STATUSES = ("blocked", "contract", "cohort", "bundler", "distributor", "farm", "automated",
+            "dormant", "unknown", "organic")
+N_FLAG_STATUSES = 7                   # the leading STATUSES that are evidence flags
+FLAGS = (*STATUSES[:N_FLAG_STATUSES], "muted")      # muted is a flag only: the status says what the wallet is
 STYLES = ("sniper", "scalper", "swing", "holder", "mover", "mixed", "thin")
 STYLE_TAGS = ("high_frequency", "high_churn", "accumulator", "early_buyer", "concentrated",
               "diversified", "linked")
@@ -74,6 +77,7 @@ STATUS_NOTES = {
     "contract": "a contract address (pool, router, vault), not followed",
     "cohort": "enters new launches together with the same group of tracked wallets",
     "bundler": "keeps buying the same token in the same block as the same other tracked wallet",
+    "distributor": "buys a token, then splits it across many wallets within the hour",
     "farm": "a large share of its legs are transfers with other tracked wallets",
     "automated": "machine-like timing, almost no decoded buys/sells",
     "dormant": "no action of its own in the lookback",
@@ -119,6 +123,9 @@ class LabelRules:
     bundle_min_blocks: int = 5          # bundler: bought the same token in the same block as
     bundle_min_tokens: int = 3          # ONE other tracked wallet this often, on this many tokens
     bundle_max_block_wallets: int = 50  # blocks with more tracked buyers than this are ignored
+    split_min_transfers: int = 10       # distributor: this many transfers out of a token
+    split_window_s: int = 3600          # ...within this long after first buying it
+    split_high_tokens: int = 2          # on this many tokens: high confidence
     size_edges_hype: tuple[float, ...] = (1.0, 5.0, 25.0, 100.0)    # micro|small|mid|large|whale
     active_days: int = 7
     cooling_days: int = 30
@@ -211,6 +218,13 @@ xfer AS (
      AND ((o.kind = 'TRANSFER_OUT' AND i.kind = 'TRANSFER_IN')
        OR (o.kind = 'TRANSFER_IN' AND i.kind = 'TRANSFER_OUT'))
    GROUP BY o.wallet),
+split1 AS (
+  SELECT o.wallet, o.token, count(*) AS n
+    FROM t o JOIN tok k ON k.wallet = o.wallet AND k.token = o.token
+   WHERE o.kind = 'TRANSFER_OUT' AND k.first_buy IS NOT NULL
+     AND o.block_time BETWEEN k.first_buy AND k.first_buy + make_interval(secs => :sw)
+   GROUP BY o.wallet, o.token HAVING count(*) >= :sn),
+split AS (SELECT wallet, count(*) AS split_tokens, max(n) AS split_max FROM split1 GROUP BY wallet),
 tx AS (
   SELECT wallet, tx_hash, min(block_time) AS bt, bool_or(kind IN ('BUY', 'SELL')) AS traded
     FROM t WHERE block_time >= :since_bot GROUP BY wallet, tx_hash),
@@ -240,11 +254,13 @@ SELECT l.wallet, l.legs, l.buys, l.sells, l.transfers, l.tokens, l.bought_tokens
        coalesce(x.internal, 0) AS internal, coalesce(x.peers, 0) AS peers,
        coalesce(bo.txs, 0) AS bot_txs, bo.fast AS bot_fast, bl.trade_share AS bot_trade_share,
        coalesce(rp.closes, 0) AS closes, coalesce(rp.wins, 0) AS wins,
+       coalesce(sp.split_tokens, 0) AS split_tokens, coalesce(sp.split_max, 0) AS split_max,
        coalesce(rp.pnl_wei, 0) AS pnl_wei, coalesce(rp.win_wei, 0) AS win_wei,
        coalesce(rp.loss_wei, 0) AS loss_wei
   FROM leg l
   LEFT JOIN per p ON p.wallet = l.wallet
   LEFT JOIN xfer x ON x.wallet = l.wallet
+  LEFT JOIN split sp ON sp.wallet = l.wallet
   LEFT JOIN bot bo ON bo.wallet = l.wallet
   LEFT JOIN botleg bl ON bl.wallet = l.wallet
   LEFT JOIN rp ON rp.wallet = l.wallet
@@ -304,7 +320,8 @@ def feature_params(rules: LabelRules, chain_id: int, now: datetime,
     return {"c": chain_id, "since": now - timedelta(days=rules.lookback_days),
             "since_bot": now - timedelta(days=rules.bot_lookback_days),
             "skip": sorted(set(skip_tokens)), "grace": int(rules.history_grace_h),
-            "lw": float(rules.launch_window_s), "gap": float(rules.bot_fast_gap_s)}
+            "lw": float(rules.launch_window_s), "gap": float(rules.bot_fast_gap_s),
+            "sw": float(rules.split_window_s), "sn": int(rules.split_min_transfers)}
 
 
 def _f(v: Any) -> float | None:
@@ -359,6 +376,14 @@ def classify(wallet: str, f: Mapping[str, Any] | None, rules: LabelRules, *,
         conf["bundler"] = "high" if bblocks >= rules.bundle_high_blocks else "medium"
         reasons.append(f"bundler: {bblocks} same-block buys on {btoks} tokens with the same "
                        f"tracked wallet ({partners} such partner{'s' if partners != 1 else ''})")
+    split_tokens, split_max = n("split_tokens"), n("split_max")
+    if split_tokens:
+        flags.append("distributor")
+        conf["distributor"] = "high" if split_tokens >= rules.split_high_tokens else "medium"
+        reasons.append(f"distributor: on {split_tokens} token(s) it bought and then sent the "
+                       f"token out {rules.split_min_transfers}+ times within "
+                       f"{rules.split_window_s // 60} min (up to {split_max} transfers on one "
+                       "token); consistent with splitting a launch bag, not proof of it")
     internal, peers = n("internal"), n("peers")
     if (internal >= rules.farm_min and peers >= rules.farm_min_peers and legs
             and internal / legs >= rules.farm_share):
@@ -384,7 +409,7 @@ def classify(wallet: str, f: Mapping[str, Any] | None, rules: LabelRules, *,
         flags.append("muted")
         conf["muted"] = "confirmed"
         reasons.append("muted: on the operator mute list (tracked and shown here, never alerted)")
-    status = next((s for s in STATUSES[:6] if s in flags), None)
+    status = next((s for s in STATUSES[:N_FLAG_STATUSES] if s in flags), None)
     if status is None:
         # no evidence of coordination is only a finding when there was enough trading to see
         status = ("dormant" if last_own is None else
@@ -498,6 +523,7 @@ def classify(wallet: str, f: Mapping[str, Any] | None, rules: LabelRules, *,
             "top_token_share": (top / buy_wei) if buy_wei > 0 else None,
             "internal_transfers": internal, "transfer_peers": peers,
             "bundle_blocks": bblocks, "bundle_tokens": btoks, "bundle_partners": partners,
+            "split_tokens": split_tokens, "split_max_transfers": split_max,
             "bot_txs": n("bot_txs"), "bot_fast_share": fast, "bot_trade_share": tshare,
             "lookback_closes": closes, "lookback_wins": wins, "profit_factor": pf,
             "lookback_measured_pnl": pnl if closes else None},
