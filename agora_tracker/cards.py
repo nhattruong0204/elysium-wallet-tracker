@@ -30,6 +30,7 @@ import time
 from typing import Any
 from urllib.parse import quote
 
+from .cohorts import warning_line
 from .config import LinksConfig
 from .market import TokenInfo
 
@@ -546,6 +547,8 @@ def render_trade(p: dict, L: Links, info: TokenInfo | None = None,
     approx = conf != "high"
     me = name_of(p)
     lines = [_header(p, L, info, sym)]
+    if p.get("cohort_wallets"):
+        lines.append("<b>" + esc(warning_line(int(p["cohort_wallets"]))) + "</b>")
     if kind in ("BUY", "SELL"):
         lines.append(f"💰 {market_cap_label(info, hype_usd) or '<b>MC</b>: unavailable'}")
     lines += [who(L, p, hype_usd), ""]
@@ -653,6 +656,8 @@ def render_cluster(p: dict, L: Links, info: TokenInfo | None = None,
     if p.get("tier"):
         n_raw = p.get("n_raw", len(p["buyers"]))
         lines.append(f"🎯 <b>{esc(p['tier'])}</b> · {n_raw} addresses")
+    if p.get("cohort_wallets"):
+        lines.append("<b>" + esc(warning_line(int(p["cohort_wallets"]))) + "</b>")
     lines += [f"<b>{len(p['buyers'])} tracked wallets</b> bought ≥{p['min_hype']:g} HYPE within "
               f"{p['window_min']} min", ""]
     for b in p["buyers"][:10]:

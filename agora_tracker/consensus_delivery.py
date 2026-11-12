@@ -39,6 +39,25 @@ LOCK_ID = 0x434F4E53   # 'CONS', separate from the tracker and Stage C locks
 POLL_SECONDS = 45
 MAX_EVENTS = 10
 MAX_SENDS = 5
+# Consensus cards with this many launch-cohort wallets among the traders are never posted.
+COHORT_SKIP_MIN = 2
+# Liveness for the container health check: written after every cycle that completed (enabled
+# or not); a cycle that raised does not refresh it. /tmp is the container's tmpfs.
+HEARTBEAT = "/tmp/consensus-heartbeat"
+HEARTBEAT_MAX_AGE_S = 4 * POLL_SECONDS
+
+
+def beat(path: str = HEARTBEAT) -> None:
+    with open(path, "w") as f:
+        f.write(str(int(time.time())))
+
+
+def healthy(path: str = HEARTBEAT, max_age_s: float = HEARTBEAT_MAX_AGE_S) -> bool:
+    """True when the sender loop completed a cycle recently (docker-compose health check)."""
+    try:
+        return time.time() - os.path.getmtime(path) <= max_age_s
+    except OSError:
+        return False
 
 
 def validate_settings(raw: Any) -> dict[str, Any]:
@@ -155,6 +174,8 @@ class ConsensusSettingsStore:
                     continue
                 if not PATTERN.fullmatch(token) or not tx.startswith("0x"):
                     continue
+                if int(card.get("cohort_wallets") or 0) >= COHORT_SKIP_MIN:
+                    continue                # a launch cohort is in: not a signal to follow
                 body, buttons = render_card(card, links)
                 key = f"{token}:{at.isoformat()}:{tx}"
                 result = c.execute(sa.text(f"""
@@ -266,6 +287,16 @@ def render_card(c: dict[str, Any], links: Any) -> tuple[str, dict[str, Any]]:
     return "\n".join(lines)[:3900], {"inline_keyboard": buttons}
 
 
+def _tg_reason(r: Any) -> str:
+    """Telegram's own error text ("Bad Request: chat not found"), which never contains the
+    bot token or the chat id; kept short and printable for last_error and the log."""
+    try:
+        text = str(r.json().get("description") or "")
+    except (ValueError, TypeError, AttributeError):
+        text = ""
+    return re.sub(r"[^ -~]", "?", text)[:90] or "no description"
+
+
 class ConsensusSender:
     """A SEND-ONLY separate Telegram bot. Never calls getUpdates."""
 
@@ -296,7 +327,7 @@ class ConsensusSender:
                     retry = 15
                 return False, False, "rate_limited", min(1800, retry)
             if r.status_code in (400, 401, 403):
-                return False, True, f"HTTP_{r.status_code}", 0
+                return False, True, f"HTTP_{r.status_code}: {_tg_reason(r)}", 0
             if r.status_code >= 400:
                 return False, False, f"HTTP_{r.status_code}", 15
             if not r.json().get("ok"):
@@ -372,6 +403,7 @@ def run_consensus_alerts(cfg: Config) -> None:
                             log.info("Consensus: queued=%d sent=%d", queued, sent)
                     else:
                         log.warning("Consensus input stale: deferring sends")
+                beat()
             except Exception:
                 log.exception("Consensus cycle failed closed")
             stop.wait(POLL_SECONDS)

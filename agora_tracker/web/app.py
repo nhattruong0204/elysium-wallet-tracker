@@ -555,6 +555,7 @@ def create_app(cfg: Config, dash: Dashboard, engine: Engine | None = None,
         Route("/api/v1/leaderboard/{addr}/relationships", api(intel_part(
             "relationships", "relationships_note"))),
         Route("/api/v1/tokens", api(api_tokens)),
+        Route("/api/v1/cohorts", api(lambda r: dash.cohort_api(now_utc()))),
         Route("/api/v1/tokens/{addr}", api(api_token)),
         Route("/api/v1/smart-money", api(lambda r: dash.smart_money(
             get_range(r), r.query_params.get("view", "net"), page_num(r), now_utc()))),

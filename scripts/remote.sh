@@ -588,6 +588,111 @@ case "$ACTION" in
   test-card)
     docker compose run --rm --no-deps tracker --test-card
     ;;
+  ui)
+    # Recreate ONLY the Telegram menu bot (the single getUpdates consumer) on the current image,
+    # e.g. after a migration made its old image refuse the schema. No build, no migration;
+    # tracker, web, postgres and the Consensus sender are not touched.
+    need_docker
+    [ -f .env ] || { echo ".env missing: run the normal deploy first" >&2; exit 1; }
+    log "before"
+    echo "  ui image $(docker inspect -f '{{.Image}}' elysium-ui 2>&1 | cut -c1-19), :latest $(docker image inspect -f '{{.Id}}' elysium-wallet-tracker:latest | cut -c1-19)"
+    docker exec elysium-ui python -m agora_tracker --health-ui 2>&1 | sed 's/^/  /' || true
+    if docker tag "$(docker inspect -f '{{.Image}}' elysium-ui)" elysium-wallet-tracker:pre-ui-hotfix 2>/dev/null; then
+      echo "  rollback image: elysium-wallet-tracker:pre-ui-hotfix"
+    else
+      # Happens when the image was untagged/pruned while the container kept running. Not a
+      # reason to stop: an image that predates the current schema cannot restart anyway.
+      echo "  WARNING: the running ui image cannot be tagged; no ui rollback image is kept"
+    fi
+    docker compose up -d --no-deps --force-recreate ui
+    wait_healthy elysium-ui "telegram menu" || { docker logs --tail 60 elysium-ui 2>&1 | sed 's/^/  ui| /'; exit 1; }
+    log "after"
+    docker exec elysium-ui python -m agora_tracker --health-ui 2>&1 | sed 's/^/  /' || true
+    docker logs --since 2m elysium-ui 2>&1 | grep -iE "error|traceback|conflict|getupdates" | tail -5 | cut -c1-200 | sed 's/^/  ui| /' || true
+    tracker_alive
+    resources
+    ;;
+  consensus-diag)
+    # Why does Telegram refuse the Consensus group's messages? Asks Telegram about the bot and
+    # the group and retries the newest refused message ONCE. Prints only Telegram's answers;
+    # the bot token and the group id never reach the (public) log.
+    need_docker
+    ROW_ID=$(psql_admin -Atc "SELECT id FROM consensus_alerts.deliveries WHERE status='dead' ORDER BY id DESC LIMIT 1")
+    psql_admin -Atc "SELECT json_build_object('body', body, 'buttons', buttons) FROM consensus_alerts.deliveries WHERE id = ${ROW_ID:-0}" > /tmp/consensus-row.json
+    chmod 600 /tmp/consensus-row.json
+    TOK="$(grep -E '^CONSENSUS_TG_BOT_TOKEN=' .env | cut -d= -f2-)" CHAT="$(grep -E '^CONSENSUS_TG_CHAT_ID=' .env | cut -d= -f2-)" \
+    python3 - /tmp/consensus-row.json > /tmp/consensus-diag.out <<'PY' || true
+import json, os, sys, urllib.request, urllib.error
+tok, chat = os.environ["TOK"], os.environ["CHAT"]
+def call(method, payload):
+    req = urllib.request.Request(f"https://api.telegram.org/bot{tok}/{method}",
+                                 data=json.dumps(payload).encode(), headers={"content-type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            return json.load(r)
+    except urllib.error.HTTPError as e:
+        try:
+            return json.load(e)
+        except Exception:
+            return {"ok": False, "description": f"HTTP {e.code}"}
+    except Exception as e:
+        return {"ok": False, "description": type(e).__name__}
+me = call("getMe", {})
+print("bot:", me.get("ok"), (me.get("result") or {}).get("username"), me.get("description", ""))
+ch = call("getChat", {"chat_id": chat})
+res = ch.get("result") or {}
+print("group:", ch.get("ok"), res.get("type"), repr(res.get("title")), ch.get("description", ""))
+if me.get("ok") and ch.get("ok"):
+    m = call("getChatMember", {"chat_id": chat, "user_id": me["result"]["id"]})
+    mr = m.get("result") or {}
+    print("bot in group:", m.get("ok"), mr.get("status"), "can_post_messages=", mr.get("can_post_messages"), m.get("description", ""))
+# Chats the bot was added to (its own update queue; nothing else consumes this bot's updates).
+# Prints shape only: the id itself stays off the public log.
+up = call("getUpdates", {"timeout": 0, "allowed_updates": ["my_chat_member", "message"]})
+seen = {}
+for u in up.get("result") or []:
+    c = ((u.get("my_chat_member") or u.get("message") or {}).get("chat") or {})
+    if c.get("type") in ("group", "supergroup", "channel"):
+        seen[c["id"]] = (c.get("type"), c.get("title"))
+print("chats in the bot's recent updates:", len(seen), up.get("description", ""))
+for cid, (typ, title) in seen.items():
+    sid = str(cid)
+    print(f"  - {typ} {title!r}: id starts -100={sid.startswith('-100')}, digits={len(sid.lstrip('-'))},"
+          f" equals configured={sid == chat}, configured is this with -100 added={chat == '-100' + sid.lstrip('-')}")
+print(f"configured id: starts -100={chat.startswith('-100')}, digits={len(chat.lstrip('-'))}")
+raw = open(sys.argv[1]).read().strip()
+if not raw:
+    print("no refused message to retry"); sys.exit(0)
+row = json.loads(raw)
+for line in row["buttons"]["inline_keyboard"]:
+    print("buttons:", [(b["text"], b["url"]) for b in line])
+print("body chars:", len(row["body"]))
+r = call("sendMessage", {"chat_id": chat, "text": row["body"], "parse_mode": "HTML",
+                         "disable_web_page_preview": True, "reply_markup": row["buttons"]})
+print("retry send:", r.get("ok"), r.get("description", ""))
+if r.get("ok"):
+    print("SENT_OK")
+PY
+    sed 's/^/  /' /tmp/consensus-diag.out
+    if grep -q '^SENT_OK' /tmp/consensus-diag.out && [ -n "$ROW_ID" ]; then
+      psql_admin -Atc "UPDATE consensus_alerts.deliveries SET status='sent', sent_at=now(), last_error=NULL, attempts=attempts+1 WHERE id=$ROW_ID AND status='dead'" | sed 's/^/  marked delivered: /'
+    fi
+    rm -f /tmp/consensus-row.json /tmp/consensus-diag.out
+    consensus_state
+    ;;
+  consensus-restart)
+    # Rebuild and recreate ONLY the Consensus sender (no migration, web/tracker/ui untouched).
+    need_docker
+    docker compose build migrate
+    docker compose --profile consensus-alerts up -d --no-deps --force-recreate consensus-alerts
+    sleep 30
+    docker logs --tail 20 elysium-consensus-alerts 2>&1 | grep -vE 'api\.telegram\.org' | cut -c1-200 | sed 's/^/  sender| /' || true
+    [ "$(docker inspect -f '{{.State.Running}} {{.RestartCount}}' elysium-consensus-alerts 2>/dev/null)" = "true 0" ] \
+      || { echo "the Consensus sender is not running cleanly" >&2; exit 1; }
+    docker exec elysium-consensus-alerts python -c "import sys; from agora_tracker.consensus_delivery import healthy; print('  heartbeat healthy:', healthy())" 2>&1 || true
+    consensus_state
+    tracker_alive
+    ;;
   ui-smoke)
     docker compose run --rm --no-deps ui --ui-smoke
     ;;

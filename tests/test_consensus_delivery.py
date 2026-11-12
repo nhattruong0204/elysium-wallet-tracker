@@ -295,3 +295,56 @@ def test_group_alerts_get_their_own_hidden_token_list_in_compose():
         "0xb47c4c8f73f009cc0c0d3f92b388d13e293f0b65"
     assert svc["profiles"] == ["consensus-alerts"]              # still opt-in
     assert "CONSENSUS_ADMIN_KEY" not in svc["environment"]      # the sender never has the key
+
+
+# --- sender health and Telegram error reasons (2026-11-11) -----------------------------------
+def test_heartbeat_health_check(tmp_path):
+    import os
+    import time
+
+    from agora_tracker.consensus_delivery import beat, healthy
+    hb = str(tmp_path / "hb")
+    assert healthy(hb) is False                       # never beaten: unhealthy
+    beat(hb)
+    assert healthy(hb) is True
+    old = time.time() - 600
+    os.utime(hb, (old, old))
+    assert healthy(hb, max_age_s=180) is False        # loop stuck or failing: unhealthy
+
+
+def test_compose_sender_uses_its_own_health_check():
+    import yaml
+    svc = yaml.safe_load(open("docker-compose.yml"))["services"]["consensus-alerts"]
+    test = " ".join(svc["healthcheck"]["test"])
+    assert "consensus_delivery import healthy" in test and "--health" not in test
+    assert "DATABASE_URL" not in svc["environment"]   # why the image default cannot work
+
+
+def test_refusal_reason_is_recorded_without_secrets(monkeypatch):
+    monkeypatch.delenv("TG_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("TG_CHAT_ID", raising=False)
+    sender = ConsensusSender("123:SECRET-TOKEN", "-1001234567890")
+
+    class Resp:
+        status_code = 400
+
+        @staticmethod
+        def json():
+            return {"ok": False, "description": "Bad Request: chat not found"}
+
+    sender.session.post = lambda *a, **k: Resp()
+    sender.last_sent = 0.0
+    ok, permanent, error, _ = sender.send("x", {"inline_keyboard": []})
+    assert (ok, permanent) == (False, True)
+    assert error == "HTTP_400: Bad Request: chat not found"
+    assert "SECRET" not in error and "1001234567890" not in error
+
+    class Bad:
+        status_code = 403
+
+        @staticmethod
+        def json():
+            raise ValueError("not json")
+
+    sender.session.post = lambda *a, **k: Bad()
+    assert sender.send("x", {"inline_keyboard": []})[2] == "HTTP_403: no description"

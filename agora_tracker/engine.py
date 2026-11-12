@@ -15,6 +15,7 @@ from . import cards
 from .cards import Links
 from .chain import ScanResult, TokenCache
 from .classify import TradeEvent
+from .cohorts import members_of
 from .config import AlertConfig, ChainConfig, IntelConfig, LinksConfig
 from .db import BASIS_ESTIMATED, BASIS_KNOWN, BASIS_PARTIAL, Position, Store
 from .launchintel import count_independent, tier_label
@@ -57,6 +58,9 @@ class Engine:
         self._bundles: set[str] = set()
         self._bots_at = float("-inf")
         self._airdrop_known: set[str] = set()     # only to log each token once
+        self._cohorts_at = float("-inf")
+        self._cohort_of: dict[str, str] = {}     # wallet -> cohort key
+        self._range_cohort: dict[str, int] = {}  # token -> cohort wallets (this range)
         self._bots: set[str] = set()
         self.chain_cfg, self.cfg = chain_cfg, alert_cfg
         self.labels = labels
@@ -176,6 +180,8 @@ class Engine:
         new = 0
         bots = self.automated_wallets()
         drop_legs, drop_tokens = self.airdrop_spam(result)
+        cohort_of = self.cohort_wallets()
+        self._range_cohort = self._cohort_presence(result, cohort_of)
         # counterparty of each (tx, token, wallet) transfer leg, for "sent to 0x…" lines
         counter: dict[tuple[str, str, str], tuple[int, str]] = {}
         for tr in result.transfers:
@@ -211,8 +217,11 @@ class Engine:
                     continue
                 airdropped = (ev.token in drop_tokens
                               and (ev.tx, ev.wallet, ev.token) in drop_legs)
-                if ev.token not in self._tg_muted and ev.wallet not in bots and not airdropped:
+                if (ev.token not in self._tg_muted and ev.wallet not in bots and not airdropped
+                        and ev.wallet not in cohort_of):
                     # (_tg_muted: the reported token, never the quote asset)
+                    if ev.token in self._range_cohort:
+                        extra["cohort_wallets"] = self._range_cohort[ev.token]
                     payload = self._trade_payload(ev, notes, bts, extra)
                     text, _ = cards.render_trade(payload, self.links)
                     self.store.enqueue(c, f"ev:{ev.key}", text, payload=payload)
@@ -304,6 +313,51 @@ class Engine:
             self._airdrop_known |= new
         return legs, spam
 
+    def cohort_wallets(self) -> dict[str, str]:
+        """wallet -> cohort key for coordinated launch cohorts (agora_tracker/cohorts.py);
+        refreshed every cohort_refresh_s. A failed refresh keeps the last verdict."""
+        ic = self.intel
+        if not ic.cohort_filter:
+            return {}
+        if time.monotonic() - self._cohorts_at >= ic.cohort_refresh_s:
+            self._cohorts_at = time.monotonic()
+            try:
+                found = self.store.launch_cohorts(ic, skip_tokens=self._muted | self._tg_muted)
+                new = members_of(found)
+                if set(new) != set(self._cohort_of):
+                    log.info("launch cohorts: %d cohort(s), %d wallet(s) not alerted: %s",
+                             len(found), len(new), "; ".join(
+                                 f"{c.key} ({len(c.wallets)} wallets, {len(c.tokens)} launches)"
+                                 for c in found) or "none")
+                self._cohort_of = new
+            except Exception:  # noqa: BLE001 - a filter must never block indexing
+                log.exception("launch cohort refresh failed; keeping %d known",
+                              len(self._cohort_of))
+        return self._cohort_of
+
+    def _mark_cohort(self, payload: dict, token: str) -> None:
+        n = max(int(payload.get("cohort_wallets") or 0), self._range_cohort.get(token, 0))
+        if n >= self.intel.cohort_warn_min:
+            payload["cohort_wallets"] = n
+        else:
+            payload.pop("cohort_wallets", None)
+
+    def _cohort_presence(self, result: ScanResult, cohort_of: dict[str, str]) -> dict[str, int]:
+        """Per token alerted in this range: how many cohort wallets traded it (recent rows +
+        this range). Only tokens reaching cohort_warn_min are returned."""
+        if not cohort_of:
+            return {}
+        toks = {ev.token for ev in result.events}
+        seen: dict[str, set[str]] = {}
+        try:
+            seen = self.store.wallets_on_tokens(toks, cohort_of, self.intel.cohort_lookback_days)
+        except Exception:  # noqa: BLE001
+            log.exception("cohort presence lookup failed; judging this range on its own")
+        for ev in result.events:
+            if ev.wallet in cohort_of:
+                seen.setdefault(ev.token, set()).add(ev.wallet)
+        return {t: len(ws) for t, ws in seen.items() if len(ws) >= self.intel.cohort_warn_min}
+
     def automated_wallets(self) -> set[str]:
         """Wallets judged automated by their transaction timing (IntelConfig.bot_*); refreshed
         every bot_refresh_s. Their trades are indexed as usual; only alerts treat them apart."""
@@ -343,9 +397,14 @@ class Engine:
 
     def _score(self, rows: list[tuple[str, int, int, int]], window_s: int) -> dict:
         n = count_independent([(w, blk) for w, _, blk, _ in rows],
-                              self.bundle_wallets() | self.automated_wallets())
-        return {"independent": n, "n_raw": len(rows),
-                "tier": tier_label(n, len(rows), window_s, self.intel.independent_min)}
+                              self.bundle_wallets() | self.automated_wallets()
+                              | set(self.cohort_wallets()))
+        out = {"independent": n, "n_raw": len(rows),
+               "tier": tier_label(n, len(rows), window_s, self.intel.independent_min)}
+        cohort = sum(1 for w, *_ in rows if w in self.cohort_wallets())
+        if cohort:
+            out["cohort_wallets"] = cohort
+        return out
 
     def _raw_cluster(self, c, ev: TradeEvent, bts: int, min_wei: int, rows: list,
                      alert: bool = True) -> None:
@@ -363,6 +422,7 @@ class Engine:
                    "min_hype": self.cfg.min_trade_hype, "window_min": window // 60,
                    "buyers": [self._wallet_ctx(r[0]) for r in rows], "tx": ev.tx,
                    **self._score(rows, window)}
+        self._mark_cohort(payload, ev.token)
         text, _ = cards.render_cluster(payload, self.links)
         self.store.enqueue(c, f"signal:{sid}", text, severity="high", payload=payload)
 
@@ -396,6 +456,7 @@ class Engine:
         payload = {"type": "cluster", "strong": True, "token": ev.token, "symbol": sym,
                    "min_hype": self.cfg.min_trade_hype, "window_min": ic.independent_window_s // 60,
                    "buyers": [self._wallet_ctx(r[0]) for r in rows], "tx": ev.tx, **score}
+        self._mark_cohort(payload, ev.token)
         text, _ = cards.render_cluster(payload, self.links)
         self.store.enqueue(c, f"signal:{sid}", text, severity="high", payload=payload)
         return True

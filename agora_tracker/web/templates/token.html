@@ -3,6 +3,11 @@
 {% set m = d.meta_token %}{% set f = d.flow %}{% set info = d.info %}
 {% block body %}
 <h1>{{ m.symbol or d.token|short }} <span class="muted light">{{ m.name or '' }}</span></h1>
+{% if d.cohort %}<div class="banner bad"><b>⚠️ Coordinated launch cohort.</b>
+  {% if d.cohort.n %}{{ d.cohort.n }} tracked wallet{{ 's' if d.cohort.n != 1 }} that keep entering new launches together traded this token{% else %}A group of wallets that keep entering new launches together was among its first buyers{% endif %}.
+  Their buying is likely coordinated, not independent demand; they usually sell into followers. Treat this token as exit-liquidity risk.
+  {% if d.cohort.wallets %}<span class="faint">Wallets: {% for w in d.cohort.wallets %}<a href="/wallets/{{ w }}" class="mono">{{ w|short }}</a>{{ ', ' if not loop.last }}{% endfor %}.</span>{% endif %}
+  <a href="/api/v1/cohorts">Cohort list (JSON)</a></div>{% endif %}
 <p class="lead"><span class="addr mono">{{ d.token }}{{ copy(d.token) }}</span>
   {% if m.launchpad %} · launchpad <b>{{ m.launchpad }}</b>{% endif %}
   {% if m.launched_at %} · launched {{ m.launched_at|ts }}{% endif %}</p>
