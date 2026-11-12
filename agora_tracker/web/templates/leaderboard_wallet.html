@@ -15,7 +15,7 @@
   {{ kpi('Tracked since', (s.tracked_since|ts if s.tracked_since else '–'), 'basis: ' ~ s.tracking_basis ~ ' · ' ~ s.scan_gaps ~ ' gap(s)') }}
 </section>{% endif %}
 
-{% if s and s.label_status %}{% set sk = {'blocked': 'bad', 'cohort': 'bad', 'bundler': 'warn', 'farm': 'warn', 'automated': 'warn', 'organic': 'ok'} %}
+{% if s and s.label_status %}{% set sk = {'blocked': 'bad', 'cohort': 'bad', 'bundler': 'warn', 'distributor': 'warn', 'farm': 'warn', 'automated': 'warn', 'organic': 'ok'} %}
 <h2>Labels <small class="faint">rule-based, last 30 days · confidence {{ s.label_confidence }}</small></h2>
 <p>{{ badge(sk.get(s.label_status, ''), s.label_status) }}{% for f in s.label_flags if f != s.label_status %} {{ badge(sk.get(f, ''), f) }}{% endfor %}
   · style <b>{{ s.style }}</b> <span class="faint">({{ s.style_confidence }})</span>{% for t in s.style_tags %} · {{ t|replace('_', ' ') }}{% endfor %}{% if s.size_tier %} · size <b>{{ s.size_tier }}</b>{% endif %} · {{ s.activity }} · performance <b>{{ s.performance_tier|replace('_', ' ') }}</b> · relationships <b>{{ s.relationship|replace('_', ' ') }}</b></p>

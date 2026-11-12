@@ -417,6 +417,7 @@ CSV_COLUMNS = (
     "lb_internal_transfers", "lb_transfer_peers", "lb_bundle_blocks", "lb_bundle_tokens",
     "lb_bundle_partners", "lb_bot_txs", "lb_bot_fast_share", "lb_bot_trade_share",
     "lb_closes", "lb_wins", "lb_measured_pnl_hype", "lb_profit_factor",
+    "lb_split_tokens", "lb_split_max_transfers",
     # classification metadata
     "chain_id", "label_confidence", "flag_confidence", "style_confidence", "relationship",
     "bundle_partner_wallets", "label_lookback_days", "labels_as_of", "exported_at")
@@ -474,6 +475,8 @@ def to_csv(rows: list[dict[str, Any]], window: str, score_version: str = "",
             w.get("performance_tier"), " | ".join(w.get("label_reasons") or []),
             *((w.get("label_metrics") or {}).get(k) for k in _METRIC_KEYS),
             (w.get("label_metrics") or {}).get("profit_factor"),
+            (w.get("label_metrics") or {}).get("split_tokens"),
+            (w.get("label_metrics") or {}).get("split_max_transfers"),
             meta.get("chain_id"), w.get("label_confidence"),
             [f"{k}={v}" for k, v in (w.get("flag_confidence") or {}).items()],
             w.get("style_confidence"), w.get("relationship"), w.get("bundle_with") or [],

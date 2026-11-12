@@ -1,4 +1,3 @@
-action=web-hotfix
-commit=main 9f1648a + block 0xc57bf04f (owner request, ahead of the PR)
-requested=2026-11-12 owner: block 0xc57bf04f now
-
+action=tracker
+commit=main 52e9327 (PR #136 merged)
+requested=2026-11-12 owner: burst summaries + distributor label 

@@ -99,7 +99,7 @@ def test_no_leaderboard_alerts_for_a_blocked_wallet(store, monkeypatch):
 def test_env_and_compose_list_the_five_wallets_on_the_tracker_only(monkeypatch):
     svc = yaml.safe_load(open("docker-compose.yml"))["services"]
     listed = svc["tracker"]["environment"]["TRACKING_BLOCKED_WALLETS"].split()
-    assert listed[:5] == FIVE and len(listed) == 31 == len(set(listed))   # + transfer-only groups
+    assert listed[:5] == FIVE and len(listed) == 32 == len(set(listed))   # + transfer-only groups
     assert all(len(a) == 42 and a == a.lower() and a.startswith("0x") for a in listed)
     # the tracker enforces the list; the read-only website only labels those wallets "blocked"
     # (the identical list, by YAML anchor); no other service sees it

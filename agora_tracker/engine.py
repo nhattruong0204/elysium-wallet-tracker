@@ -11,8 +11,10 @@ import logging
 import time
 from collections.abc import Iterable
 from decimal import Decimal
+from typing import Any
 
 from . import cards
+from .bursts import BurstTracker
 from .cards import Links
 from .chain import ScanResult, TokenCache
 from .classify import TradeEvent
@@ -65,6 +67,8 @@ class Engine:
         self._cohorts_at = float("-inf")
         self._cohort_of: dict[str, str] = {}     # wallet -> cohort key
         self._range_cohort: dict[str, int] = {}  # token -> cohort wallets (this range)
+        ic_ = self.intel
+        self._bursts = BurstTracker(ic_.burst_min, ic_.burst_window_s, ic_.burst_quiet_s)
         self._bots: set[str] = set()
         self.chain_cfg, self.cfg = chain_cfg, alert_cfg
         self.labels = labels
@@ -226,13 +230,37 @@ class Engine:
                     # (_tg_muted: the reported token, never the quote asset)
                     if ev.token in self._range_cohort:
                         extra["cohort_wallets"] = self._range_cohort[ev.token]
-                    payload = self._trade_payload(ev, notes, bts, extra)
-                    text, _ = cards.render_trade(payload, self.links)
-                    self.store.enqueue(c, f"ev:{ev.key}", text, payload=payload)
+                    verdict, summary = "single", None
+                    if ev.kind == "TRANSFER_OUT" and self.intel.burst_filter:
+                        verdict, summary = self._bursts.observe(
+                            ev.wallet, ev.token, float(bts if bts is not None else time.time()),
+                            ev.qty, key=ev.key, counterparty=cp[1] if cp else None,
+                            before_qty=before, tx=ev.tx)
+                    if verdict == "single":
+                        payload = self._trade_payload(ev, notes, bts, extra)
+                        text, _ = cards.render_trade(payload, self.links)
+                        self.store.enqueue(c, f"ev:{ev.key}", text, payload=payload)
+                    elif summary is not None:
+                        self._enqueue_burst(c, summary)
                 if ev.kind == "BUY" and ev.confidence == "high" and bts is not None:
                     self._maybe_cluster(c, ev, bts, min_wei)
+            # bursts that went quiet: one final summary each (by chain time when this range
+            # has blocks, so a catch-up after downtime does not hold them open)
+            ref = float(max(result.block_times.values(), default=time.time()))
+            for summary in self._bursts.finished(ref):
+                self._enqueue_burst(c, summary)
             self.store.set_cursor(c, cursor)
         return new
+
+    def _enqueue_burst(self, c: Any, s: dict) -> None:
+        sym, dec = self.tokens.get(s["token"])
+        payload = {"type": "burst", "v": 1, **s, "symbol": sym, "decimals": dec,
+                   **self._wallet_ctx(s["wallet"])}
+        if s["token"] in self._range_cohort:
+            payload["cohort_wallets"] = self._range_cohort[s["token"]]
+        text, _ = cards.render_burst(payload, self.links)
+        self.store.enqueue(c, f"burst:{s['wallet']}:{s['token']}:{s['first_ts']}:{s['stage']}",
+                           text, severity="high", payload=payload)
 
     @staticmethod
     def _position_fields(ev: TradeEvent, before: int, p: Position, realized: dict | None

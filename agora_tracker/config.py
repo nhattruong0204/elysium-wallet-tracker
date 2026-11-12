@@ -297,6 +297,14 @@ class IntelConfig:
     # are not sent to Telegram. They are still indexed (positions, website); buys, sells and
     # transfers the wallet itself sends still alert. Off: ALERTS_AIRDROP_FILTER=off (tracker).
     airdrop_filter: bool = True
+    # Transfer bursts (agora_tracker/bursts.py): when one wallet sends the same token out
+    # `burst_min` times within `burst_window_s`, one "split" summary replaces the individual
+    # transfer alerts, and a final summary follows after `burst_quiet_s` without another one.
+    # Still indexed. Off: ALERTS_TRANSFER_BURST=off (tracker).
+    burst_filter: bool = True
+    burst_min: int = 4
+    burst_window_s: float = 120.0
+    burst_quiet_s: float = 90.0
     airdrop_min_wallets: int = 5
     airdrop_window_h: float = 24.0
     airdrop_max_trade_share: float = 0.1
@@ -449,6 +457,8 @@ def load_config(path: str | Path) -> Config:
         intel.bot_filter = False
     if os.environ.get("ALERTS_AIRDROP_FILTER", "").strip().lower() in ("off", "0", "false", "no"):
         intel.airdrop_filter = False
+    if os.environ.get("ALERTS_TRANSFER_BURST", "").strip().lower() in ("off", "0", "false", "no"):
+        intel.burst_filter = False
     if os.environ.get("ALERTS_COHORT_FILTER", "").strip().lower() in ("off", "0", "false", "no"):
         intel.cohort_filter = False
     tracking = TrackingConfig(**(raw.get("tracking") or {}))

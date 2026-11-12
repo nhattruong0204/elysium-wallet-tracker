@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% from "_macros.html" import kpi, pager, badge, empty, th, copy with context %}
 {% set pg = d.page %}{% set p = d.params %}{% set k = d.kpis %}{% set lk = d.label_kpis %}
-{% set skind = {'blocked': 'bad', 'contract': '', 'cohort': 'bad', 'bundler': 'warn', 'farm': 'warn', 'automated': 'warn', 'dormant': '', 'unknown': '', 'organic': 'ok', 'muted': ''} %}
+{% set skind = {'blocked': 'bad', 'contract': '', 'cohort': 'bad', 'bundler': 'warn', 'distributor': 'warn', 'farm': 'warn', 'automated': 'warn', 'dormant': '', 'unknown': '', 'organic': 'ok', 'muted': ''} %}
 {% block body %}
 <h1>Wallet intelligence</h1>
 <p class="lead">Every wallet that has <b>ever</b> been on Agora's Top 100, not only today's list. <b>Agora PnL</b> is Agora's own accounting; <b>measured PnL</b> is what we recomputed from on-chain trades and covers only sells whose cost basis we know, inside the chosen window. They are shown side by side and never combined. Nothing here is a prediction or a recommendation.</p>
