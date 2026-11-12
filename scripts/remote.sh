@@ -699,21 +699,37 @@ PY
     tracker_alive
     ;;
   wallet-probe)
-    # Read-only: confirm the wallets blocked on 2026-11-12 show as blocked.
+    # Read-only: everything recorded about one token.
     need_docker
-    docker logs --since 20m elysium-wallet-tracker 2>&1 | grep -iE "block list|blocked|mute list" | tail -5 | cut -c1-220
     python3 - <<'PY_RUN'
-import csv, io, time, urllib.request
-NEW = "0x198db2966622b3590f392ac5aa6b21d30c627838 0x791d2bcbcd52913b13cdcc490438b0f1d9be2ab0 0x87eda45e1ba46dd8549e3df18b875baa25551a65 0x7a1cca8743591a636bc40e2765874e9a5336f825 0x8517beced25bc8de4c4ede36c437ea3d71e46e42 0xb96287c353ed3cac8922b44d7e84e1b9d8748d18 0xc574b9ae9ccb685aae0f018f56fa45eac098f1a5 0xe3c9ecc9b67e90646de40813a608e895c4d0cddb 0xf25d0310cc65c3638a9582cf7dcb0ce41645bd30 0xfdde597156af67e7ab5c76edeef91cb292d2e017".split()
-with urllib.request.urlopen(f"http://127.0.0.1:8100/api/v1/leaderboard.csv?window=all&_cb={time.time()}", timeout=60) as r:
-    rows = {x["wallet"]: x for x in csv.DictReader(io.StringIO(r.read().decode()))}
-for w in NEW:
-    x = rows.get(w, {})
-    print("CHECK", w, "label=" + x.get("label_status", "MISSING"), "flags=" + x.get("label_flags", ""), "enrollment=" + str(x.get("enrollment", x.get("tracking_status", "?"))))
-print("TOTAL blocked label:", sum(1 for x in rows.values() if x["label_status"] == "blocked"), "muted flag:", sum(1 for x in rows.values() if "muted" in x["label_flags"]), "cohort-2 sample:", rows["0xd8ba9e5886b7000bace2c9dbdd0be98ac77d4a28"]["label_status"], rows["0xd8ba9e5886b7000bace2c9dbdd0be98ac77d4a28"]["label_flags"])
-print("COLS", [c for c in next(iter(rows.values())) if "enroll" in c or "track" in c or c == "status"])
+import csv, io, json, time, urllib.request
+def get(p):
+    with urllib.request.urlopen(f"http://127.0.0.1:8100{p}{'&' if '?' in p else '?'}_cb={time.time()}", timeout=60) as r:
+        return r.read().decode()
+try:
+    t = json.loads(get("/api/v1/tokens/0x7347a64423c67cdb7e6186a217c5e35397819663"))
+    print("DATA|token|" + json.dumps({k: v for k, v in t.items() if k not in ("trades", "recent", "holders", "wallets", "meta")}, default=str)[:3000])
+    print("DATA|tokenkeys|" + json.dumps(list(t.keys())))
+except Exception as e:
+    print("token api failed", e)
+rows = list(csv.DictReader(io.StringIO(get("/api/v1/leaderboard.csv?window=all"))))
+keep = "wallet status rank best_rank agora_pnl_hype label_status label_flags cohort_id style style_tags size_tier performance_tier label_confidence bundle_partner_wallets lb_trade_legs lb_median_hold_min lb_median_buy_hype lb_measured_pnl_hype".split()
+for x in rows:
+    print("DATA|lab|" + json.dumps({k: x[k] for k in keep if x.get(k, "") != ""}))
 PY_RUN
-    psql_admin -At -F' ' -c "SELECT 'DB', status, excluded_reason, count(*) FROM wallet_enrollment WHERE chain_id = 99901 GROUP BY 1,2,3 ORDER BY 2,3"
+    psql_admin -At -F'|' <<'SQL'
+SET default_transaction_read_only = on; SET statement_timeout = '60s';
+SELECT 'DATA','leg', t.wallet, t.kind, t.confidence, t.block_number, to_char(t.block_time AT TIME ZONE 'UTC', 'MM-DD HH24:MI:SS'), round(t.qty / 1e18, 2), round(coalesce(t.hype_wei, 0) / 1e18, 4), t.hype_method, left(t.tx_hash, 12), left(coalesce(x.to_address, '?'), 12), (x.from_address = t.wallet)
+  FROM trades t LEFT JOIN transactions x ON x.chain_id = t.chain_id AND x.tx_hash = t.tx_hash
+ WHERE t.chain_id = 99901 AND t.token = '0x7347a64423c67cdb7e6186a217c5e35397819663' ORDER BY t.block_time, t.id;
+SELECT 'DATA','dest', coalesce(x.to_address, '?'), count(DISTINCT t.tx_hash), count(DISTINCT t.wallet)
+  FROM trades t LEFT JOIN transactions x ON x.chain_id = t.chain_id AND x.tx_hash = t.tx_hash
+ WHERE t.chain_id = 99901 AND t.token = '0x7347a64423c67cdb7e6186a217c5e35397819663' GROUP BY 3 ORDER BY 4 DESC LIMIT 8;
+SELECT 'DATA','outbox', payload->>'type', status, count(*), to_char(min(created_at) AT TIME ZONE 'UTC', 'MM-DD HH24:MI'), to_char(max(created_at) AT TIME ZONE 'UTC', 'MM-DD HH24:MI')
+  FROM notification_outbox WHERE payload->>'token' = '0x7347a64423c67cdb7e6186a217c5e35397819663' GROUP BY 3, 4;
+SELECT 'DATA','pnl', r.wallet, r.status, count(*), round(sum(r.pnl_wei) / 1e18, 3)
+  FROM realized_pnl r JOIN trades t ON t.id = r.trade_id WHERE t.chain_id = 99901 AND t.token = '0x7347a64423c67cdb7e6186a217c5e35397819663' GROUP BY 3, 4;
+SQL
     ;;
   ui-smoke)
     docker compose run --rm --no-deps ui --ui-smoke
