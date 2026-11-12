@@ -433,3 +433,12 @@ Telegram alert (197 alerts in 12 minutes for `0x6f0954d9…8af6` on 2026-11-11).
 - **Limits:** Telegram only; the website's Activity feed still lists these rows (its read-only
   views do not expose who sent a transaction). A genuine airdrop of a real token is muted the
   same way until tracked wallets trade it.
+
+### 2026-11-12: launch cohort (16 wallets)
+
+Blocked: 16 Agora-leaderboard wallets (ranks 6-79) that entered 18 new tokens in ~8 hours, a
+new token roughly every 29 minutes, 9-16 of them within seconds of each other on every launch,
+all through the same private router `0x3e328152…28d4` (used by no other tracked wallet), buying
+from the Uniswap v4 pool without paying from the wallet itself, then selling in small pieces
+over ~15 minutes. No direct transfers between them were found. Addresses are in
+`docker-compose.yml` (`TRACKING_BLOCKED_WALLETS`).
