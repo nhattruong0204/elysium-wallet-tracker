@@ -4,8 +4,8 @@ name: wiki
 # this job fails with a message saying so.
 on:
   push:
-    branches: [main]
-    paths: ["docs/wiki/**", ".github/workflows/wiki.yml"]
+    branches: [main, ops]
+    paths: ["docs/wiki/**", ".github/workflows/wiki.yml", "deploy/WIKI_REQUEST"]
   workflow_dispatch:
 permissions:
   contents: write
