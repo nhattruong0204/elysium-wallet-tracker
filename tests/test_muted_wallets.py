@@ -26,16 +26,17 @@ def test_env_list_is_normalised_and_blocked_wins(monkeypatch):
     assert cfg.tracking.muted_wallets == [w(1)] and cfg.tracking.blocked_wallets == [w(2)]
 
 
-def test_compose_mutes_both_cohorts_on_every_service_that_alerts():
+def test_compose_mutes_nobody_and_keeps_following_the_trading_cohort():
+    """Owner decision 2026-11-12: transfer-only groups are blocked; the cohort that really
+    buys and sells (cohort 2) is followed as usual, neither blocked nor muted."""
     svc = yaml.safe_load(open("docker-compose.yml"))["services"]
-    muted = svc["tracker"]["environment"]["TRACKING_MUTED_WALLETS"].split()
-    assert len(muted) == 23 == len(set(muted))
-    assert all(len(a) == 42 and a == a.lower() and a.startswith("0x") for a in muted)
-    assert not set(muted) & set(svc["tracker"]["environment"]["TRACKING_BLOCKED_WALLETS"].split())
-    for name in ("web", "consensus-alerts"):
-        assert svc[name]["environment"]["TRACKING_MUTED_WALLETS"].split() == muted
     assert all("TRACKING_MUTED_WALLETS" not in (s.get("environment") or {})
-               for name, s in svc.items() if name not in ("tracker", "web", "consensus-alerts"))
+               for s in svc.values())
+    blocked = svc["tracker"]["environment"]["TRACKING_BLOCKED_WALLETS"].split()
+    cohort2 = ["0x5732b9e35e5c5bc4889bbafce634545247601c9d",
+               "0xd8ba9e5886b7000bace2c9dbdd0be98ac77d4a28"]
+    assert not set(cohort2) & set(blocked)
+    assert "0x0a90d9d0d0c76c5fe79faa6f6de4105fd3e68c79" in blocked     # cohort 1 stays blocked
 
 
 def test_a_muted_wallet_is_indexed_but_never_alerted(store, eng):

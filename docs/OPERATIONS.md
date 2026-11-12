@@ -549,7 +549,24 @@ Unlike the launch-cohort detector (7-day lookback) the list does not expire when
 stops, and it works with `ALERTS_COHORT_FILTER=off`. The same list goes to the tracker, web and
 consensus-alerts services by YAML anchor. A wallet on both lists is blocked.
 
-Listed 2026-11-12: launch cohort 1 (16 wallets, issue #132; taken off the block list, so the
-tracker scans them again from the next leaderboard refresh and their data quality shows a gap
-for the hours they were blocked) and launch cohort 2 (7 wallets, issue #133). The block list is
-back to the five machine wallets. To unmute, delete the address and redeploy the three services.
+Nobody is muted today. Owner decision 2026-11-12: wallets with no decoded buy or sell
+(transfer-only) are blocked instead, and the cohort that really trades (launch cohort 2) is
+followed as usual, under the launch-cohort detector. To mute a wallet, add
+`TRACKING_MUTED_WALLETS` with its address to the tracker, web and consensus-alerts services
+(one YAML anchor) and redeploy the three.
+
+## Transfer-only wallets (blocked 2026-11-12)
+
+A tracked wallet whose recorded legs are all token transfers (no decoded BUY or SELL) gives us
+nothing to follow: no entry, no size, no exit, only transfer alerts. Scan of 2026-11-12 (30
+days, 20+ legs, zero decoded trades): 32 leaderboard wallets. Blocked, 26 in all:
+
+| Group | Wallets | Evidence |
+|---|---|---|
+| Launch cohort 1 | 16 | every transaction goes to router `0x3e328152d399a500a7423a7373ef767a906628d4`; 21 shared launches |
+| Same router, not in the cohort | 3 | 22-34 transactions each, all to that router, nothing else |
+| Contract `0x1b341fdd55d56f8e08409a2c25ddfad93eb03c1a` | 7 | 28-37 self-sent transactions each to that one contract, last activity in the same two minutes (2026-11-11 12:48 and 12:55 UTC), ranks 28-80 |
+
+Left alone, for the owner to decide (single wallets or pairs, no group evidence): see the wiki
+page "Transfer-only scan". Records of every group live in the repo wiki, whose source is
+`docs/wiki/` (published by `.github/workflows/wiki.yml` on every push to main).
