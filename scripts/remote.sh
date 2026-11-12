@@ -698,6 +698,23 @@ PY
     consensus_state
     tracker_alive
     ;;
+  wallet-probe)
+    # Read-only: confirm the wallets blocked on 2026-11-12 show as blocked.
+    need_docker
+    docker logs --since 20m elysium-wallet-tracker 2>&1 | grep -iE "block list|blocked|mute list" | tail -5 | cut -c1-220
+    python3 - <<'PY_RUN'
+import csv, io, time, urllib.request
+NEW = "0x198db2966622b3590f392ac5aa6b21d30c627838 0x791d2bcbcd52913b13cdcc490438b0f1d9be2ab0 0x87eda45e1ba46dd8549e3df18b875baa25551a65 0x7a1cca8743591a636bc40e2765874e9a5336f825 0x8517beced25bc8de4c4ede36c437ea3d71e46e42 0xb96287c353ed3cac8922b44d7e84e1b9d8748d18 0xc574b9ae9ccb685aae0f018f56fa45eac098f1a5 0xe3c9ecc9b67e90646de40813a608e895c4d0cddb 0xf25d0310cc65c3638a9582cf7dcb0ce41645bd30 0xfdde597156af67e7ab5c76edeef91cb292d2e017".split()
+with urllib.request.urlopen(f"http://127.0.0.1:8100/api/v1/leaderboard.csv?window=all&_cb={time.time()}", timeout=60) as r:
+    rows = {x["wallet"]: x for x in csv.DictReader(io.StringIO(r.read().decode()))}
+for w in NEW:
+    x = rows.get(w, {})
+    print("CHECK", w, "label=" + x.get("label_status", "MISSING"), "flags=" + x.get("label_flags", ""), "enrollment=" + str(x.get("enrollment", x.get("tracking_status", "?"))))
+print("TOTAL blocked label:", sum(1 for x in rows.values() if x["label_status"] == "blocked"), "muted flag:", sum(1 for x in rows.values() if "muted" in x["label_flags"]), "cohort-2 sample:", rows["0xd8ba9e5886b7000bace2c9dbdd0be98ac77d4a28"]["label_status"], rows["0xd8ba9e5886b7000bace2c9dbdd0be98ac77d4a28"]["label_flags"])
+print("COLS", [c for c in next(iter(rows.values())) if "enroll" in c or "track" in c or c == "status"])
+PY_RUN
+    psql_admin -At -F' ' -c "SELECT 'DB', status, excluded_reason, count(*) FROM wallet_enrollment WHERE chain_id = 99901 GROUP BY 1,2,3 ORDER BY 2,3"
+    ;;
   ui-smoke)
     docker compose run --rm --no-deps ui --ui-smoke
     ;;
