@@ -698,6 +698,22 @@ PY
     consensus_state
     tracker_alive
     ;;
+  wallet-probe)
+    # Read-only: which wallets carry the distributor flag; burst summaries so far.
+    need_docker
+    python3 - <<'PY_RUN'
+import csv, io, json, time, urllib.request
+with urllib.request.urlopen(f"http://127.0.0.1:8100/api/v1/leaderboard.csv?window=all&_cb={time.time()}", timeout=90) as r:
+    rows = list(csv.DictReader(io.StringIO(r.read().decode())))
+print("CSV", len(rows), "rows", len(rows[0]), "cols", "version", {x["label_version"] for x in rows})
+keep = "wallet rank agora_pnl_hype label_status label_flags style style_tags performance_tier label_confidence lb_split_tokens lb_split_max_transfers lb_trade_legs lb_measured_pnl_hype".split()
+for x in rows:
+    if "distributor" in x["label_flags"]:
+        print("DATA|dist|" + json.dumps({k: x[k] for k in keep if x.get(k, "") != ""}))
+PY_RUN
+    psql_admin -At -F'|' -c "SELECT 'DATA','burst', payload->>'stage', payload->>'wallet', payload->>'token', payload->>'count', status, created_at FROM notification_outbox WHERE payload->>'type' = 'burst' ORDER BY id DESC LIMIT 10"
+    docker logs --since 15m elysium-wallet-tracker 2>&1 | grep -ciE "error|traceback" | sed 's/^/tracker error lines (15m): /'
+    ;;
   ui-smoke)
     docker compose run --rm --no-deps ui --ui-smoke
     ;;
