@@ -708,7 +708,7 @@ with urllib.request.urlopen(f"http://127.0.0.1:8100/api/v1/leaderboard.csv?windo
 keep = "wallet status rank best_rank agora_pnl_hype legs tokens label_status label_flags style style_tags activity quality lb_legs lb_trade_legs lb_transfer_share lb_legs_per_active_day lb_internal_transfers lb_transfer_peers lb_bot_txs lb_bot_fast_share first_seen_at last_trade_at".split()
 for x in rows:
     if x["lb_trade_legs"] in ("0", "") and int(x["lb_legs"] or 0) >= 20:
-        print("DATA|mover|" + json.dumps({k: x[k] for k in keep if x[k] != ""}))
+        print("DATA|mover|" + json.dumps({k: x[k] for k in keep if x.get(k, "") != ""}))
 PY_RUN
     psql_admin -At -F'|' <<'SQL'
 SET default_transaction_read_only = on; SET statement_timeout = '90s';
