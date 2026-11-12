@@ -1,4 +1,4 @@
-action=tracker
+action=web-hotfix
 commit=main 9f1648a + block 0xc57bf04f (owner request, ahead of the PR)
 requested=2026-11-12 owner: block 0xc57bf04f now
 
