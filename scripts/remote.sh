@@ -699,20 +699,66 @@ PY
     tracker_alive
     ;;
   wallet-probe)
-    # Read-only: which wallets carry the distributor flag; burst summaries so far.
+    # Read-only: who made money in the last 48 hours, and how.
     need_docker
     python3 - <<'PY_RUN'
 import csv, io, json, time, urllib.request
 with urllib.request.urlopen(f"http://127.0.0.1:8100/api/v1/leaderboard.csv?window=all&_cb={time.time()}", timeout=90) as r:
     rows = list(csv.DictReader(io.StringIO(r.read().decode())))
-print("CSV", len(rows), "rows", len(rows[0]), "cols", "version", {x["label_version"] for x in rows})
-keep = "wallet rank agora_pnl_hype label_status label_flags style style_tags performance_tier label_confidence lb_split_tokens lb_split_max_transfers lb_trade_legs lb_measured_pnl_hype".split()
+keep = "wallet status rank agora_pnl_hype label_status label_flags cohort_id style style_tags size_tier performance_tier label_confidence quality lb_median_hold_min lb_median_buy_hype lb_early_share lb_observed_launches lb_closes lb_wins lb_measured_pnl_hype lb_profit_factor".split()
 for x in rows:
-    if "distributor" in x["label_flags"]:
-        print("DATA|dist|" + json.dumps({k: x[k] for k in keep if x.get(k, "") != ""}))
+    print("DATA|lab|" + json.dumps({k: x[k] for k in keep if x.get(k, "") != ""}))
 PY_RUN
-    psql_admin -At -F'|' -c "SELECT 'DATA','burst', payload->>'stage', payload->>'wallet', payload->>'token', payload->>'count', status, created_at FROM notification_outbox WHERE payload->>'type' = 'burst' ORDER BY id DESC LIMIT 10"
-    docker logs --since 15m elysium-wallet-tracker 2>&1 | grep -ciE "error|traceback" | sed 's/^/tracker error lines (15m): /'
+    psql_admin -At -F'|' <<'SQL'
+SET default_transaction_read_only = on; SET statement_timeout = '90s';
+WITH t AS (SELECT t.* FROM trades t WHERE t.chain_id = 99901 AND t.block_time > now() - interval '48 hours'
+        AND t.token <> ALL(ARRAY['0xb47c4c8f73f009cc0c0d3f92b388d13e293f0b65','0xba876237b0f021a6c6d852d6c26e107997cc5e81','0xe45a355d9e9cad2ad85f2d03e3ee3102a036acf0'])),
+rp AS (SELECT r.wallet, r.token, r.status, r.pnl_wei, r.proceeds_wei, r.cost_basis_wei FROM realized_pnl r JOIN t ON t.id = r.trade_id),
+a AS (SELECT wallet, count(*) FILTER (WHERE kind = 'BUY') AS buys, count(*) FILTER (WHERE kind = 'SELL') AS sells,
+        count(*) FILTER (WHERE kind LIKE 'TRANSFER%') AS xfers, count(DISTINCT token) FILTER (WHERE kind = 'BUY') AS toks,
+        round(coalesce(sum(hype_wei) FILTER (WHERE kind = 'BUY'), 0) / 1e18, 2) AS buy_h,
+        round(coalesce(sum(hype_wei) FILTER (WHERE kind = 'SELL'), 0) / 1e18, 2) AS sell_h FROM t GROUP BY wallet),
+b AS (SELECT wallet, count(*) FILTER (WHERE status = 'measured') AS closes, count(*) FILTER (WHERE status = 'measured' AND pnl_wei > 0) AS wins,
+        round(coalesce(sum(pnl_wei) FILTER (WHERE status = 'measured'), 0) / 1e18, 3) AS pnl,
+        round(coalesce(sum(pnl_wei) FILTER (WHERE status = 'measured' AND pnl_wei > 0), 0) / 1e18, 3) AS gw,
+        round(coalesce(-sum(pnl_wei) FILTER (WHERE status = 'measured' AND pnl_wei < 0), 0) / 1e18, 3) AS gl,
+        round(coalesce(sum(cost_basis_wei) FILTER (WHERE status = 'measured'), 0) / 1e18, 2) AS cost,
+        count(*) FILTER (WHERE status <> 'measured') AS unmeasured,
+        count(DISTINCT token) FILTER (WHERE status = 'measured') AS ctoks FROM rp GROUP BY wallet)
+SELECT 'DATA','w', a.wallet, a.buys, a.sells, a.xfers, a.toks, a.buy_h, a.sell_h, coalesce(b.closes, 0), coalesce(b.wins, 0), coalesce(b.pnl, 0), coalesce(b.gw, 0), coalesce(b.gl, 0), coalesce(b.cost, 0), coalesce(b.unmeasured, 0), coalesce(b.ctoks, 0)
+  FROM a LEFT JOIN b USING (wallet);
+WITH t AS (SELECT t.* FROM trades t WHERE t.chain_id = 99901 AND t.block_time > now() - interval '48 hours'
+        AND t.token <> ALL(ARRAY['0xb47c4c8f73f009cc0c0d3f92b388d13e293f0b65','0xba876237b0f021a6c6d852d6c26e107997cc5e81','0xe45a355d9e9cad2ad85f2d03e3ee3102a036acf0'])),
+rp AS (SELECT r.wallet, r.token, r.status, r.pnl_wei, r.proceeds_wei, r.cost_basis_wei FROM realized_pnl r JOIN t ON t.id = r.trade_id),
+wt AS (SELECT rp.wallet, rp.token, round(sum(pnl_wei) / 1e18, 3) AS pnl, round(sum(cost_basis_wei) / 1e18, 3) AS cost, count(*) AS n
+         FROM rp WHERE status = 'measured' GROUP BY 1, 2),
+k AS (SELECT wallet, token, min(block_time) FILTER (WHERE kind = 'BUY') AS fb, min(block_time) FILTER (WHERE kind = 'SELL') AS fs,
+        max(block_time) FILTER (WHERE kind = 'SELL') AS ls, count(*) FILTER (WHERE kind = 'BUY') AS nb, count(*) FILTER (WHERE kind = 'SELL') AS ns,
+        round(coalesce(sum(hype_wei) FILTER (WHERE kind = 'BUY'), 0) / 1e18, 3) AS bh FROM t GROUP BY 1, 2),
+t0 AS (SELECT token, min(block_time) AS t0 FROM trades WHERE chain_id = 99901 AND token IN (SELECT DISTINCT token FROM wt) GROUP BY token),
+r AS (SELECT wt.*, row_number() OVER (PARTITION BY wt.wallet ORDER BY abs(wt.pnl) DESC) AS rk FROM wt)
+SELECT 'DATA','wt', r.wallet, r.token, coalesce(m.symbol, '?'), r.pnl, r.cost, r.n, k.nb, k.ns, k.bh,
+       round(extract(epoch FROM k.fb - t0.t0)), round(extract(epoch FROM k.fs - k.fb)), round(extract(epoch FROM k.ls - k.fb)), to_char(k.fb AT TIME ZONE 'UTC', 'MM-DD HH24:MI')
+  FROM r JOIN k ON k.wallet = r.wallet AND k.token = r.token JOIN t0 ON t0.token = r.token
+  LEFT JOIN token_metadata m ON m.chain_id = 99901 AND m.address = r.token WHERE r.rk <= 4;
+WITH t AS (SELECT t.* FROM trades t WHERE t.chain_id = 99901 AND t.block_time > now() - interval '48 hours'
+        AND t.token <> ALL(ARRAY['0xb47c4c8f73f009cc0c0d3f92b388d13e293f0b65','0xba876237b0f021a6c6d852d6c26e107997cc5e81','0xe45a355d9e9cad2ad85f2d03e3ee3102a036acf0'])),
+rp AS (SELECT r.wallet, r.token, r.status, r.pnl_wei, r.proceeds_wei, r.cost_basis_wei FROM realized_pnl r JOIN t ON t.id = r.trade_id)
+SELECT 'DATA','tok', rp.token, coalesce(m.symbol, '?'), round(sum(pnl_wei) / 1e18, 2), count(DISTINCT rp.wallet), count(DISTINCT rp.wallet) FILTER (WHERE pnl_wei > 0),
+       round(sum(cost_basis_wei) / 1e18, 1)
+  FROM rp LEFT JOIN token_metadata m ON m.chain_id = 99901 AND m.address = rp.token WHERE status = 'measured'
+ GROUP BY 3, 4 ORDER BY abs(sum(pnl_wei)) DESC LIMIT 25;
+WITH t AS (SELECT t.* FROM trades t WHERE t.chain_id = 99901 AND t.block_time > now() - interval '48 hours'
+        AND t.token <> ALL(ARRAY['0xb47c4c8f73f009cc0c0d3f92b388d13e293f0b65','0xba876237b0f021a6c6d852d6c26e107997cc5e81','0xe45a355d9e9cad2ad85f2d03e3ee3102a036acf0'])),
+rp AS (SELECT r.wallet, r.token, r.status, r.pnl_wei, r.proceeds_wei, r.cost_basis_wei FROM realized_pnl r JOIN t ON t.id = r.trade_id)
+SELECT 'DATA','open', p.wallet, count(*), round(sum(p.cost_wei) / 1e18, 2)
+  FROM wallet_positions p WHERE p.chain_id = 99901 AND p.qty > 0 AND p.cost_wei > 0
+   AND (p.wallet, p.token) IN (SELECT wallet, token FROM t WHERE kind = 'BUY') GROUP BY 3;
+SELECT 'DATA','hold', wallet, round((percentile_cont(0.5) WITHIN GROUP (ORDER BY s))::numeric), count(*) FROM (
+  SELECT b.wallet, b.token, extract(epoch FROM min(s.block_time) - min(b.block_time)) AS s
+    FROM trades b JOIN trades s ON s.chain_id = b.chain_id AND s.wallet = b.wallet AND s.token = b.token AND s.kind = 'SELL' AND s.block_time > b.block_time
+   WHERE b.chain_id = 99901 AND b.kind = 'BUY' AND b.block_time > now() - interval '48 hours' GROUP BY 1, 2) q GROUP BY wallet;
+SQL
     ;;
   ui-smoke)
     docker compose run --rm --no-deps ui --ui-smoke
