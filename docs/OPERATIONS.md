@@ -591,3 +591,24 @@ one token, high on two or more. It ranks below `bundler` and above `farm`. CSV: 
 
 The wallet itself is on the block list (32 addresses now). Record: wiki page
 "Launch distributor 0xc57bf04f".
+
+## Indexer stall on RPC rate limits (2026-11-14 to 11-17)
+
+**What happened:** from about 01:20 UTC on 2026-11-14 the tracker stopped advancing: no new
+trades, no alerts, website data frozen, container `unhealthy` (heartbeat). Both nodes were
+rate-limiting our address (BOXA: HTTP 429; the other: "Too many requests from this address this
+minute" on single receipts inside a batch). One refused receipt failed the whole block range,
+the range was retried in full every 2 minutes, and each retry used up the quota again.
+
+**Fix:**
+- `RpcClient.batch` re-asks only the rate-limited items, after 3, 10, 30 and 65 s; answers
+  already received are kept.
+- An HTTP 429 on the pinned endpoint waits 5 s then 20 s before the range is given up.
+- A range that fails for rate limiting or partial data is retried at half the size (floor
+  `chain.min_block_range`); it grows back after 20 clean ranges.
+- `alerts.max_alert_age_s` (default 2 h, `ALERTS_MAX_AGE_S`, 0 = off): while catching up,
+  older events are indexed but not alerted; one "catching up" notice per day says so.
+
+**If it happens again:** `docker inspect elysium-wallet-tracker` shows `heartbeat age`; the log
+repeats the same transaction hash. The website's scanner indicator turns red, but nothing pages
+the owner yet.

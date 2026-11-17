@@ -53,7 +53,9 @@ class Engine:
     def __init__(self, store: Store, tokens: TokenCache, chain_cfg: ChainConfig,
                  alert_cfg: AlertConfig, labels: dict[str, str], value_unit: str = "USD",
                  links: Links | None = None, intel: IntelConfig | None = None,
-                 muted_wallets: Iterable[str] = ()):
+                 muted_wallets: Iterable[str] = (), max_alert_age_s: float | None = None):
+        # None/0: alert whatever the age (tests, replays); the tracker passes alerts.max_alert_age_s
+        self.max_alert_age_s = float(max_alert_age_s or 0)
         self.store, self.tokens = store, tokens
         # operator mute list (TrackingConfig.muted_wallets): treated as cohort wallets, always
         self._muted_wallets: dict[str, str] = {w: "muted" for w in muted_wallets}
@@ -199,6 +201,7 @@ class Engine:
                 key = (tr["tx_hash"], tr["token"], me)
                 if amt >= counter.get(key, (-1, ""))[0]:
                     counter[key] = (amt, other)
+        stale = 0
         with self.store.tx() as c:
             self.store.insert_evidence(c, result.transactions, result.transfers)
             self.store.record_blocks(c, result.block_times, result.block_hashes)
@@ -223,6 +226,10 @@ class Engine:
                     extra["counterparty"] = cp[1]
                 if not self._should_alert(ev, min_wei):
                     continue
+                if (self.max_alert_age_s and bts is not None
+                        and time.time() - bts > self.max_alert_age_s):
+                    stale += 1          # catching up: indexed above, too old to alert
+                    continue
                 airdropped = (ev.token in drop_tokens
                               and (ev.tx, ev.wallet, ev.token) in drop_legs)
                 if (ev.token not in self._tg_muted and ev.wallet not in bots and not airdropped
@@ -244,6 +251,15 @@ class Engine:
                         self._enqueue_burst(c, summary)
                 if ev.kind == "BUY" and ev.confidence == "high" and bts is not None:
                     self._maybe_cluster(c, ev, bts, min_wei)
+            if stale:
+                log.info("catching up: %d alert(s) older than %.0f min not sent (indexed)",
+                         stale, self.max_alert_age_s / 60)
+                self.store.enqueue(
+                    c, f"catchup:{int(time.time()) // 86400}",
+                    "⏩ <b>Tracker catching up after downtime</b>\nTrades older than "
+                    f"{self.max_alert_age_s / 3600:g} h are indexed (website, PnL, labels) but "
+                    "not alerted. Live alerts resume when it reaches the chain head.",
+                    severity="high")
             # bursts that went quiet: one final summary each (by chain time when this range
             # has blocks, so a catch-up after downtime does not hold them open)
             ref = float(max(result.block_times.values(), default=time.time()))
