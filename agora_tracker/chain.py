@@ -159,12 +159,19 @@ class ChainFollower:
         if n_wallets and self.uses_full_scan(n_wallets):
             top = min(top, self.cfg.full_scan_max_span)
         if self.span_cap is None:
+            self._last_span = top
             return top
         self._ok_ranges += 1
         if self._ok_ranges >= 20:
             self._ok_ranges = 0
             self.span_cap = None if self.span_cap * 2 >= top else self.span_cap * 2
-        return min(top, self.span_cap or top)
+        self._last_span = min(top, self.span_cap or top)
+        return self._last_span
+
+    def shrink_after_failure(self) -> None:
+        """The last range failed for a reason that retrying as-is will not cure (rate limit,
+        partial data): ask for half as many blocks next time. It grows back by itself."""
+        self._shrink_span(getattr(self, "_last_span", self.cfg.max_block_range))
 
     # --- strategy -------------------------------------------------------------
     def wallet_chunk(self) -> int:

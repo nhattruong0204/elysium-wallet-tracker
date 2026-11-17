@@ -105,7 +105,14 @@ def redact(url: str) -> str:
 class RpcClient:
     def __init__(self, urls: list[str], timeout: float = 15.0, max_retries: int = 4,
                  batch_size: int = 50, expected_chain_id: int | None = None,
-                 max_head_lag: int | None = None):
+                 max_head_lag: int | None = None,
+                 item_retry_waits: tuple[float, ...] = (3.0, 10.0, 30.0, 65.0),
+                 http_429_waits: tuple[float, ...] = (5.0, 20.0)):
+        # item_retry_waits: pauses before re-asking only the rate-limited items of a batch (the
+        # last one outlasts a per-minute quota). http_429_waits: pauses after an HTTP 429 on a
+        # pinned endpoint before the unit of work is given up.
+        self.item_retry_waits = tuple(item_retry_waits)
+        self.http_429_waits = tuple(http_429_waits)
         if not urls:
             raise ValueError("no RPC urls")
         self.urls = list(urls)
@@ -259,7 +266,10 @@ class RpcClient:
         delay = 0.5
         last: Exception | None = None
         attempts = min(2, self.max_retries + 1) if self._pinned else self.max_retries + 1
-        for attempt in range(attempts):
+        waited_429 = 0
+        attempt = 0
+        while attempt < attempts:
+            attempt += 1
             url = self.url  # raises when every endpoint is quarantined
             try:
                 self._ensure_verified(url)
@@ -269,7 +279,17 @@ class RpcClient:
                 continue
             except (requests.RequestException, RpcError, ValueError) as e:
                 last = e
-                log.debug("RPC attempt %d on %s failed: %s", attempt + 1, redact(url), e)
+                log.debug("RPC attempt %d on %s failed: %s", attempt, redact(url), e)
+                if (self._pinned and getattr(e, "code", None) == 429
+                        and waited_429 < len(self.http_429_waits)):
+                    # Rate-limited on the endpoint this unit of work is pinned to: a half-second
+                    # retry only burns more quota. Wait it out a little before giving up.
+                    wait = self.http_429_waits[waited_429]
+                    waited_429 += 1
+                    attempts += 1
+                    log.warning("RPC %s answered HTTP 429; waiting %.0fs", redact(url), wait)
+                    time.sleep(wait)
+                    continue
                 self._rotate()
                 time.sleep(delay + random.random() * 0.25)
                 delay = min(delay * 2, 10)
@@ -300,6 +320,23 @@ class RpcClient:
     def batch(self, calls: list[tuple[str, list[Any]]]) -> list[Any]:
         """Returns results in order; a failed item becomes an RpcError instance (not raised).
         Results are matched to requests by JSON-RPC id, never by response position."""
+        out = self._batch_once(calls)
+        # Items the node refused for rate limiting are asked again on their own, after a pause.
+        # Without this one refused receipt failed the whole block range, the range was retried
+        # in full, and a busy range could never get through a per-minute quota (2026-11-14: the
+        # indexer stood still for three days).
+        for wait in self.item_retry_waits:
+            bad = [i for i, r in enumerate(out) if isinstance(r, RpcError) and r.retryable]
+            if not bad:
+                break
+            log.warning("%d of %d batch items rate-limited on %s; retrying them in %.0fs",
+                        len(bad), len(calls), redact(self.url), wait)
+            time.sleep(wait)
+            for i, r in zip(bad, self._batch_once([calls[i] for i in bad]), strict=True):
+                out[i] = r
+        return out
+
+    def _batch_once(self, calls: list[tuple[str, list[Any]]]) -> list[Any]:
         out: list[Any] = []
         i = 0
         while i < len(calls):

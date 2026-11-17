@@ -49,7 +49,8 @@ class Tracker:
         self.market = AgoraMarket(cfg.market)
         self.engine = Engine(self.store, self.follower.tokens, c, cfg.alerts, self.watchlist,
                              value_unit=cfg.leaderboard.value_unit, links=self.links,
-                             intel=cfg.intel, muted_wallets=cfg.tracking.muted_wallets)
+                             intel=cfg.intel, muted_wallets=cfg.tracking.muted_wallets,
+                             max_alert_age_s=cfg.alerts.max_alert_age_s)
         if cfg.tracking.muted_wallets:
             log.info("operator mute list: %d wallet(s) tracked but never alerted",
                      len(cfg.tracking.muted_wallets))
@@ -419,6 +420,8 @@ class Tracker:
                 if not behind:
                     self._sleep(self.cfg.chain.poll_interval_s)
             except RpcError as e:
+                if e.retryable or "unavailable" in str(e) or "HTTP 429" in str(e):
+                    self.follower.shrink_after_failure()   # a smaller range needs fewer calls
                 log.error("RPC error: %s (retry in %.0fs)", e, backoff)
                 self._sleep(backoff)
                 backoff = min(backoff * 2, 120)

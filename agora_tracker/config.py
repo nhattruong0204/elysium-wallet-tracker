@@ -66,6 +66,10 @@ class LeaderboardConfig:
 
 @dataclass
 class AlertConfig:
+    # Catching up after downtime: events whose block is older than this are indexed (trades,
+    # positions, PnL, website) but not alerted, so an outage does not end in a flood of
+    # hours-old alerts. 0 = alert everything. ALERTS_MAX_AGE_S overrides (tracker).
+    max_alert_age_s: float = 7200.0
     min_trade_hype: float = 0.5
     alert_transfers: bool = True        # wallet moving tokens to another address (rotation, OTC)
     leaderboard_alerts: bool = True     # rank/PnL change alerts (snapshots are always recorded)
@@ -457,6 +461,8 @@ def load_config(path: str | Path) -> Config:
         intel.bot_filter = False
     if os.environ.get("ALERTS_AIRDROP_FILTER", "").strip().lower() in ("off", "0", "false", "no"):
         intel.airdrop_filter = False
+    if os.environ.get("ALERTS_MAX_AGE_S", "").strip():
+        alerts.max_alert_age_s = float(os.environ["ALERTS_MAX_AGE_S"])
     if os.environ.get("ALERTS_TRANSFER_BURST", "").strip().lower() in ("off", "0", "false", "no"):
         intel.burst_filter = False
     if os.environ.get("ALERTS_COHORT_FILTER", "").strip().lower() in ("off", "0", "false", "no"):
