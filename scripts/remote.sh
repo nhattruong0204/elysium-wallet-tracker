@@ -699,66 +699,25 @@ PY
     tracker_alive
     ;;
   wallet-probe)
-    # Read-only: who made money in the last 48 hours, and how.
+    # Read-only: why is the website unreachable?
     need_docker
-    python3 - <<'PY_RUN'
-import csv, io, json, time, urllib.request
-with urllib.request.urlopen(f"http://127.0.0.1:8100/api/v1/leaderboard.csv?window=all&_cb={time.time()}", timeout=90) as r:
-    rows = list(csv.DictReader(io.StringIO(r.read().decode())))
-keep = "wallet status rank agora_pnl_hype label_status label_flags cohort_id style style_tags size_tier performance_tier label_confidence quality lb_median_hold_min lb_median_buy_hype lb_early_share lb_observed_launches lb_closes lb_wins lb_measured_pnl_hype lb_profit_factor".split()
-for x in rows:
-    print("DATA|lab|" + json.dumps({k: x[k] for k in keep if x.get(k, "") != ""}))
-PY_RUN
-    psql_admin -At -F'|' <<'SQL'
-SET default_transaction_read_only = on; SET statement_timeout = '90s';
-WITH t AS (SELECT t.* FROM trades t WHERE t.chain_id = 99901 AND t.block_time > now() - interval '48 hours'
-        AND t.token <> ALL(ARRAY['0xb47c4c8f73f009cc0c0d3f92b388d13e293f0b65','0xba876237b0f021a6c6d852d6c26e107997cc5e81','0xe45a355d9e9cad2ad85f2d03e3ee3102a036acf0'])),
-rp AS (SELECT r.wallet, r.token, r.status, r.pnl_wei, r.proceeds_wei, r.cost_basis_wei FROM realized_pnl r JOIN t ON t.id = r.trade_id),
-a AS (SELECT wallet, count(*) FILTER (WHERE kind = 'BUY') AS buys, count(*) FILTER (WHERE kind = 'SELL') AS sells,
-        count(*) FILTER (WHERE kind LIKE 'TRANSFER%') AS xfers, count(DISTINCT token) FILTER (WHERE kind = 'BUY') AS toks,
-        round(coalesce(sum(hype_wei) FILTER (WHERE kind = 'BUY'), 0) / 1e18, 2) AS buy_h,
-        round(coalesce(sum(hype_wei) FILTER (WHERE kind = 'SELL'), 0) / 1e18, 2) AS sell_h FROM t GROUP BY wallet),
-b AS (SELECT wallet, count(*) FILTER (WHERE status = 'measured') AS closes, count(*) FILTER (WHERE status = 'measured' AND pnl_wei > 0) AS wins,
-        round(coalesce(sum(pnl_wei) FILTER (WHERE status = 'measured'), 0) / 1e18, 3) AS pnl,
-        round(coalesce(sum(pnl_wei) FILTER (WHERE status = 'measured' AND pnl_wei > 0), 0) / 1e18, 3) AS gw,
-        round(coalesce(-sum(pnl_wei) FILTER (WHERE status = 'measured' AND pnl_wei < 0), 0) / 1e18, 3) AS gl,
-        round(coalesce(sum(cost_basis_wei) FILTER (WHERE status = 'measured'), 0) / 1e18, 2) AS cost,
-        count(*) FILTER (WHERE status <> 'measured') AS unmeasured,
-        count(DISTINCT token) FILTER (WHERE status = 'measured') AS ctoks FROM rp GROUP BY wallet)
-SELECT 'DATA','w', a.wallet, a.buys, a.sells, a.xfers, a.toks, a.buy_h, a.sell_h, coalesce(b.closes, 0), coalesce(b.wins, 0), coalesce(b.pnl, 0), coalesce(b.gw, 0), coalesce(b.gl, 0), coalesce(b.cost, 0), coalesce(b.unmeasured, 0), coalesce(b.ctoks, 0)
-  FROM a LEFT JOIN b USING (wallet);
-WITH t AS (SELECT t.* FROM trades t WHERE t.chain_id = 99901 AND t.block_time > now() - interval '48 hours'
-        AND t.token <> ALL(ARRAY['0xb47c4c8f73f009cc0c0d3f92b388d13e293f0b65','0xba876237b0f021a6c6d852d6c26e107997cc5e81','0xe45a355d9e9cad2ad85f2d03e3ee3102a036acf0'])),
-rp AS (SELECT r.wallet, r.token, r.status, r.pnl_wei, r.proceeds_wei, r.cost_basis_wei FROM realized_pnl r JOIN t ON t.id = r.trade_id),
-wt AS (SELECT rp.wallet, rp.token, round(sum(pnl_wei) / 1e18, 3) AS pnl, round(sum(cost_basis_wei) / 1e18, 3) AS cost, count(*) AS n
-         FROM rp WHERE status = 'measured' GROUP BY 1, 2),
-k AS (SELECT wallet, token, min(block_time) FILTER (WHERE kind = 'BUY') AS fb, min(block_time) FILTER (WHERE kind = 'SELL') AS fs,
-        max(block_time) FILTER (WHERE kind = 'SELL') AS ls, count(*) FILTER (WHERE kind = 'BUY') AS nb, count(*) FILTER (WHERE kind = 'SELL') AS ns,
-        round(coalesce(sum(hype_wei) FILTER (WHERE kind = 'BUY'), 0) / 1e18, 3) AS bh FROM t GROUP BY 1, 2),
-t0 AS (SELECT token, min(block_time) AS t0 FROM trades WHERE chain_id = 99901 AND token IN (SELECT DISTINCT token FROM wt) GROUP BY token),
-r AS (SELECT wt.*, row_number() OVER (PARTITION BY wt.wallet ORDER BY abs(wt.pnl) DESC) AS rk FROM wt)
-SELECT 'DATA','wt', r.wallet, r.token, coalesce(m.symbol, '?'), r.pnl, r.cost, r.n, k.nb, k.ns, k.bh,
-       round(extract(epoch FROM k.fb - t0.t0)), round(extract(epoch FROM k.fs - k.fb)), round(extract(epoch FROM k.ls - k.fb)), to_char(k.fb AT TIME ZONE 'UTC', 'MM-DD HH24:MI')
-  FROM r JOIN k ON k.wallet = r.wallet AND k.token = r.token JOIN t0 ON t0.token = r.token
-  LEFT JOIN token_metadata m ON m.chain_id = 99901 AND m.address = r.token WHERE r.rk <= 4;
-WITH t AS (SELECT t.* FROM trades t WHERE t.chain_id = 99901 AND t.block_time > now() - interval '48 hours'
-        AND t.token <> ALL(ARRAY['0xb47c4c8f73f009cc0c0d3f92b388d13e293f0b65','0xba876237b0f021a6c6d852d6c26e107997cc5e81','0xe45a355d9e9cad2ad85f2d03e3ee3102a036acf0'])),
-rp AS (SELECT r.wallet, r.token, r.status, r.pnl_wei, r.proceeds_wei, r.cost_basis_wei FROM realized_pnl r JOIN t ON t.id = r.trade_id)
-SELECT 'DATA','tok', rp.token, coalesce(m.symbol, '?'), round(sum(pnl_wei) / 1e18, 2), count(DISTINCT rp.wallet), count(DISTINCT rp.wallet) FILTER (WHERE pnl_wei > 0),
-       round(sum(cost_basis_wei) / 1e18, 1)
-  FROM rp LEFT JOIN token_metadata m ON m.chain_id = 99901 AND m.address = rp.token WHERE status = 'measured'
- GROUP BY 3, 4 ORDER BY abs(sum(pnl_wei)) DESC LIMIT 25;
-WITH t AS (SELECT t.* FROM trades t WHERE t.chain_id = 99901 AND t.block_time > now() - interval '48 hours'
-        AND t.token <> ALL(ARRAY['0xb47c4c8f73f009cc0c0d3f92b388d13e293f0b65','0xba876237b0f021a6c6d852d6c26e107997cc5e81','0xe45a355d9e9cad2ad85f2d03e3ee3102a036acf0'])),
-rp AS (SELECT r.wallet, r.token, r.status, r.pnl_wei, r.proceeds_wei, r.cost_basis_wei FROM realized_pnl r JOIN t ON t.id = r.trade_id)
-SELECT 'DATA','open', p.wallet, count(*), round(sum(p.cost_wei) / 1e18, 2)
-  FROM wallet_positions p WHERE p.chain_id = 99901 AND p.qty > 0 AND p.cost_wei > 0
-   AND (p.wallet, p.token) IN (SELECT wallet, token FROM t WHERE kind = 'BUY') GROUP BY 3;
-SELECT 'DATA','hold', wallet, round((percentile_cont(0.5) WITHIN GROUP (ORDER BY s))::numeric), count(*) FROM (
-  SELECT b.wallet, b.token, extract(epoch FROM min(s.block_time) - min(b.block_time)) AS s
-    FROM trades b JOIN trades s ON s.chain_id = b.chain_id AND s.wallet = b.wallet AND s.token = b.token AND s.kind = 'SELL' AND s.block_time > b.block_time
-   WHERE b.chain_id = 99901 AND b.kind = 'BUY' AND b.block_time > now() - interval '48 hours' GROUP BY 1, 2) q GROUP BY wallet;
-SQL
+    echo "== time $(date -u +%FT%TZ) uptime: $(uptime)"
+    echo "== disk"; df -h / /var/lib/docker 2>/dev/null | sed 's/^/  /'; df -i / | tail -1 | sed 's/^/  inodes /'
+    echo "== memory"; free -m | sed 's/^/  /'
+    echo "== containers"; docker ps -a --format '  {{.Names}} | {{.Status}} | {{.Ports}}' | head -30
+    echo "== loopback"; for u in /healthz / /leaderboard /api/v1/overview; do curl -s -o /dev/null -m 20 -w "  $u -> %{http_code} in %{time_total}s\n" "http://127.0.0.1:8100$u" || echo "  $u curl failed rc=$?"; done
+    echo "== public (from the server)"; curl -sS -o /dev/null -m 20 -w "  https://onchainflow.app/ -> %{http_code} in %{time_total}s ip=%{remote_ip}\n" https://onchainflow.app/ 2>&1 | sed 's/^/  /' || true
+    curl -sS -o /dev/null -m 20 -w "  https://onchainflow.app/healthz -> %{http_code}\n" https://onchainflow.app/healthz 2>&1 | sed 's/^/  /' || true
+    echo "== dns"; getent hosts onchainflow.app | sed 's/^/  /'; echo "  server public ip: $(curl -s -m 8 https://api.ipify.org || echo '?')"
+    echo "== listeners"; (ss -ltnp 2>/dev/null || netstat -ltnp 2>/dev/null) | grep -E ':(80|443|8100)\b' | sed 's/^/  /' | cut -c1-160
+    echo "== cert"; echo | timeout 10 openssl s_client -servername onchainflow.app -connect 127.0.0.1:443 2>/dev/null | openssl x509 -noout -dates -subject 2>/dev/null | sed 's/^/  /' || echo "  no cert read"
+    echo "== web log (last 25)"; docker logs --tail 25 elysium-web 2>&1 | cut -c1-240 | sed 's/^/  /'
+    echo "== web inspect"; docker inspect elysium-web --format '  state={{.State.Status}} health={{if .State.Health}}{{.State.Health.Status}}{{end}} restarts={{.RestartCount}} oom={{.State.OOMKilled}} started={{.State.StartedAt}} exit={{.State.ExitCode}}' 2>&1
+    CADDY=$(docker ps -a --format '{{.Names}}' | grep -i caddy | head -1)
+    echo "== caddy container: ${CADDY:-none}"; [ -n "$CADDY" ] && { docker inspect "$CADDY" --format '  state={{.State.Status}} restarts={{.RestartCount}} started={{.State.StartedAt}}'; docker logs --since 6h --tail 40 "$CADDY" 2>&1 | grep -iE "error|onchainflow|tls|certificate|dial|refused|timeout" | tail -20 | cut -c1-300 | sed 's/^/  /'; }
+    systemctl is-active caddy 2>/dev/null | sed 's/^/  systemd caddy: /' || true
+    echo "== firewall"; (ufw status 2>/dev/null | head -12 || true) | sed 's/^/  /'
+    echo "== docker events (web, 24h)"; docker events --since 24h --until 0s --filter container=elysium-web --format '  {{.Time}} {{.Action}}' 2>/dev/null | tail -15
     ;;
   ui-smoke)
     docker compose run --rm --no-deps ui --ui-smoke
