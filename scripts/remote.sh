@@ -699,25 +699,15 @@ PY
     tracker_alive
     ;;
   wallet-probe)
-    # Read-only: why is the website unreachable?
+    # Read-only: certificate issuer as served, and why the tracker container reports unhealthy.
     need_docker
-    echo "== time $(date -u +%FT%TZ) uptime: $(uptime)"
-    echo "== disk"; df -h / /var/lib/docker 2>/dev/null | sed 's/^/  /'; df -i / | tail -1 | sed 's/^/  inodes /'
-    echo "== memory"; free -m | sed 's/^/  /'
-    echo "== containers"; docker ps -a --format '  {{.Names}} | {{.Status}} | {{.Ports}}' | head -30
-    echo "== loopback"; for u in /healthz / /leaderboard /api/v1/overview; do curl -s -o /dev/null -m 20 -w "  $u -> %{http_code} in %{time_total}s\n" "http://127.0.0.1:8100$u" || echo "  $u curl failed rc=$?"; done
-    echo "== public (from the server)"; curl -sS -o /dev/null -m 20 -w "  https://onchainflow.app/ -> %{http_code} in %{time_total}s ip=%{remote_ip}\n" https://onchainflow.app/ 2>&1 | sed 's/^/  /' || true
-    curl -sS -o /dev/null -m 20 -w "  https://onchainflow.app/healthz -> %{http_code}\n" https://onchainflow.app/healthz 2>&1 | sed 's/^/  /' || true
-    echo "== dns"; getent hosts onchainflow.app | sed 's/^/  /'; echo "  server public ip: $(curl -s -m 8 https://api.ipify.org || echo '?')"
-    echo "== listeners"; (ss -ltnp 2>/dev/null || netstat -ltnp 2>/dev/null) | grep -E ':(80|443|8100)\b' | sed 's/^/  /' | cut -c1-160
-    echo "== cert"; echo | timeout 10 openssl s_client -servername onchainflow.app -connect 127.0.0.1:443 2>/dev/null | openssl x509 -noout -dates -subject 2>/dev/null | sed 's/^/  /' || echo "  no cert read"
-    echo "== web log (last 25)"; docker logs --tail 25 elysium-web 2>&1 | cut -c1-240 | sed 's/^/  /'
-    echo "== web inspect"; docker inspect elysium-web --format '  state={{.State.Status}} health={{if .State.Health}}{{.State.Health.Status}}{{end}} restarts={{.RestartCount}} oom={{.State.OOMKilled}} started={{.State.StartedAt}} exit={{.State.ExitCode}}' 2>&1
-    CADDY=$(docker ps -a --format '{{.Names}}' | grep -i caddy | head -1)
-    echo "== caddy container: ${CADDY:-none}"; [ -n "$CADDY" ] && { docker inspect "$CADDY" --format '  state={{.State.Status}} restarts={{.RestartCount}} started={{.State.StartedAt}}'; docker logs --since 6h --tail 40 "$CADDY" 2>&1 | grep -iE "error|onchainflow|tls|certificate|dial|refused|timeout" | tail -20 | cut -c1-300 | sed 's/^/  /'; }
-    systemctl is-active caddy 2>/dev/null | sed 's/^/  systemd caddy: /' || true
-    echo "== firewall"; (ufw status 2>/dev/null | head -12 || true) | sed 's/^/  /'
-    echo "== docker events (web, 24h)"; docker events --since 24h --until 0s --filter container=elysium-web --format '  {{.Time}} {{.Action}}' 2>/dev/null | tail -15
+    echo "== cert as served"; echo | timeout 10 openssl s_client -servername onchainflow.app -connect 127.0.0.1:443 2>/dev/null | openssl x509 -noout -issuer -subject -dates -fingerprint -sha256 2>/dev/null | sed 's/^/  /'
+    echo | timeout 10 openssl s_client -servername onchainflow.app -connect 127.0.0.1:443 2>/dev/null | grep -E "Verify return code|Verification" | sed 's/^/  /'
+    echo "== tracker health"; docker inspect elysium-wallet-tracker --format '{{range .State.Health.Log}}{{.End}} exit={{.ExitCode}} {{.Output}}{{println}}{{end}}' | tail -4 | cut -c1-400 | sed 's/^/  /'
+    echo "== tracker log (last 12)"; docker logs --tail 12 elysium-wallet-tracker 2>&1 | cut -c1-260 | sed 's/^/  /'
+    psql_admin -At -F' ' -c "SELECT 'cursor', last_block, updated_at, now() - updated_at FROM scan_cursor LIMIT 1" 2>&1 | head -2 | sed 's/^/  /'
+    psql_admin -At -F' ' -c "SELECT 'last trade', max(block_time), now() - max(block_time) FROM trades" | sed 's/^/  /'
+    psql_admin -At -F' ' -c "SELECT 'outbox', status, count(*), max(created_at) FROM notification_outbox WHERE created_at > now() - interval '24 hours' GROUP BY 2" | sed 's/^/  /'
     ;;
   ui-smoke)
     docker compose run --rm --no-deps ui --ui-smoke
