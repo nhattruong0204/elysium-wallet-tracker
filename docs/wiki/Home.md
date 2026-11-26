@@ -10,8 +10,11 @@ Findings about tracked wallets, kept out of the issue tracker so they stay reada
 | [Transfer-only group on contract 0x1b341fdd](Transfer-only-group-0x1b341fdd) | 7 | blocked (transfer-only) |
 | [Same-block pair groups](Same-block-pair-groups) | 18 in 7 groups | followed, labelled |
 | [Launch distributor 0xc57bf04f](Launch-distributor-0xc57bf04f) | 1 | blocked |
+| [Transfer-only group 2 on router 0x3e328152](Transfer-only-group-2-router-0x3e328152) | 13 | blocked |
+| Serial token launchers (rule, see the weekly review) | 41 this week | never alerted (automatic) |
 
 ## Scans
+- [Weekly review 2026-11-19 to 11-26: smart money, launchers, inactive wallets, Consensus](Weekly-review-2026-11-26)
 - [Transfer-only scan (2026-11-12)](Transfer-only-scan)
 
 ## Policy (owner, 2026-11-12)

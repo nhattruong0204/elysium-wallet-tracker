@@ -10,6 +10,8 @@ Three families, all on one record:
 * status   one overall verdict, first match wins (most severe first):
            blocked    on the operator block list (TRACKING_BLOCKED_WALLETS)
            contract   not followed: the address is a contract (pool, router, vault)
+           launcher   bought 3+ tokens in their launch second: creates tokens and sells them
+                      to the first buyers (agora_tracker/launchers.py)
            cohort     member of a coordinated launch cohort (agora_tracker/cohorts.py)
            bundler    keeps buying the same token in the same block as the same other tracked
                       wallet (5+ blocks on 3+ tokens with one partner)
@@ -57,11 +59,12 @@ from typing import Any
 
 UTC = timezone.utc
 E18 = Decimal(10) ** 18
-VERSION = "labels-v2"      # v2: + distributor
+VERSION = "labels-v3"      # v2: + distributor; v3: + launcher
 
-STATUSES = ("blocked", "contract", "cohort", "bundler", "distributor", "farm", "automated",
+STATUSES = ("blocked", "contract", "launcher", "cohort", "bundler", "distributor", "farm",
+            "automated",
             "dormant", "unknown", "organic")
-N_FLAG_STATUSES = 7                   # the leading STATUSES that are evidence flags
+N_FLAG_STATUSES = 8                   # the leading STATUSES that are evidence flags
 FLAGS = (*STATUSES[:N_FLAG_STATUSES], "muted")      # muted is a flag only: the status says what the wallet is
 STYLES = ("sniper", "scalper", "swing", "holder", "mover", "mixed", "thin")
 STYLE_TAGS = ("high_frequency", "high_churn", "accumulator", "early_buyer", "concentrated",
@@ -77,6 +80,7 @@ STATUS_NOTES = {
     "contract": "a contract address (pool, router, vault), not followed",
     "cohort": "enters new launches together with the same group of tracked wallets",
     "bundler": "keeps buying the same token in the same block as the same other tracked wallet",
+    "launcher": "creates tokens and sells them to the first buyers within minutes",
     "distributor": "buys a token, then splits it across many wallets within the hour",
     "farm": "a large share of its legs are transfers with other tracked wallets",
     "automated": "machine-like timing, almost no decoded buys/sells",
@@ -338,8 +342,10 @@ def classify(wallet: str, f: Mapping[str, Any] | None, rules: LabelRules, *,
              cohort: Mapping[str, Any] | None = None,
              bundle: Mapping[str, Any] | None = None,
              quality: str | None = None,
-             muted: frozenset[str] | set[str] = frozenset()) -> dict[str, Any]:
-    """One wallet's labels. `f`: its FEATURES_SQL row (None: no legs in the lookback).
+             muted: frozenset[str] | set[str] = frozenset(),
+             launches: int = 0, launcher_min: int = 3) -> dict[str, Any]:
+    """One wallet's labels. `launches`: tokens it bought in their launch second
+    (agora_tracker/launchers.py). `f`: its FEATURES_SQL row (None: no legs in the lookback).
     `cohort`: {"id", "size", "launches"} when the wallet is a cohort member; `bundle`: its
     `bundle_partners` entry; `quality`: the wallet's data-quality class (intel.classify_quality),
     which caps the confidence when our history of the wallet has holes. Pure.
@@ -363,6 +369,11 @@ def classify(wallet: str, f: Mapping[str, Any] | None, rules: LabelRules, *,
         flags.append("contract")
         conf["contract"] = "confirmed"
         reasons.append("contract: a contract address, not followed")
+    if launches >= launcher_min:
+        flags.append("launcher")
+        conf["launcher"] = "high"
+        reasons.append(f"launcher: bought {launches} tokens in the second they were launched "
+                       "(creates tokens, sells to the first buyers; its PnL comes from them)")
     if cohort:
         flags.append("cohort")
         conf["cohort"] = "high" if cohort["launches"] >= rules.cohort_high_launches else "medium"
@@ -533,6 +544,7 @@ def classify(wallet: str, f: Mapping[str, Any] | None, rules: LabelRules, *,
 def compute_labels(conn: Any, *, chain_id: int, rules: LabelRules, now: datetime,
                    enrollment: Mapping[str, str], blocked: Iterable[str] = (),
                    quality: Mapping[str, str] | None = None, muted: Iterable[str] = (),
+                   launches: Mapping[str, int] | None = None, launcher_min: int = 3,
                    cohorts: Iterable[Any] = (), skip_tokens: Iterable[str] = ()
                    ) -> dict[str, dict[str, Any]]:
     """Labels for every wallet in `enrollment` ({wallet: enrollment status}). Two read-only
@@ -553,7 +565,8 @@ def compute_labels(conn: Any, *, chain_id: int, rules: LabelRules, now: datetime
     mu = frozenset(muted)
     return {w: classify(w, feats.get(w), rules, enrollment=st, now=now, blocked=bl,
                         cohort=co.get(w), bundle=bundles.get(w), quality=(quality or {}).get(w),
-                        muted=mu)
+                        muted=mu, launches=(launches or {}).get(w, 0),
+                        launcher_min=launcher_min)
             for w, st in enrollment.items()}
 
 

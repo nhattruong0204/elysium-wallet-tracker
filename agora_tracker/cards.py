@@ -32,6 +32,7 @@ from urllib.parse import quote
 
 from .cohorts import warning_line
 from .config import LinksConfig
+from .launchers import warning_line as launcher_warning
 from .market import TokenInfo
 
 WEI = 10 ** 18
@@ -549,6 +550,8 @@ def render_trade(p: dict, L: Links, info: TokenInfo | None = None,
     lines = [_header(p, L, info, sym)]
     if p.get("cohort_wallets"):
         lines.append("<b>" + esc(warning_line(int(p["cohort_wallets"]))) + "</b>")
+    if p.get("launcher_token"):
+        lines.append("<b>" + esc(launcher_warning()) + "</b>")
     if kind in ("BUY", "SELL"):
         lines.append(f"💰 {market_cap_label(info, hype_usd) or '<b>MC</b>: unavailable'}")
     lines += [who(L, p, hype_usd), ""]

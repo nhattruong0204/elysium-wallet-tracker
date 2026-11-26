@@ -7,8 +7,9 @@ window passes without a new qualifying buy. Each card reports:
 
 * who joined, in order, with their net HYPE at the end of the consensus (sells count against
   them, so a wallet that bought and dumped falls out),
-* how many of them are *independent*: wallets that bought in the same block as each other, or
-  that are known bundle wallets (repeated same-block buying across tokens), count once,
+* how many of them are *independent*: wallets that bought in the same block as each other,
+  that are known bundle wallets (repeated same-block buying across tokens), or that bought the
+  same amount (3+ wallets within 1%: one script sized them, e.g. 5 x 1.30 HYPE) count once,
 * the market cap when the threshold was reached and now.
 
 Only verified (`confidence = 'high'`) buys and sells with a measured HYPE leg are used, and
@@ -25,6 +26,49 @@ from typing import Any
 from ..launchintel import count_independent
 
 WEI = 10**18
+SAME_SIZE_TOL = 0.01      # net buys within 1% of each other ...
+SAME_SIZE_MIN = 3         # ... for 3+ wallets ...
+SAME_SIZE_WITHIN_S = 120  # ... buying within two minutes of each other: one operator
+
+
+def same_size_groups(net: dict[str, int], wallets: list[str],
+                     first: dict[str, Any] | None = None, *, tol: float = SAME_SIZE_TOL,
+                     min_group: int = SAME_SIZE_MIN,
+                     within_s: float = SAME_SIZE_WITHIN_S) -> dict[str, int]:
+    """wallet -> group number for 3+ wallets whose net buys match within `tol` and whose
+    first buys fall within `within_s` of each other. Independent traders do not size to the
+    same 1% three times within two minutes; a script splitting one budget does (2026-11-26:
+    five wallets x 1.30 HYPE on e/acc, three x 1.33 on MONTRADAR). `first`: wallet -> first
+    buy time (datetime) or (time, block); without it only the sizes are compared. Pure."""
+    def at(w: str) -> Any:
+        v = (first or {}).get(w)
+        return v[0] if isinstance(v, tuple) else v
+    xs = sorted((net[w], w) for w in wallets if net.get(w, 0) > 0)
+    out: dict[str, int] = {}
+    i, g = 0, 0
+    while i < len(xs):
+        j = i
+        while j + 1 < len(xs) and xs[j + 1][0] <= xs[i][0] * (1 + tol):
+            j += 1
+        group = [w for _, w in xs[i:j + 1]]
+        times = [at(w) for w in group if at(w) is not None]
+        close = len(times) < len(group) or not times or \
+            (max(times) - min(times)).total_seconds() <= within_s
+        if len(group) >= min_group and close:
+            out.update({w: g for w in group})
+            g += 1
+        i = j + 1
+    return out
+
+
+def operators(buyers: list[tuple[str, int]], bundles: set[str], net: dict[str, int],
+              first: dict[str, Any] | None = None) -> int:
+    """Independent operators among (wallet, first block): count_independent's rules plus
+    same-size groups (each counts once)."""
+    sizes = same_size_groups(net, [w for w, _ in buyers], first)
+    rest = [(w, b) for w, b in buyers if w not in sizes]
+    return count_independent(rest, bundles) + len(set(sizes.values()))
+
 
 TRADER_CHOICES = (2, 3, 4, 5, 6, 8, 10)
 WINDOW_CHOICES = (10, 15, 30, 60, 120, 240)
@@ -113,10 +157,11 @@ def sweep(token: str, legs: list[Leg], *, window: timedelta, min_traders: int, m
                 first.setdefault(x.wallet, (x.ts, x.block))
         return net, first
 
-    def size(members: list[str], first: dict[str, tuple[datetime, int]]) -> int:
+    def size(members: list[str], first: dict[str, tuple[datetime, int]],
+             net: dict[str, int]) -> int:
         if not independent:
             return len(members)
-        return count_independent([(w, first[w][1]) for w in members], bundles)
+        return operators([(w, first[w][1]) for w in members], bundles, net, first)
 
     for leg in legs:
         if ev is not None and leg.ts > ev.last_join + window:
@@ -137,7 +182,7 @@ def sweep(token: str, legs: list[Leg], *, window: timedelta, min_traders: int, m
             continue
         net, first = qualifiers(trail)
         members = [w for w in first if net[w] > 0 and net[w] >= min_wei]
-        if leg.wallet in members and size(members, first) >= min_traders:
+        if leg.wallet in members and size(members, first, net) >= min_traders:
             ev = Event(token=token, trigger_at=leg.ts, start=trail[0].ts, last_join=leg.ts,
                        trigger_tx=leg.tx, first_n=len(members))
             for x in trail:
@@ -170,7 +215,9 @@ def build_cards(rows: list[dict[str, Any]], p: ConsensusParams, since: datetime,
             members = ev.members(min_wei)
             if not members:
                 continue
-            indep = count_independent([(w, ev.first[w][1]) for w in members], bundles)
+            indep = operators([(w, ev.first[w][1]) for w in members], bundles, dict(ev.net),
+                              dict(ev.first))
+            sized = same_size_groups(dict(ev.net), members, dict(ev.first))
             cards.append({
                 "token": token, "trigger_at": ev.trigger_at, "trigger_tx": ev.trigger_tx,
                 "last_join": ev.last_join, "first_n": ev.first_n,
@@ -180,7 +227,7 @@ def build_cards(rows: list[dict[str, Any]], p: ConsensusParams, since: datetime,
                 "net_hype": sum(ev.net[w] for w in members) / WEI,
                 "members": [{"wallet": w, "net_hype": ev.net[w] / WEI,
                              "first_at": ev.first[w][0],
-                             "bundle": w in bundles,
+                             "bundle": w in bundles, "same_size": w in sized,
                              "same_block": sum(1 for o in members
                                                if ev.first[o][1] == ev.first[w][1]) > 1}
                             for w in members],

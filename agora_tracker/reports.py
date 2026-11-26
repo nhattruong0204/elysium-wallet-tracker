@@ -84,10 +84,14 @@ class Reports:
 
     # --- plumbing ------------------------------------------------------------------------
     @contextmanager
-    def ro(self) -> Iterator[Connection]:
+    def ro(self, timeout_ms: int | None = None) -> Iterator[Connection]:
+        """Read-only transaction. `timeout_ms`: a longer statement timeout for the few heavy,
+        cached aggregates (wallet table, labels, launchers) that are built at most every few
+        minutes, never per request; everything else keeps the default."""
         with self.engine.connect() as c:
             c.execute(sa.text("SET TRANSACTION READ ONLY"))
-            c.execute(sa.text(f"SET LOCAL statement_timeout = {int(self.ui.query_timeout_ms)}"))
+            ms = int(timeout_ms or self.ui.query_timeout_ms)
+            c.execute(sa.text(f"SET LOCAL statement_timeout = {ms}"))
             try:
                 yield c
             finally:

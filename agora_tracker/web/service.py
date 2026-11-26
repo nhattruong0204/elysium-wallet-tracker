@@ -17,6 +17,7 @@ from typing import Any
 
 from ..cohorts import Cohort, load_cohorts, members_of
 from ..config import Config
+from ..launchers import Launchers, load_launchers
 from ..timerange import TimeRange
 from .activity import (
     ActivityParams,
@@ -25,8 +26,8 @@ from .activity import (
 from .amounts import fmt_hype
 from .cache import Hit, TTLCache
 from .consensus import ConsensusParams
+from .intel import HEAVY_TIMEOUT_MS, IntelParams, WalletIntel
 from .intel import SORTS as INTEL_SORTS
-from .intel import IntelParams, WalletIntel
 from .intel import matches as intel_matches
 from .intel import order as intel_order
 from .labels import LabelRules, compute_labels, label_kpis, label_summary, unlabeled
@@ -88,6 +89,8 @@ class Dashboard:
         self._labels: dict[str, dict[str, Any]] = {}
         self._labels_at = float("-inf")
         self._labels_as_of: datetime | None = None
+        self._launchers = Launchers()
+        self._launchers_at = float("-inf")
 
     # --- plumbing ----------------------------------------------------------------------------
     def _cached(self, key: tuple, fn: Callable[[], Any]) -> Hit:
@@ -213,10 +216,33 @@ class Dashboard:
                 log.warning("launch cohort refresh failed", exc_info=True)
         return self._cohorts
 
-    def _quiet_wallets(self, found: list[Cohort]) -> dict[str, str]:
-        """Wallets whose trades are not a signal: detected cohort members plus the operator's
-        mute list (tracking.muted_wallets), which does not expire with the detector."""
-        return {**{w: "muted" for w in self.cfg.tracking.muted_wallets}, **members_of(found)}
+    def launchers(self, now: datetime) -> Launchers:
+        """Serial token launchers (agora_tracker/launchers.py), same rule as the tracker on the
+        read-only views; refreshed with the cohorts, a failed refresh keeps the last result."""
+        ic = self.cfg.intel
+        if not ic.launcher_filter:
+            return Launchers()
+        if time.monotonic() - self._launchers_at > ic.cohort_refresh_s:
+            self._launchers_at = time.monotonic()
+            try:
+                with self.rep.ro(HEAVY_TIMEOUT_MS) as c:
+                    self._launchers = load_launchers(
+                        c, chain_id=self.rep.chain_id, lookback_days=ic.launcher_lookback_days,
+                        window_s=ic.launcher_window_s, min_launches=ic.launcher_min, now=now)
+            except Exception:  # noqa: BLE001 - pages render without the label
+                log.warning("launcher refresh failed", exc_info=True)
+        return self._launchers
+
+    def launcher_wallets(self, now: datetime) -> set[str]:
+        found, need = self.launchers(now), self.cfg.intel.launcher_min
+        return {w for w, k in found.wallets.items() if k >= need}
+
+    def _quiet_wallets(self, found: list[Cohort], now: datetime | None = None) -> dict[str, str]:
+        """Wallets whose trades are not a signal: detected cohort members, serial launchers and
+        the operator's mute list (tracking.muted_wallets), which does not expire."""
+        launch = {w: "launcher" for w in self.launcher_wallets(now or datetime.now(UTC))}
+        return {**launch, **{w: "muted" for w in self.cfg.tracking.muted_wallets},
+                **members_of(found)}
 
     def cohort_api(self, now: datetime) -> dict[str, Any]:
         found = self.cohorts(now)
@@ -316,11 +342,15 @@ class Dashboard:
                 log.warning("consensus: bundle wallet refresh failed", exc_info=True)
         bundles = self._bundles
         hit = self._cached(("consensus", p.key()), lambda: self.rep.consensus(p, now, bundles))
-        of = self._quiet_wallets(self.cohorts(now))
+        of = self._quiet_wallets(self.cohorts(now), now)
         value = dict(hit.value)
-        if of and value.get("cards"):
+        if value.get("cards"):
+            launched = self.launchers(now).tokens
             value["cards"] = [{**k, "cohort_wallets": sum(1 for m in k["members"]
-                                                          if m["wallet"] in of)}
+                                                          if m["wallet"] in of),
+                               "launcher_wallets": sum(1 for m in k["members"]
+                                                       if of.get(m["wallet"]) == "launcher"),
+                               "launcher_token": k["token"] in launched}
                               for k in value["cards"]]
         return {**value, "bundle_wallets": len(bundles),
                 "meta": {"generated_at": now, "age_s": round(hit.age_s), "stale": hit.stale}}
@@ -334,13 +364,15 @@ class Dashboard:
         if time.monotonic() - self._labels_at > self.cfg.intel.cohort_refresh_s:
             self._labels_at = time.monotonic()        # also on failure: retry next interval
             cohorts = self.cohorts(now)
+            launch = self.launchers(now)
             try:
-                with self.rep.ro() as c:
+                with self.rep.ro(HEAVY_TIMEOUT_MS) as c:
                     self._labels = compute_labels(
                         c, chain_id=self.rep.chain_id, rules=self.label_rules, now=now,
                         enrollment=enrollment, quality=quality,
                         blocked=self.cfg.tracking.blocked_wallets,
                         muted=self.cfg.tracking.muted_wallets,
+                        launches=launch.wallets, launcher_min=self.cfg.intel.launcher_min,
                         cohorts=cohorts, skip_tokens=self.rep.hidden_tokens)
                 self._labels_as_of = now
             except Exception:  # noqa: BLE001 - the table renders without labels

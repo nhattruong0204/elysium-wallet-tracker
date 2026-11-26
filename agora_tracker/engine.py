@@ -21,6 +21,7 @@ from .classify import TradeEvent
 from .cohorts import members_of
 from .config import AlertConfig, ChainConfig, IntelConfig, LinksConfig
 from .db import BASIS_ESTIMATED, BASIS_KNOWN, BASIS_PARTIAL, Position, Store
+from .launchers import Launchers
 from .launchintel import count_independent, tier_label
 from .leaderboard import Trader
 
@@ -69,6 +70,11 @@ class Engine:
         self._cohorts_at = float("-inf")
         self._cohort_of: dict[str, str] = {}     # wallet -> cohort key
         self._range_cohort: dict[str, int] = {}  # token -> cohort wallets (this range)
+        # serial launchers (agora_tracker/launchers.py): stored-rows verdict, refreshed with the
+        # cohorts, plus creator buys seen in receipts since start (immediate, for new wallets)
+        self._launchers = Launchers()
+        self._launchers_at = float("-inf")
+        self._seen_launches: dict[str, set[str]] = {}    # wallet -> tokens it minted (receipts)
         ic_ = self.intel
         self._bursts = BurstTracker(ic_.burst_min, ic_.burst_window_s, ic_.burst_quiet_s)
         self._bots: set[str] = set()
@@ -190,7 +196,10 @@ class Engine:
         new = 0
         bots = self.automated_wallets()
         drop_legs, drop_tokens = self.airdrop_spam(result)
+        for _tx, wallet, token in result.creator_legs:         # before the verdicts below
+            self._seen_launches.setdefault(wallet, set()).add(token)
         cohort_of = self.cohort_wallets()
+        launched = self.launched_tokens()
         self._range_cohort = self._cohort_presence(result, cohort_of)
         # counterparty of each (tx, token, wallet) transfer leg, for "sent to 0x…" lines
         counter: dict[tuple[str, str, str], tuple[int, str]] = {}
@@ -232,8 +241,14 @@ class Engine:
                     continue
                 airdropped = (ev.token in drop_tokens
                               and (ev.tx, ev.wallet, ev.token) in drop_legs)
+                created = (self.intel.launcher_filter
+                           and (ev.tx, ev.wallet, ev.token) in result.creator_legs)
+                on_launch = ev.token in launched
+                if on_launch and self.intel.launcher_tokens == "warn":
+                    extra["launcher_token"] = True
                 if (ev.token not in self._tg_muted and ev.wallet not in bots and not airdropped
-                        and ev.wallet not in cohort_of):
+                        and ev.wallet not in cohort_of and not created
+                        and not (on_launch and self.intel.launcher_tokens == "mute")):
                     # (_tg_muted: the reported token, never the quote asset)
                     if ev.token in self._range_cohort:
                         extra["cohort_wallets"] = self._range_cohort[ev.token]
@@ -249,7 +264,8 @@ class Engine:
                         self.store.enqueue(c, f"ev:{ev.key}", text, payload=payload)
                     elif summary is not None:
                         self._enqueue_burst(c, summary)
-                if ev.kind == "BUY" and ev.confidence == "high" and bts is not None:
+                if (ev.kind == "BUY" and ev.confidence == "high" and bts is not None
+                        and not created and not on_launch):
                     self._maybe_cluster(c, ev, bts, min_wei)
             if stale:
                 log.info("catching up: %d alert(s) older than %.0f min not sent (indexed)",
@@ -365,9 +381,45 @@ class Engine:
         """wallet -> cohort key for coordinated launch cohorts (agora_tracker/cohorts.py);
         refreshed every cohort_refresh_s. A failed refresh keeps the last verdict. Wallets on
         the operator mute list are always included (also with the detector switched off)."""
-        if self._muted_wallets:
-            return {**self._detected_cohorts(), **self._muted_wallets}
-        return self._detected_cohorts()
+        quiet = {**self._detected_cohorts(), **self._muted_wallets}
+        if self.intel.launcher_filter:
+            quiet.update({w: "launcher" for w in self.launcher_wallets()})
+        return quiet
+
+    def _refresh_launchers(self) -> Launchers:
+        ic = self.intel
+        if time.monotonic() - self._launchers_at >= ic.cohort_refresh_s:
+            self._launchers_at = time.monotonic()
+            try:
+                found = self.store.launchers(ic)
+                n = sum(1 for k in found.wallets.values() if k >= ic.launcher_min)
+                if n != sum(1 for k in self._launchers.wallets.values() if k >= ic.launcher_min):
+                    log.info("serial launchers: %d wallet(s), %d token(s) launched in %g d: "
+                             "not alerted", n, len(found.tokens), ic.launcher_lookback_days)
+                self._launchers = found
+            except Exception:  # noqa: BLE001 - a filter must never block indexing
+                log.exception("launcher refresh failed; keeping the last verdict")
+        return self._launchers
+
+    def launcher_wallets(self) -> set[str]:
+        """Wallets with launcher_min launches in the lookback (stored rows + receipts)."""
+        if not self.intel.launcher_filter:
+            return set()
+        found, need = self._refresh_launchers(), self.intel.launcher_min
+        out = {w for w, k in found.wallets.items() if k >= need}
+        for w, toks in self._seen_launches.items():       # no double counting: max, not sum
+            if max(found.wallets.get(w, 0), len(toks)) >= need:
+                out.add(w)
+        return out
+
+    def launched_tokens(self) -> set[str]:
+        """Tokens created by a launcher (alerts of other wallets on them are muted/warned)."""
+        if not self.intel.launcher_filter:
+            return set()
+        toks = set(self._refresh_launchers().tokens)
+        for toks_w in self._seen_launches.values():
+            toks |= toks_w
+        return toks
 
     def _detected_cohorts(self) -> dict[str, str]:
         ic = self.intel
@@ -450,6 +502,8 @@ class Engine:
             self._raw_cluster(c, ev, bts, min_wei, rows, alert=not strong)
 
     def _score(self, rows: list[tuple[str, int, int, int]], window_s: int) -> dict:
+        launchers = self.launcher_wallets()       # creators selling to the crowd: not buyers at all
+        rows = [r for r in rows if r[0] not in launchers]
         n = count_independent([(w, blk) for w, _, blk, _ in rows],
                               self.bundle_wallets() | self.automated_wallets()
                               | set(self.cohort_wallets()))

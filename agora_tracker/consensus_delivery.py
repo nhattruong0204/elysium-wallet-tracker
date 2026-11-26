@@ -38,6 +38,12 @@ PATTERN = re.compile(r"0x[0-9a-f]{40}\Z")
 LOCK_ID = 0x434F4E53   # 'CONS', separate from the tracker and Stage C locks
 POLL_SECONDS = 45
 MAX_EVENTS = 10
+# Quality gate (review of 2026-11-17..26: of 14 cards posted, the 4 driven by one coordinated
+# group and the one at a $4k market cap all died; the 7 with 3 independent wallets at $20k+
+# went 1.9x-8x, SMOOR fell 45%). Env overrides on the consensus-alerts service.
+MIN_INDEPENDENT = int(os.environ.get("CONSENSUS_MIN_INDEPENDENT", "2"))
+MIN_MCAP_USD = float(os.environ.get("CONSENSUS_MIN_MCAP_USD", "10000"))
+UNKNOWN_MCAP_MIN_INDEPENDENT = 3   # no market data at all: only a clearly broad consensus
 MAX_SENDS = 5
 # Consensus cards with this many launch-cohort wallets among the traders are never posted.
 COHORT_SKIP_MIN = 2
@@ -112,6 +118,24 @@ def make_settings_engine(url: str) -> Engine:
     return engine
 
 
+
+def skip_reason(card: dict[str, Any]) -> str | None:
+    """Why a card is not worth posting, or None. Pure."""
+    if int(card.get("cohort_wallets") or 0) - int(card.get("launcher_wallets") or 0) \
+            >= COHORT_SKIP_MIN:
+        return "a launch cohort is in"
+    if card.get("launcher_token"):
+        return "token created by a serial launcher"
+    indep = int(card.get("independent") or 0) - int(card.get("launcher_wallets") or 0)
+    if indep < MIN_INDEPENDENT:
+        return f"{max(indep, 0)} independent wallet(s): one operator, not a consensus"
+    mc = card.get("mcap_at_usd")
+    if mc is not None and float(mc) < MIN_MCAP_USD:
+        return f"market cap ${float(mc):,.0f} below ${MIN_MCAP_USD:,.0f}"
+    if mc is None and indep < UNKNOWN_MCAP_MIN_INDEPENDENT:
+        return "no market data and fewer than 3 independent wallets"
+    return None
+
 class ConsensusSettingsStore:
     """Writable only as the isolated consensus_rw DB role; no tracker tables accessible."""
 
@@ -174,8 +198,10 @@ class ConsensusSettingsStore:
                     continue
                 if not PATTERN.fullmatch(token) or not tx.startswith("0x"):
                     continue
-                if int(card.get("cohort_wallets") or 0) >= COHORT_SKIP_MIN:
-                    continue                # a launch cohort is in: not a signal to follow
+                why = skip_reason(card)
+                if why:
+                    log.info("consensus: not posting %s: %s", token, why)
+                    continue
                 body, buttons = render_card(card, links)
                 key = f"{token}:{at.isoformat()}:{tx}"
                 result = c.execute(sa.text(f"""

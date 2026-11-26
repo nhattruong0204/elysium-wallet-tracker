@@ -306,6 +306,17 @@ class IntelConfig:
     # transfer alerts, and a final summary follows after `burst_quiet_s` without another one.
     # Still indexed. Off: ALERTS_TRANSFER_BURST=off (tracker).
     burst_filter: bool = True
+    # Serial token launchers (agora_tracker/launchers.py): wallets that bought in the launch
+    # second of `launcher_min` tokens within `launcher_lookback_days` (or whose buy minted the
+    # token) get no alerts and never count as independent buyers. `launcher_tokens`: what to
+    # do with OTHER wallets' alerts on tokens a launcher created: "mute" (default; those
+    # tokens are dumped within minutes) or "warn" (alert with a warning line).
+    # Off: ALERTS_LAUNCHER_FILTER=off (tracker).
+    launcher_filter: bool = True
+    launcher_min: int = 3
+    launcher_lookback_days: float = 7.0
+    launcher_window_s: float = 2.0
+    launcher_tokens: str = "mute"
     burst_min: int = 4
     burst_window_s: float = 120.0
     burst_quiet_s: float = 90.0
@@ -463,6 +474,10 @@ def load_config(path: str | Path) -> Config:
         intel.airdrop_filter = False
     if os.environ.get("ALERTS_MAX_AGE_S", "").strip():
         alerts.max_alert_age_s = float(os.environ["ALERTS_MAX_AGE_S"])
+    if os.environ.get("ALERTS_LAUNCHER_FILTER", "").strip().lower() in ("off", "0", "false", "no"):
+        intel.launcher_filter = False
+    if os.environ.get("ALERTS_LAUNCHER_TOKENS", "").strip().lower() in ("mute", "warn"):
+        intel.launcher_tokens = os.environ["ALERTS_LAUNCHER_TOKENS"].strip().lower()
     if os.environ.get("ALERTS_TRANSFER_BURST", "").strip().lower() in ("off", "0", "false", "no"):
         intel.burst_filter = False
     if os.environ.get("ALERTS_COHORT_FILTER", "").strip().lower() in ("off", "0", "false", "no"):
