@@ -699,33 +699,25 @@ PY
     tracker_alive
     ;;
   wallet-probe)
-    # Read-only: inactive top-100 wallets (what they did), and whether the Wallet intelligence labels are current.
+    # Read-only: alert volume caused by launch wallets; does a stored-data launch rule match the receipt evidence?
     need_docker
-    curl -s -m 60 "http://127.0.0.1:8100/leaderboard?window=7d" | grep -oE "labels not computed yet|as of [^<]{0,40}" | head -3 | sed 's/^/  labels: /' || true
-    docker logs --since 24h elysium-web 2>&1 | grep -iE "label refresh failed|QueryCanceled" | cut -c1-160 | sort | uniq -c | tail -6 || true
     psql_admin -At -F'|' <<'SQL' || true
-SET default_transaction_read_only = on; SET statement_timeout = '90s';
-WITH w(a) AS (VALUES ('0x4afcfed6306de68a8f8ddaa54b7fd3c12c158fd3'),('0x9e39d6282e4525526f33092c8aad27005e0ea02d'),('0xad89a1599659fbb0d426c2313b76aa8b6290c98f'),
- ('0xae88f8821da1e320f80f393b1a84e644e32e9d03'),('0x57b8cfc502f14cc9ef77668d2208f001e1ccb4fc'),('0x7f5e1246c48d84c5e10330e4b82011a9b15b0e12'),('0x276da0b40416cd299fbc5aa94354aac23dbe17b7'),
- ('0x657e8916d9edc72d5d25fdc012f29778bec0a0b3'),('0x4ebfc752c2536105cc5359d76ae6ef976839ebfd'),('0xfe167490561449a8138ed5e7b062a9583ed14a43'),('0xb5437769ac9e5c87fa447c11c81382440e1e4cff'),
- ('0xbde6fdcbc0e882388727583327497e0c4a4573b0'),('0xb879684baa65c02a7fa1a39ad068c287c8044d93'),('0x28a6bbc8e030974fa79bbf2518c2b82f8bbb50cb'),('0x71da0947605ff234083465184ce692ae4cd3278e'),
- ('0x3a014bfd532c6b430970d010ba91f6df16f46a66'),('0x17ef80f877e04746089faf7dd4ee0c404250ad23'),('0xe0925725a3eaf65bd744eb970415e7f114ddfabe'),('0xa1f9ea41cab1167b91c7e6226f6b7da4dbbba77e'),
- ('0xc88252fcf1690e45195f690f9a6c1b6423affacc'),('0xbc4a11a09a9898568e28533ef537adeb489900a6'))
-SELECT 'DATA','tw', w.a, count(t.*), count(t.*) FILTER (WHERE t.kind = 'TRANSFER_IN'), count(t.*) FILTER (WHERE t.kind = 'TRANSFER_OUT'), count(t.*) FILTER (WHERE t.kind IN ('BUY','SELL')),
-       count(DISTINCT t.token), to_char(min(t.block_time), 'MM-DD HH24:MI'), to_char(max(t.block_time), 'MM-DD HH24:MI'),
-       (SELECT string_agg(DISTINCT left(x.to_address, 10), ',') FROM trades tt JOIN transactions x ON x.chain_id = tt.chain_id AND x.tx_hash = tt.tx_hash WHERE tt.chain_id = 99901 AND tt.wallet = w.a AND x.from_address = w.a),
-       (SELECT count(*) FROM trades tt JOIN transactions x ON x.chain_id = tt.chain_id AND x.tx_hash = tt.tx_hash WHERE tt.chain_id = 99901 AND tt.wallet = w.a AND x.from_address = w.a),
-       (SELECT string_agg(DISTINCT left(coalesce(m.symbol, tt.token), 10), ',') FROM trades tt LEFT JOIN token_metadata m ON m.chain_id = 99901 AND m.address = tt.token WHERE tt.chain_id = 99901 AND tt.wallet = w.a AND tt.kind = 'TRANSFER_OUT')
-  FROM w LEFT JOIN trades t ON t.chain_id = 99901 AND t.wallet = w.a GROUP BY w.a;
-WITH w(a) AS (VALUES ('0xad89a1599659fbb0d426c2313b76aa8b6290c98f'),('0xae88f8821da1e320f80f393b1a84e644e32e9d03'),('0x7f5e1246c48d84c5e10330e4b82011a9b15b0e12'),('0x276da0b40416cd299fbc5aa94354aac23dbe17b7'),
- ('0x4ebfc752c2536105cc5359d76ae6ef976839ebfd'),('0xbde6fdcbc0e882388727583327497e0c4a4573b0'),('0x28a6bbc8e030974fa79bbf2518c2b82f8bbb50cb'),('0x3a014bfd532c6b430970d010ba91f6df16f46a66'),
- ('0x17ef80f877e04746089faf7dd4ee0c404250ad23'),('0xe0925725a3eaf65bd744eb970415e7f114ddfabe'),('0xfe167490561449a8138ed5e7b062a9583ed14a43'),('0xb879684baa65c02a7fa1a39ad068c287c8044d93'),('0x71da0947605ff234083465184ce692ae4cd3278e'))
-SELECT 'DATA','tx', t.wallet, t.kind, left(t.token, 12), coalesce(m.symbol, '?'), to_char(t.block_time, 'MM-DD HH24:MI:SS'), round(t.qty / power(10, coalesce(m.decimals, 18)))::text,
-       left(coalesce(x.from_address, '?'), 12), left(coalesce(x.to_address, '?'), 12), left(t.tx_hash, 12),
-       (SELECT left(tr.to_address, 12) FROM token_transfers tr WHERE tr.chain_id = 99901 AND tr.tx_hash = t.tx_hash AND tr.from_address = t.wallet LIMIT 1)
-  FROM trades t JOIN w ON w.a = t.wallet LEFT JOIN transactions x ON x.chain_id = t.chain_id AND x.tx_hash = t.tx_hash
-  LEFT JOIN token_metadata m ON m.chain_id = 99901 AND m.address = t.token
- WHERE t.chain_id = 99901 AND t.kind <> 'TRANSFER_IN' ORDER BY t.wallet, t.block_time;
+SET default_transaction_read_only = on; SET statement_timeout = '120s';
+WITH fac AS (SELECT DISTINCT t.wallet FROM trades t JOIN transactions x ON x.chain_id = t.chain_id AND x.tx_hash = t.tx_hash
+              WHERE t.chain_id = 99901 AND t.kind = 'BUY' AND x.to_address = '0x9c73d179b2911e89a4edc47cfd78765990bc6761' AND t.block_time > now() - interval '7 days')
+SELECT 'DATA','ob', coalesce(payload->>'type', '?'), status, count(*), count(*) FILTER (WHERE payload->>'wallet' IN (SELECT wallet FROM fac))
+  FROM notification_outbox WHERE created_at > now() - interval '7 days' GROUP BY 3, 4;
+-- the launch-second rule on stored data only (what the website can compute), against the receipt-proven set
+WITH t AS (SELECT wallet, token, min(block_time) fb FROM trades WHERE chain_id = 99901 AND kind = 'BUY' AND block_time > now() - interval '7 days' GROUP BY 1, 2),
+t0 AS (SELECT token, min(block_time) t0 FROM trades WHERE chain_id = 99901 AND token IN (SELECT token FROM t) GROUP BY 1),
+r AS (SELECT t.wallet, count(*) FILTER (WHERE p.launched_at IS NOT NULL AND t.fb BETWEEN p.launched_at - interval '2 seconds' AND p.launched_at + interval '2 seconds'
+                                         AND t.fb <= t0.t0 + interval '2 seconds') n, count(*) bt
+       FROM t JOIN t0 USING (token) LEFT JOIN token_profiles p ON p.chain_id = 99901 AND p.address = t.token GROUP BY 1),
+fac AS (SELECT t.wallet, count(DISTINCT t.token) n FROM trades t JOIN transactions x ON x.chain_id = t.chain_id AND x.tx_hash = t.tx_hash
+         WHERE t.chain_id = 99901 AND t.kind = 'BUY' AND x.to_address = '0x9c73d179b2911e89a4edc47cfd78765990bc6761' AND t.block_time > now() - interval '7 days' GROUP BY 1)
+SELECT 'DATA','rule', r.wallet, r.n, r.bt, coalesce(fac.n, 0) FROM r LEFT JOIN fac USING (wallet) WHERE r.n >= 1 OR fac.n IS NOT NULL;
+SELECT 'DATA','prof', count(*), count(p.address), count(p.launched_at) FROM (SELECT DISTINCT token FROM trades WHERE chain_id = 99901 AND kind = 'BUY' AND block_time > now() - interval '7 days') q
+  LEFT JOIN token_profiles p ON p.chain_id = 99901 AND p.address = q.token;
 SQL
     ;;
   ui-smoke)
