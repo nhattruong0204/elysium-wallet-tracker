@@ -737,7 +737,7 @@ def rpc(method, params):
         return json.loads(r.read()).get("result")
 for line in sys.stdin:
     f = line.rstrip("\n").split("|")
-    if len(f) < 6 or not f[1].startswith("samp"):
+    if len(f) < 5 or not f[1].startswith("samp"):
         continue
     kind, wallet, token, tx = f[1], f[2], f[3], f[4]
     try:

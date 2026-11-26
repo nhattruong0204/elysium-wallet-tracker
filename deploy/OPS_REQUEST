@@ -1,3 +1,3 @@
 action=wallet-probe
 commit=ops-only read-only probe
-requested=2026-11-27 receipt check of launch-first buys (read-only, ~45 RPC calls)
+requested=2026-11-27 receipt check (fix parser)
