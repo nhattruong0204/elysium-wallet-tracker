@@ -702,14 +702,22 @@ PY
     # Read-only: 7-day research pull (wallet PnL and behaviour, tokens, Consensus outcomes).
     need_docker
     docker inspect elysium-wallet-tracker --format 'tracker health={{.State.Health.Status}} started={{.State.StartedAt}}'
-    python3 - <<'PY_RUN'
+    python3 - <<'PY_RUN' || echo 'csv step failed'
 import csv, io, json, time, urllib.request
-with urllib.request.urlopen(f"http://127.0.0.1:8100/api/v1/leaderboard.csv?window=7d&_cb={time.time()}", timeout=120) as r:
-    rows = list(csv.DictReader(io.StringIO(r.read().decode())))
+rows = []
+for attempt in range(3):
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:8100/api/v1/leaderboard.csv?window=all&_cb={time.time()}", timeout=120) as r:
+            rows = list(csv.DictReader(io.StringIO(r.read().decode())))
+        break
+    except Exception as e:
+        print("csv attempt", attempt, "failed:", e)
+        time.sleep(20)
 keep = "wallet status rank best_rank agora_pnl_hype measured_pnl_hype label_status label_flags cohort_id style style_tags size_tier performance_tier label_confidence quality bundle_partner_wallets lb_split_tokens lb_split_max_transfers".split()
 for x in rows:
     print("DATA|lab|" + json.dumps({k: x[k] for k in keep if x.get(k, "") != ""}))
 PY_RUN
+    true
     psql_admin -At -F'|' <<'SQL'
 SET default_transaction_read_only = on; SET statement_timeout = '150s'; SET work_mem = '64MB';
 -- health
