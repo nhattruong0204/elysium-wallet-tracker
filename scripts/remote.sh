@@ -699,15 +699,138 @@ PY
     tracker_alive
     ;;
   wallet-probe)
-    # Read-only: certificate issuer as served, and why the tracker container reports unhealthy.
+    # Read-only: 7-day research pull (wallet PnL and behaviour, tokens, Consensus outcomes).
     need_docker
-    echo "== cert as served"; echo | timeout 10 openssl s_client -servername onchainflow.app -connect 127.0.0.1:443 2>/dev/null | openssl x509 -noout -issuer -subject -dates -fingerprint -sha256 2>/dev/null | sed 's/^/  /'
-    echo | timeout 10 openssl s_client -servername onchainflow.app -connect 127.0.0.1:443 2>/dev/null | grep -E "Verify return code|Verification" | sed 's/^/  /'
-    echo "== tracker health"; docker inspect elysium-wallet-tracker --format '{{range .State.Health.Log}}{{.End}} exit={{.ExitCode}} {{.Output}}{{println}}{{end}}' | tail -4 | cut -c1-400 | sed 's/^/  /'
-    echo "== tracker log (last 12)"; docker logs --tail 12 elysium-wallet-tracker 2>&1 | cut -c1-260 | sed 's/^/  /'
-    psql_admin -At -F' ' -c "SELECT 'cursor', last_block, updated_at, now() - updated_at FROM scan_cursor LIMIT 1" 2>&1 | head -2 | sed 's/^/  /'
-    psql_admin -At -F' ' -c "SELECT 'last trade', max(block_time), now() - max(block_time) FROM trades" | sed 's/^/  /'
-    psql_admin -At -F' ' -c "SELECT 'outbox', status, count(*), max(created_at) FROM notification_outbox WHERE created_at > now() - interval '24 hours' GROUP BY 2" | sed 's/^/  /'
+    docker inspect elysium-wallet-tracker --format 'tracker health={{.State.Health.Status}} started={{.State.StartedAt}}'
+    python3 - <<'PY_RUN'
+import csv, io, json, time, urllib.request
+with urllib.request.urlopen(f"http://127.0.0.1:8100/api/v1/leaderboard.csv?window=7d&_cb={time.time()}", timeout=120) as r:
+    rows = list(csv.DictReader(io.StringIO(r.read().decode())))
+keep = "wallet status rank best_rank agora_pnl_hype measured_pnl_hype label_status label_flags cohort_id style style_tags size_tier performance_tier label_confidence quality bundle_partner_wallets lb_split_tokens lb_split_max_transfers".split()
+for x in rows:
+    print("DATA|lab|" + json.dumps({k: x[k] for k in keep if x.get(k, "") != ""}))
+PY_RUN
+    psql_admin -At -F'|' <<'SQL'
+SET default_transaction_read_only = on; SET statement_timeout = '150s'; SET work_mem = '64MB';
+-- health
+SELECT 'DATA','health', (SELECT block_number FROM indexer_checkpoints WHERE chain_id = 99901 ORDER BY block_number DESC LIMIT 1),
+       (SELECT max(block_time) FROM trades WHERE chain_id = 99901), (SELECT value FROM service_state WHERE key = 'heartbeat' LIMIT 1),
+       now(), (SELECT hype_usd FROM hype_usd_rates ORDER BY observed_at DESC LIMIT 1);
+SELECT 'DATA','day', to_char(date_trunc('day', block_time), 'MM-DD'), count(*), count(DISTINCT wallet), count(*) FILTER (WHERE kind = 'BUY'),
+       count(*) FILTER (WHERE kind = 'SELL'), round(coalesce(sum(hype_wei) FILTER (WHERE kind = 'BUY'), 0) / 1e18), count(DISTINCT token) FILTER (WHERE kind = 'BUY')
+  FROM trades WHERE chain_id = 99901 AND block_time > now() - interval '14 days' GROUP BY 3 ORDER BY 3;
+-- wallets, 7 days
+WITH t AS (SELECT * FROM trades WHERE chain_id = 99901 AND block_time > now() - interval '7 days'
+            AND token <> ALL(ARRAY['0xb47c4c8f73f009cc0c0d3f92b388d13e293f0b65','0xba876237b0f021a6c6d852d6c26e107997cc5e81','0xe45a355d9e9cad2ad85f2d03e3ee3102a036acf0'])),
+t0 AS (SELECT token, min(block_time) AS t0 FROM trades WHERE chain_id = 99901 AND token IN (SELECT DISTINCT token FROM t) GROUP BY token),
+a AS (SELECT wallet, count(*) FILTER (WHERE kind = 'BUY') b, count(*) FILTER (WHERE kind = 'SELL') s,
+        count(*) FILTER (WHERE kind = 'TRANSFER_IN') ti, count(*) FILTER (WHERE kind = 'TRANSFER_OUT') tout,
+        round(coalesce(sum(hype_wei) FILTER (WHERE kind = 'BUY'), 0) / 1e18, 2) bh, round(coalesce(sum(hype_wei) FILTER (WHERE kind = 'SELL'), 0) / 1e18, 2) sh,
+        round((percentile_cont(0.5) WITHIN GROUP (ORDER BY hype_wei) FILTER (WHERE kind = 'BUY' AND hype_wei > 0) / 1e18)::numeric, 3) mb,
+        round((stddev_pop(hype_wei) FILTER (WHERE kind = 'BUY' AND hype_wei > 0) / nullif(avg(hype_wei) FILTER (WHERE kind = 'BUY' AND hype_wei > 0), 0))::numeric, 2) cv,
+        count(DISTINCT date_trunc('day', block_time)) FILTER (WHERE kind IN ('BUY','SELL')) days,
+        max(block_time) FILTER (WHERE kind <> 'TRANSFER_IN') lastown FROM t GROUP BY wallet),
+fb AS (SELECT wallet, token, min(block_time) FILTER (WHERE kind = 'BUY') fb, min(block_time) FILTER (WHERE kind = 'SELL') fs FROM t GROUP BY 1, 2),
+ln AS (SELECT fb.wallet, count(fb.fb) bt,
+        count(*) FILTER (WHERE fb.fb <= t0.t0 + interval '3 seconds' AND t0.t0 > now() - interval '7 days') f3,
+        count(*) FILTER (WHERE fb.fb <= t0.t0 + interval '120 seconds' AND t0.t0 > now() - interval '7 days') f120,
+        count(*) FILTER (WHERE fb.fb IS NOT NULL AND t0.t0 > now() - interval '7 days') newt,
+        round((percentile_cont(0.5) WITHIN GROUP (ORDER BY extract(epoch FROM fb.fs - fb.fb)) FILTER (WHERE fb.fs > fb.fb))::numeric) hold
+       FROM fb JOIN t0 USING (token) GROUP BY 1),
+sy AS (SELECT wallet, sum(c) dup, max(c) maxdup FROM (SELECT fb.wallet, lower(m.symbol), count(*) c FROM fb JOIN token_metadata m ON m.chain_id = 99901 AND m.address = fb.token
+         WHERE fb.fb IS NOT NULL GROUP BY 1, 2 HAVING count(*) >= 2) q GROUP BY 1),
+cr AS (SELECT creator wallet, count(*) n FROM ascend_launches WHERE chain_id = 99901 AND launched_at > now() - interval '7 days' GROUP BY 1),
+rp AS (SELECT r.wallet, count(*) FILTER (WHERE r.status = 'measured') c, count(*) FILTER (WHERE r.status = 'measured' AND r.pnl_wei > 0) w,
+        round(coalesce(sum(r.pnl_wei) FILTER (WHERE r.status = 'measured'), 0) / 1e18, 2) pnl,
+        round(coalesce(sum(r.pnl_wei) FILTER (WHERE r.status = 'measured' AND r.pnl_wei > 0), 0) / 1e18, 2) gw,
+        round(coalesce(-sum(r.pnl_wei) FILTER (WHERE r.status = 'measured' AND r.pnl_wei < 0), 0) / 1e18, 2) gl,
+        round(coalesce(sum(r.cost_basis_wei) FILTER (WHERE r.status = 'measured'), 0) / 1e18, 2) cost,
+        count(*) FILTER (WHERE r.status <> 'measured') um, count(DISTINCT r.token) FILTER (WHERE r.status = 'measured') ct,
+        round(coalesce(max(r.pnl_wei) FILTER (WHERE r.status = 'measured'), 0) / 1e18, 2) best
+       FROM realized_pnl r JOIN t ON t.id = r.trade_id GROUP BY 1),
+lp AS (SELECT DISTINCT ON (token) token, price_hype, captured_at FROM token_market_snapshots WHERE chain_id = 99901 AND captured_at > now() - interval '3 days' ORDER BY token, captured_at DESC),
+op AS (SELECT p.wallet, count(*) n, round(sum(p.cost_wei) / 1e18, 2) cost,
+        round(sum(CASE WHEN lp.price_hype IS NOT NULL THEN p.qty / power(10, coalesce(m.decimals, 18)) * lp.price_hype END)::numeric, 2) val,
+        round(sum(CASE WHEN lp.price_hype IS NOT NULL THEN p.cost_wei END) / 1e18, 2) pcost, count(*) FILTER (WHERE lp.price_hype IS NULL) nop
+       FROM wallet_positions p LEFT JOIN lp ON lp.token = p.token LEFT JOIN token_metadata m ON m.chain_id = 99901 AND m.address = p.token
+      WHERE p.chain_id = 99901 AND p.qty > 0 AND p.cost_wei > 0 AND (p.wallet, p.token) IN (SELECT wallet, token FROM t WHERE kind = 'BUY') GROUP BY 1)
+SELECT 'DATA','w', a.wallet, a.b, a.s, a.ti, a.tout, a.bh, a.sh, a.mb, a.cv, a.days, to_char(a.lastown, 'MM-DD HH24:MI'),
+       ln.bt, ln.f3, ln.f120, ln.newt, ln.hold, coalesce(sy.dup, 0), coalesce(sy.maxdup, 0), coalesce(cr.n, 0),
+       coalesce(rp.c, 0), coalesce(rp.w, 0), coalesce(rp.pnl, 0), coalesce(rp.gw, 0), coalesce(rp.gl, 0), coalesce(rp.cost, 0), coalesce(rp.um, 0), coalesce(rp.ct, 0), coalesce(rp.best, 0),
+       coalesce(op.n, 0), coalesce(op.cost, 0), op.val, op.pcost, coalesce(op.nop, 0)
+  FROM a LEFT JOIN ln USING (wallet) LEFT JOIN sy USING (wallet) LEFT JOIN cr USING (wallet) LEFT JOIN rp USING (wallet) LEFT JOIN op USING (wallet);
+-- top token contributions per wallet
+WITH t AS (SELECT * FROM trades WHERE chain_id = 99901 AND block_time > now() - interval '7 days'),
+wt AS (SELECT r.wallet, r.token, round(sum(r.pnl_wei) / 1e18, 2) pnl, round(sum(r.cost_basis_wei) / 1e18, 2) cost FROM realized_pnl r JOIN t ON t.id = r.trade_id
+        WHERE r.status = 'measured' GROUP BY 1, 2),
+k AS (SELECT wallet, token, min(block_time) FILTER (WHERE kind = 'BUY') fb, min(block_time) FILTER (WHERE kind = 'SELL') fs,
+        count(*) FILTER (WHERE kind = 'BUY') nb, count(*) FILTER (WHERE kind = 'SELL') ns FROM t GROUP BY 1, 2),
+t0 AS (SELECT token, min(block_time) t0 FROM trades WHERE chain_id = 99901 AND token IN (SELECT token FROM wt) GROUP BY 1),
+nbw AS (SELECT token, count(DISTINCT wallet) n FROM t WHERE kind = 'BUY' GROUP BY 1),
+r AS (SELECT wt.*, row_number() OVER (PARTITION BY wt.wallet ORDER BY abs(wt.pnl) DESC) rk FROM wt)
+SELECT 'DATA','wt', r.wallet, r.token, coalesce(m.symbol, '?'), r.pnl, r.cost, k.nb, k.ns, round(extract(epoch FROM k.fb - t0.t0)), round(extract(epoch FROM k.fs - k.fb)),
+       coalesce(nbw.n, 0), to_char(k.fb, 'MM-DD HH24:MI'), coalesce(pr.launchpad, '')
+  FROM r JOIN k USING (wallet, token) JOIN t0 USING (token) LEFT JOIN nbw USING (token)
+  LEFT JOIN token_metadata m ON m.chain_id = 99901 AND m.address = r.token LEFT JOIN token_profiles pr ON pr.chain_id = 99901 AND pr.address = r.token
+ WHERE r.rk <= 3;
+-- tokens with 2+ tracked buyers
+WITH t AS (SELECT * FROM trades WHERE chain_id = 99901 AND block_time > now() - interval '7 days'
+            AND token <> ALL(ARRAY['0xb47c4c8f73f009cc0c0d3f92b388d13e293f0b65','0xba876237b0f021a6c6d852d6c26e107997cc5e81','0xe45a355d9e9cad2ad85f2d03e3ee3102a036acf0'])),
+g AS (SELECT token, count(DISTINCT wallet) FILTER (WHERE kind = 'BUY') nb, min(block_time) FILTER (WHERE kind = 'BUY') fbuy,
+        round(coalesce(sum(hype_wei) FILTER (WHERE kind = 'BUY'), 0) / 1e18, 1) bh, round(coalesce(sum(hype_wei) FILTER (WHERE kind = 'SELL'), 0) / 1e18, 1) sh,
+        count(*) FILTER (WHERE kind = 'TRANSFER_OUT') tout FROM t GROUP BY 1 HAVING count(DISTINCT wallet) FILTER (WHERE kind = 'BUY') >= 3),
+t0 AS (SELECT token, min(block_time) t0 FROM trades WHERE chain_id = 99901 AND token IN (SELECT token FROM g) GROUP BY 1),
+e AS (SELECT t.token, count(DISTINCT t.wallet) n2m, count(DISTINCT t.block_number) blk2m FROM t JOIN t0 USING (token) WHERE t.kind = 'BUY' AND t.block_time <= t0.t0 + interval '120 seconds' GROUP BY 1),
+pn AS (SELECT r.token, round(sum(r.pnl_wei) FILTER (WHERE r.status = 'measured') / 1e18, 2) pnl, count(DISTINCT r.wallet) FILTER (WHERE r.status = 'measured' AND r.pnl_wei > 0) win,
+         count(DISTINCT r.wallet) FILTER (WHERE r.status = 'measured' AND r.pnl_wei <= 0) lose FROM realized_pnl r JOIN t ON t.id = r.trade_id GROUP BY 1),
+sn AS (SELECT g.token, count(s.*) ns,
+         (array_agg(s.mcap_hype ORDER BY s.captured_at) FILTER (WHERE s.captured_at >= g.fbuy))[1] mfirst,
+         max(s.mcap_hype) FILTER (WHERE s.captured_at >= g.fbuy) mmax,
+         (array_agg(s.mcap_hype ORDER BY s.captured_at DESC))[1] mlast, max(s.captured_at) lastcap, max(s.vol_24h_hype) v24
+       FROM g LEFT JOIN token_market_snapshots s ON s.chain_id = 99901 AND s.token = g.token AND s.captured_at > g.fbuy - interval '1 hour' GROUP BY 1)
+SELECT 'DATA','tok', g.token, coalesce(m.symbol, '?'), coalesce(pr.launchpad, ''), to_char(coalesce(pr.launched_at, t0.t0), 'MM-DD HH24:MI'), to_char(g.fbuy, 'MM-DD HH24:MI'),
+       g.nb, coalesce(e.n2m, 0), coalesce(e.blk2m, 0), g.bh, g.sh, g.tout, pn.pnl, coalesce(pn.win, 0), coalesce(pn.lose, 0),
+       sn.ns, round(sn.mfirst), round(sn.mmax), round(sn.mlast), to_char(sn.lastcap, 'MM-DD HH24:MI'), round(sn.v24), coalesce(al.creator, ''),
+       (SELECT count(*) FROM wallet_enrollment we WHERE we.chain_id = 99901 AND we.address = al.creator)
+  FROM g JOIN t0 USING (token) LEFT JOIN e USING (token) LEFT JOIN pn USING (token) LEFT JOIN sn USING (token)
+  LEFT JOIN token_metadata m ON m.chain_id = 99901 AND m.address = g.token LEFT JOIN token_profiles pr ON pr.chain_id = 99901 AND pr.address = g.token
+  LEFT JOIN ascend_launches al ON al.chain_id = 99901 AND al.token = g.token
+ ORDER BY g.nb DESC LIMIT 150;
+-- Consensus channel deliveries (10 days) and what the token did afterwards
+WITH d AS (SELECT id, token, trigger_at, sent_at, status, replace(replace(body, E'\n', ' ~ '), '|', '/') body FROM consensus_alerts.deliveries
+            WHERE created_at > now() - interval '12 days')
+SELECT 'DATA','cons', d.id, d.token, d.status, to_char(d.trigger_at, 'MM-DD HH24:MI'), to_char(d.sent_at, 'MM-DD HH24:MI'),
+       round(a.m), round(h1.m), round(h6.m), round(h24.m), round(mx.mx), round(mx.mn), round(l.m), to_char(l.c, 'MM-DD HH24:MI'), coalesce(pr.launchpad, ''),
+       to_char(coalesce(pr.launched_at, (SELECT min(block_time) FROM trades WHERE chain_id = 99901 AND token = d.token)), 'MM-DD HH24:MI'),
+       (SELECT round(coalesce(sum(hype_wei), 0) / 1e18, 1) FROM trades WHERE chain_id = 99901 AND token = d.token AND kind = 'SELL' AND block_time BETWEEN d.trigger_at AND d.trigger_at + interval '2 hours'),
+       (SELECT round(sum(r.pnl_wei) / 1e18, 2) FROM realized_pnl r WHERE r.chain_id = 99901 AND r.token = d.token AND r.status = 'measured'),
+       left(d.body, 900)
+  FROM d
+  LEFT JOIN token_profiles pr ON pr.chain_id = 99901 AND pr.address = d.token
+  LEFT JOIN LATERAL (SELECT mcap_hype m FROM token_market_snapshots WHERE chain_id = 99901 AND token = d.token AND captured_at BETWEEN d.trigger_at - interval '20 minutes' AND d.trigger_at + interval '20 minutes' ORDER BY abs(extract(epoch FROM captured_at - d.trigger_at)) LIMIT 1) a ON true
+  LEFT JOIN LATERAL (SELECT mcap_hype m FROM token_market_snapshots WHERE chain_id = 99901 AND token = d.token AND captured_at >= d.trigger_at + interval '1 hour' ORDER BY captured_at LIMIT 1) h1 ON true
+  LEFT JOIN LATERAL (SELECT mcap_hype m FROM token_market_snapshots WHERE chain_id = 99901 AND token = d.token AND captured_at >= d.trigger_at + interval '6 hours' ORDER BY captured_at LIMIT 1) h6 ON true
+  LEFT JOIN LATERAL (SELECT mcap_hype m FROM token_market_snapshots WHERE chain_id = 99901 AND token = d.token AND captured_at >= d.trigger_at + interval '24 hours' ORDER BY captured_at LIMIT 1) h24 ON true
+  LEFT JOIN LATERAL (SELECT max(mcap_hype) mx, min(mcap_hype) mn FROM token_market_snapshots WHERE chain_id = 99901 AND token = d.token AND captured_at BETWEEN d.trigger_at AND d.trigger_at + interval '24 hours') mx ON true
+  LEFT JOIN LATERAL (SELECT mcap_hype m, captured_at c FROM token_market_snapshots WHERE chain_id = 99901 AND token = d.token ORDER BY captured_at DESC LIMIT 1) l ON true
+ ORDER BY d.trigger_at;
+-- inactive: enrolled wallets and their last own action
+WITH lo AS (SELECT wallet, max(block_time) FILTER (WHERE kind IN ('BUY','SELL')) lt, max(block_time) FILTER (WHERE kind <> 'TRANSFER_IN') lo FROM trades WHERE chain_id = 99901 GROUP BY 1),
+ls AS (SELECT id FROM leaderboard_snapshots WHERE chain_id = 99901 AND complete AND status = 'ok' ORDER BY captured_at DESC LIMIT 1)
+SELECT 'DATA','enr', e.address, e.status, coalesce(e.excluded_reason, ''), e.in_top, (SELECT rank FROM leaderboard_snapshot_entries x WHERE x.snapshot_id = (SELECT id FROM ls) AND x.address = e.address),
+       e.best_rank, to_char(e.first_top_at, 'MM-DD'), to_char(e.last_top_at, 'MM-DD'), to_char(lo.lt, 'MM-DD HH24:MI'), to_char(lo.lo, 'MM-DD HH24:MI'),
+       (SELECT round(pnl_usd) FROM leaderboard_snapshot_entries x WHERE x.snapshot_id = (SELECT id FROM ls) AND x.address = e.address)
+  FROM wallet_enrollment e LEFT JOIN lo ON lo.wallet = e.address WHERE e.chain_id = 99901;
+-- same-block co-buying pairs and token transfers between tracked wallets (7 days)
+WITH b AS (SELECT DISTINCT wallet, token, block_number FROM trades WHERE chain_id = 99901 AND kind = 'BUY' AND block_time > now() - interval '7 days'),
+blk AS (SELECT token, block_number FROM b GROUP BY 1, 2 HAVING count(*) BETWEEN 2 AND 40)
+SELECT 'DATA','pair', x.wallet, y.wallet, count(*), count(DISTINCT x.token)
+  FROM b x JOIN b y ON y.token = x.token AND y.block_number = x.block_number AND x.wallet < y.wallet
+  JOIN blk ON blk.token = x.token AND blk.block_number = x.block_number GROUP BY 3, 4 HAVING count(*) >= 4 AND count(DISTINCT x.token) >= 3;
+SELECT 'DATA','link', o.wallet, i.wallet, count(*), count(DISTINCT o.token)
+  FROM trades o JOIN trades i ON i.chain_id = o.chain_id AND i.tx_hash = o.tx_hash AND i.token = o.token AND i.kind = 'TRANSFER_IN' AND i.wallet <> o.wallet
+ WHERE o.chain_id = 99901 AND o.kind = 'TRANSFER_OUT' AND o.block_time > now() - interval '7 days' GROUP BY 3, 4;
+SQL
     ;;
   ui-smoke)
     docker compose run --rm --no-deps ui --ui-smoke
