@@ -699,63 +699,34 @@ PY
     tracker_alive
     ;;
   wallet-probe)
-    # Read-only: is the first buy in the same transaction that creates the token? (receipts)
+    # Read-only: inactive top-100 wallets (what they did), and whether the Wallet intelligence labels are current.
     need_docker
-    psql_admin -At -F'|' > /tmp/elysium-q3.out <<'SQL' || true
+    curl -s -m 60 "http://127.0.0.1:8100/leaderboard?window=7d" | grep -oE "labels not computed yet|as of [^<]{0,40}" | head -3 | sed 's/^/  labels: /' || true
+    docker logs --since 24h elysium-web 2>&1 | grep -iE "label refresh failed|QueryCanceled" | cut -c1-160 | sort | uniq -c | tail -6 || true
+    psql_admin -At -F'|' <<'SQL' || true
 SET default_transaction_read_only = on; SET statement_timeout = '90s';
-SELECT 'DATA','samp', q.wallet, q.token, q.tx_hash FROM (
-  SELECT t.wallet, t.token, t.tx_hash, row_number() OVER (PARTITION BY t.wallet ORDER BY t.block_time DESC) rk
-    FROM trades t JOIN transactions x ON x.chain_id = t.chain_id AND x.tx_hash = t.tx_hash
-   WHERE t.chain_id = 99901 AND t.kind = 'BUY' AND t.block_time > now() - interval '2 days' AND x.to_address = '0x9c73d179b2911e89a4edc47cfd78765990bc6761'
-     AND t.wallet IN ('0x95fa70efcb193961d3c0a7e6889616643a0c5576','0x4945280027ffced153401d699f1621a46b1adb46','0xe065bbc60b355be9d884489ad63fcb5c663fd52e','0x134e50aafd9fe4e8525092ec0ee2b97218298f6a','0xa98ca0cdddbb239af17d4480230abd191a89221e','0x556c89cc2b3f33002576fed06873d84ca164ce62','0x8dbe0a2f8ee46e2d0ac0530058466ae34f010838','0x6352d587293b39790f96f5ca945abc7e8881d36b','0xc66d9fdbee720693026234c47c63311476b97321','0x1035548d24662e5bf5ab6e7d902ee87d2a4cd1ce','0x85a5fd592debdf4831b7099ae556b48d021230fa','0x0b57a6900479eb5e0f991e2e7da43629563b2f7b','0x7e9020380c608bcba4e47b6ccffa22c09387486d','0x8923a3a2dd21aa88b587ff3777ff5354f747363a','0x1d9577c440a4873e1f21c187490f33a814a024b0','0xb1df17cb410fd0357663c0a387bdb367ff358c34','0xa6799305843b9c5bf9f9a3a295a26dedbe79bbb8','0x8cad883d2aebcfd8a0c1d58394aa2afd239e04b0','0x4838326a8aac6f82eb8e445a5c352afcc46f7bc1','0xc6c3e2bef88974bf8d038e95d54f7f813cecc514','0xd4762f0b8751b85fc594c0b5e9dceb372fe94691','0xd576f2c5eac0a07c34c4b2f439107ae1bb9e86fe','0xaeaa327a6fb6ee8ca0d97469118e8609c980c7a9','0x6712cc10003a6d231781188dc040e7fa89126c5e','0xd082b21c1d87bb21afdc3da53351b05d6610dc3b','0xad9c6bc581921ca2dc5bd1a53b679d8f94960300','0xb561cfaf3ade352f9455654cf5bb026321b24e7a','0x48fc6c8bd65433acc28b90b5d1e5394a1df5f728','0xd1fef0eab1eb3694c28a6403e0a63af5b5ff0f93','0xb9fbb483e581b6e19d81cc47cabd5a4b8af791c9')) q WHERE q.rk <= 1;
-SELECT 'DATA','samp2', q.wallet, q.token, q.tx_hash FROM (
-  SELECT t.wallet, t.token, t.tx_hash, x.to_address, row_number() OVER (PARTITION BY x.to_address ORDER BY t.block_time DESC) rk
-    FROM trades t JOIN transactions x ON x.chain_id = t.chain_id AND x.tx_hash = t.tx_hash
-   WHERE t.chain_id = 99901 AND t.kind = 'BUY' AND t.block_time > now() - interval '2 days'
-     AND x.to_address IN ('0x787344f1ac74d78772b5d9314551b3b727ee914b','0xe5339fc16b924c1415f436a20e09071f60ba79db','0x6c3c2efa01a8240c00a683e36502f656f0c15fd6')) q WHERE q.rk <= 3;
-SELECT 'DATA','fac', count(DISTINCT t.wallet), count(DISTINCT t.token), count(*),
-       (SELECT count(DISTINCT token) FROM trades WHERE chain_id = 99901 AND block_time > now() - interval '7 days' AND kind = 'BUY')
-  FROM trades t JOIN transactions x ON x.chain_id = t.chain_id AND x.tx_hash = t.tx_hash
- WHERE t.chain_id = 99901 AND t.kind = 'BUY' AND t.block_time > now() - interval '7 days' AND x.to_address = '0x9c73d179b2911e89a4edc47cfd78765990bc6761';
-SELECT 'DATA','facw', t.wallet, count(DISTINCT t.token), round(sum(t.hype_wei) / 1e18), to_char(min(t.block_time), 'MM-DD'), to_char(max(t.block_time), 'MM-DD HH24:MI')
-  FROM trades t JOIN transactions x ON x.chain_id = t.chain_id AND x.tx_hash = t.tx_hash
- WHERE t.chain_id = 99901 AND t.kind = 'BUY' AND x.to_address = '0x9c73d179b2911e89a4edc47cfd78765990bc6761' GROUP BY 3;
+WITH w(a) AS (VALUES ('0x4afcfed6306de68a8f8ddaa54b7fd3c12c158fd3'),('0x9e39d6282e4525526f33092c8aad27005e0ea02d'),('0xad89a1599659fbb0d426c2313b76aa8b6290c98f'),
+ ('0xae88f8821da1e320f80f393b1a84e644e32e9d03'),('0x57b8cfc502f14cc9ef77668d2208f001e1ccb4fc'),('0x7f5e1246c48d84c5e10330e4b82011a9b15b0e12'),('0x276da0b40416cd299fbc5aa94354aac23dbe17b7'),
+ ('0x657e8916d9edc72d5d25fdc012f29778bec0a0b3'),('0x4ebfc752c2536105cc5359d76ae6ef976839ebfd'),('0xfe167490561449a8138ed5e7b062a9583ed14a43'),('0xb5437769ac9e5c87fa447c11c81382440e1e4cff'),
+ ('0xbde6fdcbc0e882388727583327497e0c4a4573b0'),('0xb879684baa65c02a7fa1a39ad068c287c8044d93'),('0x28a6bbc8e030974fa79bbf2518c2b82f8bbb50cb'),('0x71da0947605ff234083465184ce692ae4cd3278e'),
+ ('0x3a014bfd532c6b430970d010ba91f6df16f46a66'),('0x17ef80f877e04746089faf7dd4ee0c404250ad23'),('0xe0925725a3eaf65bd744eb970415e7f114ddfabe'),('0xa1f9ea41cab1167b91c7e6226f6b7da4dbbba77e'),
+ ('0xc88252fcf1690e45195f690f9a6c1b6423affacc'),('0xbc4a11a09a9898568e28533ef537adeb489900a6'))
+SELECT 'DATA','tw', w.a, count(t.*), count(t.*) FILTER (WHERE t.kind = 'TRANSFER_IN'), count(t.*) FILTER (WHERE t.kind = 'TRANSFER_OUT'), count(t.*) FILTER (WHERE t.kind IN ('BUY','SELL')),
+       count(DISTINCT t.token), to_char(min(t.block_time), 'MM-DD HH24:MI'), to_char(max(t.block_time), 'MM-DD HH24:MI'),
+       (SELECT string_agg(DISTINCT left(x.to_address, 10), ',') FROM trades tt JOIN transactions x ON x.chain_id = tt.chain_id AND x.tx_hash = tt.tx_hash WHERE tt.chain_id = 99901 AND tt.wallet = w.a AND x.from_address = w.a),
+       (SELECT count(*) FROM trades tt JOIN transactions x ON x.chain_id = tt.chain_id AND x.tx_hash = tt.tx_hash WHERE tt.chain_id = 99901 AND tt.wallet = w.a AND x.from_address = w.a),
+       (SELECT string_agg(DISTINCT left(coalesce(m.symbol, tt.token), 10), ',') FROM trades tt LEFT JOIN token_metadata m ON m.chain_id = 99901 AND m.address = tt.token WHERE tt.chain_id = 99901 AND tt.wallet = w.a AND tt.kind = 'TRANSFER_OUT')
+  FROM w LEFT JOIN trades t ON t.chain_id = 99901 AND t.wallet = w.a GROUP BY w.a;
+WITH w(a) AS (VALUES ('0xad89a1599659fbb0d426c2313b76aa8b6290c98f'),('0xae88f8821da1e320f80f393b1a84e644e32e9d03'),('0x7f5e1246c48d84c5e10330e4b82011a9b15b0e12'),('0x276da0b40416cd299fbc5aa94354aac23dbe17b7'),
+ ('0x4ebfc752c2536105cc5359d76ae6ef976839ebfd'),('0xbde6fdcbc0e882388727583327497e0c4a4573b0'),('0x28a6bbc8e030974fa79bbf2518c2b82f8bbb50cb'),('0x3a014bfd532c6b430970d010ba91f6df16f46a66'),
+ ('0x17ef80f877e04746089faf7dd4ee0c404250ad23'),('0xe0925725a3eaf65bd744eb970415e7f114ddfabe'),('0xfe167490561449a8138ed5e7b062a9583ed14a43'),('0xb879684baa65c02a7fa1a39ad068c287c8044d93'),('0x71da0947605ff234083465184ce692ae4cd3278e'))
+SELECT 'DATA','tx', t.wallet, t.kind, left(t.token, 12), coalesce(m.symbol, '?'), to_char(t.block_time, 'MM-DD HH24:MI:SS'), round(t.qty / power(10, coalesce(m.decimals, 18)))::text,
+       left(coalesce(x.from_address, '?'), 12), left(coalesce(x.to_address, '?'), 12), left(t.tx_hash, 12),
+       (SELECT left(tr.to_address, 12) FROM token_transfers tr WHERE tr.chain_id = 99901 AND tr.tx_hash = t.tx_hash AND tr.from_address = t.wallet LIMIT 1)
+  FROM trades t JOIN w ON w.a = t.wallet LEFT JOIN transactions x ON x.chain_id = t.chain_id AND x.tx_hash = t.tx_hash
+  LEFT JOIN token_metadata m ON m.chain_id = 99901 AND m.address = t.token
+ WHERE t.chain_id = 99901 AND t.kind <> 'TRANSFER_IN' ORDER BY t.wallet, t.block_time;
 SQL
-    grep '^DATA' /tmp/elysium-q3.out || true
-    cat > /tmp/elysium-rcpt.py <<'PY_RCPT'
-# Reads "DATA|samp..." lines on stdin; for each buy transaction asks the node for the receipt and
-# reports whether the same transaction minted the token (contract creation + first buy in one tx).
-import json, re, sys, time, urllib.request
-urls = [u for u in re.findall(r"^\s*-\s*(https?://\S+)", open("config/config.yaml").read(), re.M)]
-url = next((u for u in urls if "boxa" not in u), urls[0])
-ZERO = "0x" + "0" * 64
-TRANSFER = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
-def rpc(method, params):
-    req = urllib.request.Request(url, data=json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}).encode(),
-                                 headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=20) as r:
-        return json.loads(r.read()).get("result")
-for line in sys.stdin:
-    f = line.rstrip("\n").split("|")
-    if len(f) < 5 or not f[1].startswith("samp"):
-        continue
-    kind, wallet, token, tx = f[1], f[2], f[3], f[4]
-    try:
-        rc = rpc("eth_getTransactionReceipt", [tx])
-        time.sleep(0.8)
-        if not rc:
-            print("RCPT", kind, wallet, token, tx[:12], "no-receipt"); continue
-        logs = rc.get("logs") or []
-        mint = sum(1 for lg in logs if lg["address"].lower() == token and lg["topics"][:1] == [TRANSFER] and len(lg["topics"]) > 1 and lg["topics"][1] == ZERO)
-        emitters = sorted({lg["address"].lower()[:10] for lg in logs})
-        created = rc.get("contractAddress")
-        print("RCPT", kind, wallet, token, tx[:12], "logs=%d" % len(logs), "token_minted_in_tx=%d" % mint, "to=" + str(rc.get("to"))[:12],
-              "emitters=" + ",".join(emitters[:8]), "topics0=" + ",".join(sorted({lg["topics"][0][:10] for lg in logs if lg["topics"]}))[:120])
-    except Exception as e:
-        print("RCPT", kind, wallet, token, tx[:12], "error", str(e)[:80])
-PY_RCPT
-    grep '^DATA|samp' /tmp/elysium-q3.out | python3 /tmp/elysium-rcpt.py || echo "receipt step failed"
-    rm -f /tmp/elysium-q3.out /tmp/elysium-rcpt.py
     ;;
   ui-smoke)
     docker compose run --rm --no-deps ui --ui-smoke
