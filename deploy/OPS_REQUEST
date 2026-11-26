@@ -1,3 +1,3 @@
 action=wallet-probe
 commit=ops-only read-only probe
-requested=2026-11-27 research pull 2: pick quality, launch-first evidence, website timing (no writes)
+requested=2026-11-27 receipt check of launch-first buys (read-only, ~45 RPC calls)
