@@ -699,30 +699,48 @@ PY
     tracker_alive
     ;;
   wallet-probe)
-    # Read-only check after the PR #141 deploy, and why the Consensus sender reports unhealthy.
+    # Read-only: time the Consensus legs query as dashboard_ro (web image) and show its plan.
     need_docker
-    log "tracker: ranking log lines"
-    docker compose logs --no-color --since 10m tracker 2>&1 | grep -iE "trader ranking|Traceback|ERROR" | grep -v api.telegram.org | tail -10 | cut -c1-220 || true
-    log "tracker: live ranking (read-only)"
-    docker exec elysium-wallet-tracker python -c "
+    rm -rf /tmp/elysium-probe && mkdir -p /tmp/elysium-probe && chmod 755 /tmp/elysium-probe
+    cat > /tmp/elysium-probe/run.py <<'PY_RUN'
+"""Read-only: time the Consensus legs query as dashboard_ro and show its plan."""
 import os
-from agora_tracker.config import load_config
-from agora_tracker.db import Store, make_engine
-from agora_tracker.performance import Rules
-cfg = load_config('/config/config.yaml')
-st = Store(make_engine(os.environ['DATABASE_URL']), chain_id=cfg.chain.chain_id)
-b = st.performance(Rules(), skip_wallets=cfg.tracking.muted_wallets, skip_tokens=set(cfg.alerts.mute_tokens) | set(cfg.alerts.telegram_mute_tokens))
-r = sorted((v['rank'], w, v) for w, v in b.items() if v.get('rank'))
-print('  wallets with closes:', len(b), 'ranked:', len(r))
-for k, w, v in r[:12]:
-    print('  #%d %s 30d %+.1f 7d %+.1f win %d/%d tokens %d weeks %s' % (k, w[:10], v['pnl'], v['pnl_7d'], v['wins'], v['closes'], v['tokens'], v['weeks']))
-" 2>&1 | grep -v api.telegram.org | cut -c1-200 || true
-    log "consensus sender: health and recent log"
-    docker inspect elysium-consensus-alerts --format '{{.State.Health.Status}} streak={{.State.Health.FailingStreak}}' || true
-    docker inspect elysium-consensus-alerts --format '{{range .State.Health.Log}}{{.End}} exit={{.ExitCode}} {{.Output}}{{"\n"}}{{end}}' | tail -4 | cut -c1-200 || true
-    docker logs --since 4h elysium-consensus-alerts 2>&1 | grep -v api.telegram.org | grep -vE "shadow rule would skip|not posting" | tail -25 | sed -E 's/[0-9a-f]{40,}/<hex>/g' | cut -c1-220 || true
-    echo "  shadow/not-posting lines (4h): $(docker logs --since 4h elysium-consensus-alerts 2>&1 | grep -cE 'shadow rule would skip|not posting' || true)"
-    psql_admin -At -F'|' -c "SELECT 'DATA', status, count(*), max(created_at) FROM consensus_alerts.deliveries GROUP BY status" || true
+import sys
+import time
+from datetime import datetime, timedelta, timezone
+
+import sqlalchemy as sa
+
+sys.path.insert(0, "/app")
+from agora_tracker.web.reports import PublicReports as Reports  # noqa: E402
+
+HID = ["0xb47c4c8f73f009cc0c0d3f92b388d13e293f0b65", "0xba876237b0f021a6c6d852d6c26e107997cc5e81",
+       "0xe45a355d9e9cad2ad85f2d03e3ee3102a036acf0"]
+eng = sa.create_engine(os.environ["DATABASE_URL"])
+now = datetime.now(timezone.utc)
+p = {"c": 99901, "lo": now - timedelta(hours=24, minutes=30), "hi": now, "hidden": HID, "n": 3}
+with eng.connect() as c:
+    c.execute(sa.text("SET statement_timeout = '120s'"))
+    for name, sql in (("legs", Reports._CONS_LEGS), ("bundles", Reports._CONS_BUNDLES)):
+        q = sql if name == "legs" else sql
+        prm = dict(p) if name == "legs" else {"c": 99901, "lo": now - timedelta(days=14)}
+        t = time.monotonic()
+        n = len(c.execute(sa.text(q), prm).all())
+        print(f"== {name}: {n} rows in {time.monotonic() - t:.2f}s", flush=True)
+    t = time.monotonic()
+    print("public trades 24h:", c.execute(sa.text("SELECT count(*) FROM trades WHERE block_time > now() - interval '24 hours'")).scalar(), f"{time.monotonic() - t:.2f}s")
+    t = time.monotonic()
+    print("public wallets:", c.execute(sa.text("SELECT count(*) FROM wallets")).scalar(), f"{time.monotonic() - t:.2f}s")
+    plan = c.execute(sa.text("EXPLAIN (ANALYZE, BUFFERS, TIMING OFF) " + Reports._CONS_LEGS), p).all()
+    for r in plan[:45]:
+        print("  " + r[0][:200])
+PY_RUN
+    chmod 644 /tmp/elysium-probe/*
+    docker compose run -T --rm --no-deps -v /tmp/elysium-probe:/probe:ro --entrypoint python web /probe/run.py 2>&1 | grep -v "^ Container\|Creating\|Created" || true
+    rm -rf /tmp/elysium-probe
+    log "postgres: running > 3 s"
+    psql_admin -At -F'|' -c "SELECT usename, round(extract(epoch FROM now() - query_start)::numeric, 1), left(regexp_replace(query, '\s+', ' ', 'g'), 110) FROM pg_stat_activity WHERE state <> 'idle' AND now() - query_start > interval '3 seconds' AND pid <> pg_backend_pid()" || true
+    resources
     ;;
   ui-smoke)
     docker compose run --rm --no-deps ui --ui-smoke
