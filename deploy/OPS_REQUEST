@@ -1,2 +1,2 @@
-action=web-hotfix
-# deploy PR #138 (merge bbd054d) 2026-11-27T03:33Z
+action=web-smoke
+# check after PR #138 web deploy 2026-11-27T03:41Z
