@@ -1,2 +1,2 @@
-action=tracker
-# deploy PR #141 (merge 8990c5a) 2026-11-27T09:57Z
+action=wallet-probe
+# post-deploy check PR #141 2026-11-27T10:01Z
