@@ -1,2 +1,2 @@
-action=consensus-restart
-# deploy PR #138 (merge bbd054d) 2026-11-27T03:45Z
+action=wallet-probe
+# post-deploy check PR #138 2026-11-27T03:48Z
