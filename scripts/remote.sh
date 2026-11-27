@@ -722,11 +722,8 @@ agg AS (SELECT wallet, sum(pnl) AS p30, coalesce(sum(pnl) FILTER (WHERE bt >= no
          sum(pnl) FILTER (WHERE bt >= now() - interval '7 days') AS wk1, max(bt) AS last_close
        FROM r GROUP BY wallet),
 el AS (SELECT *, row_number() OVER (ORDER BY p30 DESC) AS rk FROM agg WHERE n >= 5 AND toks >= 2 AND p30 > 0)
-SELECT 'DATA','sum', (SELECT count(*) FROM launchers), (SELECT count(*) FROM ltok), (SELECT count(*) FROM agg), (SELECT count(*) FROM agg WHERE p30 > 0),
-       (SELECT count(*) FROM el), (SELECT count(*) FROM agg WHERE n >= 5 AND toks >= 2);
 SELECT 'DATA','el', rk, wallet, round(p30::numeric, 1), round(p7::numeric, 1), n, w, toks, round(wk4::numeric, 1), round(wk3::numeric, 1), round(wk2::numeric, 1), round(wk1::numeric, 1), last_close
-  FROM el WHERE rk <= 40 OR rk IN (50, 60, 70, 80, 90, 100) ORDER BY rk;
-SELECT 'DATA','neg', count(*), round(min(p30)::numeric, 1) FROM agg WHERE p30 < 0 AND n >= 5;
+  FROM el ORDER BY rk;
 
 SQL
     ;;
