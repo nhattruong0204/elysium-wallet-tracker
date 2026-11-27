@@ -699,24 +699,52 @@ PY
     tracker_alive
     ;;
   wallet-probe)
-    # Read-only: cost of the public_api token filter vs a plain semi-join (same rows?).
+    # Read-only: time each statement of the home page (dashboard_ro, 60 s cap).
     need_docker
-    psql_admin <<'SQL_Q' 2>&1 | cut -c1-300 | sed 's/^/PT|/' || true
-\pset format unaligned
-\pset fieldsep '|'
-\pset tuples_only on
-\timing on
-BEGIN READ ONLY;
-SET LOCAL statement_timeout = '120s';
-SELECT 'N_PUBLIC_WALLETS', count(*) FROM public_api.public_wallets;
-SELECT 'N_PUBLIC_TOKENS', count(*) FROM public_api.public_tokens;
-SELECT 'N_TOKENS_ALL', count(DISTINCT (chain_id, token)) FROM trades;
-SELECT 'N_ALT', count(*) FROM (SELECT DISTINCT t.chain_id, t.token FROM trades t WHERE t.wallet IN (SELECT address FROM public_api.public_wallets)) z;
-SELECT 'DIFF_ALT_MINUS_VIEW', count(*) FROM (SELECT DISTINCT t.chain_id, t.token::text FROM trades t WHERE t.wallet IN (SELECT address FROM public_api.public_wallets) EXCEPT SELECT chain_id, token::text FROM public_api.public_tokens) z;
-SELECT 'DIFF_VIEW_MINUS_ALT', count(*) FROM (SELECT chain_id, token::text FROM public_api.public_tokens EXCEPT SELECT DISTINCT t.chain_id, t.token::text FROM trades t WHERE t.wallet IN (SELECT address FROM public_api.public_wallets)) z;
-ROLLBACK;
-SELECT 'IDX', indexname, indexdef FROM pg_indexes WHERE tablename = 'trades' ORDER BY 2;
-SQL_Q
+    rm -rf /tmp/elysium-probe && mkdir -p /tmp/elysium-probe && chmod 755 /tmp/elysium-probe
+    cat > /tmp/elysium-probe/run.py <<'PY_RUN'
+"""Read-only: time each statement of the home page (overview), dashboard_ro, 60 s cap."""
+import os, sys, time, re
+from datetime import datetime, timezone
+sys.path.insert(0, "/app")
+import sqlalchemy as sa
+from agora_tracker.config import UiConfig
+from agora_tracker.web import reports as R
+from agora_tracker.web.params import parse_range
+from agora_tracker.web.activity import FEED_KINDS
+CHAIN = 99901
+eng = sa.create_engine(os.environ["DATABASE_URL"], connect_args={"options": "-c statement_timeout=60000"})
+rep = R.PublicReports(eng, CHAIN, UiConfig(query_timeout_ms=60000), value_unit="HYPE")
+rep.hidden_tokens = ("0xb47c4c8f73f009cc0c0d3f92b388d13e293f0b65",)
+def label(sql):
+    s = re.sub(r"\s+", " ", sql).strip()
+    return s[:90]
+for meth in ("_all", "_one"):
+    orig = getattr(rep, meth)
+    def timed(c, sql, _o=orig, _m=meth, **kw):
+        t = time.monotonic()
+        try:
+            return _o(c, sql, **kw)
+        finally:
+            print("T|%s|%.2fs|%s" % (_m, time.monotonic() - t, label(sql)), flush=True)
+    setattr(rep, meth, timed)
+now = datetime.now(timezone.utc)
+for rng in ("24h",):
+    tr = parse_range({"range": rng}, now)
+    for name, fn in (("market_overview", lambda: rep.market_overview(tr)),
+                     ("coverage", lambda: rep.coverage(tr, now)),
+                     ("health", lambda: rep.health(now)),
+                     ("recent", lambda: rep.trades(tr, limit=15, hidden=rep.hidden_tokens, kinds=FEED_KINDS))):
+        t = time.monotonic()
+        try:
+            fn(); r = "ok"
+        except Exception as e:
+            r = "fail " + type(e).__name__
+        print("STEP|%s|%s|%s|%.2fs" % (rng, name, r, time.monotonic() - t), flush=True)
+PY_RUN
+    chmod 644 /tmp/elysium-probe/*.py
+    docker compose run -T --rm --no-deps -v /tmp/elysium-probe:/probe:ro --entrypoint python web /probe/run.py 2>&1 | grep -v "^ Container\|Creating\|Created" | cut -c1-300 || true
+    rm -rf /tmp/elysium-probe
     ;;
   ui-smoke)
     docker compose run --rm --no-deps ui --ui-smoke
