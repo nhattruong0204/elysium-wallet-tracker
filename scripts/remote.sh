@@ -699,52 +699,24 @@ PY
     tracker_alive
     ;;
   wallet-probe)
-    # Read-only: time each statement of the home page (dashboard_ro, 60 s cap).
+    # Read-only: row estimate vs actual for the home page launchpad query (EXPLAIN only).
     need_docker
-    rm -rf /tmp/elysium-probe && mkdir -p /tmp/elysium-probe && chmod 755 /tmp/elysium-probe
-    cat > /tmp/elysium-probe/run.py <<'PY_RUN'
-"""Read-only: time each statement of the home page (overview), dashboard_ro, 60 s cap."""
-import os, sys, time, re
-from datetime import datetime, timezone
-sys.path.insert(0, "/app")
-import sqlalchemy as sa
-from agora_tracker.config import UiConfig
-from agora_tracker.web import reports as R
-from agora_tracker.web.params import parse_range
-from agora_tracker.web.activity import FEED_KINDS
-CHAIN = 99901
-eng = sa.create_engine(os.environ["DATABASE_URL"], connect_args={"options": "-c statement_timeout=60000"})
-rep = R.PublicReports(eng, CHAIN, UiConfig(query_timeout_ms=60000), value_unit="HYPE")
-rep.hidden_tokens = ("0xb47c4c8f73f009cc0c0d3f92b388d13e293f0b65",)
-def label(sql):
-    s = re.sub(r"\s+", " ", sql).strip()
-    return s[:90]
-for meth in ("_all", "_one"):
-    orig = getattr(rep, meth)
-    def timed(c, sql, _o=orig, _m=meth, **kw):
-        t = time.monotonic()
-        try:
-            return _o(c, sql, **kw)
-        finally:
-            print("T|%s|%.2fs|%s" % (_m, time.monotonic() - t, label(sql)), flush=True)
-    setattr(rep, meth, timed)
-now = datetime.now(timezone.utc)
-for rng in ("24h",):
-    tr = parse_range({"range": rng}, now)
-    for name, fn in (("market_overview", lambda: rep.market_overview(tr)),
-                     ("coverage", lambda: rep.coverage(tr, now)),
-                     ("health", lambda: rep.health(now)),
-                     ("recent", lambda: rep.trades(tr, limit=15, hidden=rep.hidden_tokens, kinds=FEED_KINDS))):
-        t = time.monotonic()
-        try:
-            fn(); r = "ok"
-        except Exception as e:
-            r = "fail " + type(e).__name__
-        print("STEP|%s|%s|%s|%.2fs" % (rng, name, r, time.monotonic() - t), flush=True)
-PY_RUN
-    chmod 644 /tmp/elysium-probe/*.py
-    docker compose run -T --rm --no-deps -v /tmp/elysium-probe:/probe:ro --entrypoint python web /probe/run.py 2>&1 | grep -v "^ Container\|Creating\|Created" | cut -c1-300 || true
-    rm -rf /tmp/elysium-probe
+    psql_admin <<'SQL_Q' 2>&1 | cut -c1-260 | sed 's/^/EX|/' || true
+\pset format unaligned
+\pset tuples_only on
+BEGIN READ ONLY;
+SET LOCAL search_path = public_api;
+SET LOCAL statement_timeout = '30s';
+SELECT 'ACTUAL_24H', count(*) FROM public.trades WHERE chain_id = 99901 AND block_time >= now() - interval '24 hours';
+SELECT 'HIST_MAX', (histogram_bounds::text::timestamptz[])[array_upper(histogram_bounds::text::timestamptz[], 1)] FROM pg_stats WHERE schemaname = 'public' AND tablename = 'trades' AND attname = 'block_time';
+EXPLAIN SELECT coalesce(p.launchpad, 'unknown') AS launchpad,
+       count(*) AS legs, count(DISTINCT t.token) AS tokens,
+       coalesce(sum(t.hype_wei) FILTER (WHERE t.confidence = 'high' AND t.kind IN ('BUY','SELL')), 0) AS vol_wei
+FROM trades t LEFT JOIN token_profiles p ON p.chain_id = t.chain_id AND p.address = t.token
+WHERE t.chain_id = 99901 AND t.block_time >= now() - interval '24 hours' AND t.block_time < now()
+GROUP BY 1 ORDER BY vol_wei DESC, legs DESC LIMIT 8;
+ROLLBACK;
+SQL_Q
     ;;
   ui-smoke)
     docker compose run --rm --no-deps ui --ui-smoke
