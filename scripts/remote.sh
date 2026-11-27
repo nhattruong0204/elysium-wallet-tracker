@@ -698,6 +698,28 @@ PY
     consensus_state
     tracker_alive
     ;;
+  wallet-probe)
+    # Read-only post-deploy check (PR #138): launcher log line, Consensus sender, website timings.
+    need_docker
+    log "tracker: launcher rule and errors since start"
+    docker compose logs --no-color --since 30m tracker 2>&1 | grep -iE "serial launchers|launcher|Traceback|ERROR" | grep -v api.telegram.org | tail -15 | cut -c1-240 || true
+    log "consensus sender: env and log"
+    docker inspect elysium-consensus-alerts --format '{{range .Config.Env}}{{println .}}{{end}}' | grep -E '^CONSENSUS_(EXTRA_RULES|MIN_|HIDDEN)' || true
+    docker logs --since 30m elysium-consensus-alerts 2>&1 | grep -v api.telegram.org | tail -25 | cut -c1-240 || true
+    log "web: warnings and errors (15 min)"
+    docker logs --since 15m elysium-web 2>&1 | grep -iE "warning|error|timeout|cancel" | grep -v api.telegram.org | sed -E 's/[0-9a-f]{40,}/<hex>/g' | tail -25 | cut -c1-240 || true
+    log "web: timings now (status, seconds, bytes)"
+    for p in / "/?range=7d" /consensus "/api/v1/consensus?range=24h&traders=3&window=30&min_net=0" "/consensus?range=7d" /leaderboard /early /scanner /api/v1/overview; do
+      out=$(curl -s -o /tmp/probe_body -m 40 -w '%{http_code} %{time_total} %{size_download}' "http://127.0.0.1:8100$p" || echo "fail")
+      echo "  $p -> $out"
+    done
+    curl -s -m 40 "http://127.0.0.1:8100/api/v1/consensus?range=24h&traders=3&window=30&min_net=0" | python3 -c 'import json,sys; j=json.load(sys.stdin); cs=j.get("cards",[]); print("  consensus 24h cards:", len(cs), "with prior_events:", sum(1 for c in cs if "prior_events" in c), "with change_1h known:", sum(1 for c in cs if c.get("change_1h") is not None), "launcher_token:", sum(1 for c in cs if c.get("launcher_token")))' || true
+    log "postgres: queries running > 3 s"
+    psql_admin -At -F'|' -c "SELECT usename, state, round(extract(epoch FROM now() - query_start)::numeric, 1), left(regexp_replace(query, '\s+', ' ', 'g'), 120) FROM pg_stat_activity WHERE state <> 'idle' AND now() - query_start > interval '3 seconds' AND pid <> pg_backend_pid()" || true
+    psql_admin -At -c "SELECT 'cancelled (statement timeout) in log, last 15 min: ' || count(*) FROM pg_stat_database WHERE false" >/dev/null 2>&1 || true
+    tracker_alive
+    resources
+    ;;
   ui-smoke)
     docker compose run --rm --no-deps ui --ui-smoke
     ;;
