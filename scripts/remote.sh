@@ -699,31 +699,25 @@ PY
     tracker_alive
     ;;
   wallet-probe)
-    # Read-only: calibrate a 30-day realized-PnL ranking for alert-card badges.
+    # Read-only: are the top-ranked wallets launch snipers?
     need_docker
     psql_admin -At -F'|' <<'SQL' || true
 
 SET default_transaction_read_only = on; SET statement_timeout = '300s';
-WITH fb AS (SELECT wallet, token, min(block_time) AS fb FROM trades WHERE chain_id = 99901 AND kind = 'BUY' AND block_time >= now() - interval '37 days' GROUP BY wallet, token),
-t0 AS (SELECT token, min(block_time) AS t0 FROM trades WHERE chain_id = 99901 AND token IN (SELECT token FROM fb) GROUP BY token),
-lr AS (SELECT fb.wallet, fb.token FROM fb JOIN t0 ON t0.token = fb.token JOIN token_profiles p ON p.chain_id = 99901 AND p.address = fb.token
-        WHERE p.launched_at IS NOT NULL AND fb.fb BETWEEN p.launched_at - interval '2 s' AND p.launched_at + interval '2 s' AND fb.fb <= t0.t0 + interval '2 s'),
-launchers AS (SELECT wallet FROM lr GROUP BY wallet HAVING count(DISTINCT token) >= 3),
-ltok AS (SELECT DISTINCT token FROM lr WHERE wallet IN (SELECT wallet FROM launchers)),
-r AS (SELECT r.wallet, r.token, r.pnl_wei / 1e18 AS pnl, t.block_time AS bt FROM realized_pnl r JOIN trades t ON t.id = r.trade_id
-       WHERE r.chain_id = 99901 AND r.status = 'measured' AND r.pnl_wei IS NOT NULL AND t.block_time >= now() - interval '30 days'
-         AND r.token NOT IN (SELECT token FROM ltok) AND r.wallet NOT IN (SELECT wallet FROM launchers)
-         AND r.token NOT IN ('0xb47c4c8f73f009cc0c0d3f92b388d13e293f0b65','0xba876237b0f021a6c6d852d6c26e107997cc5e81','0xe45a355d9e9cad2ad85f2d03e3ee3102a036acf0')),
-agg AS (SELECT wallet, sum(pnl) AS p30, coalesce(sum(pnl) FILTER (WHERE bt >= now() - interval '7 days'), 0) AS p7, count(*) AS n,
-         count(*) FILTER (WHERE pnl > 0) AS w, count(DISTINCT token) AS toks,
-         sum(pnl) FILTER (WHERE bt >= now() - interval '28 days' AND bt < now() - interval '21 days') AS wk4,
-         sum(pnl) FILTER (WHERE bt >= now() - interval '21 days' AND bt < now() - interval '14 days') AS wk3,
-         sum(pnl) FILTER (WHERE bt >= now() - interval '14 days' AND bt < now() - interval '7 days') AS wk2,
-         sum(pnl) FILTER (WHERE bt >= now() - interval '7 days') AS wk1, max(bt) AS last_close
-       FROM r GROUP BY wallet),
-el AS (SELECT *, row_number() OVER (ORDER BY p30 DESC) AS rk FROM agg WHERE n >= 5 AND toks >= 2 AND p30 > 0)
-SELECT 'DATA','el', rk, wallet, round(p30::numeric, 1), round(p7::numeric, 1), n, w, toks, round(wk4::numeric, 1), round(wk3::numeric, 1), round(wk2::numeric, 1), round(wk1::numeric, 1), last_close
-  FROM el ORDER BY rk;
+WITH w AS (SELECT unnest(ARRAY['0x85a5fd592debdf4831b7099ae556b48d021230fa','0x267be60d97db793db3316590e84d28ab26e44af9','0x0641315fda9935624bbb014a38b7a30e6b1e6e46','0x93f5af632ce523286e033f0510e9b3c9710f4489','0xc16f65b92bc7a4105b1cbcc1c12a2a2b73abc96e','0xf86a7c853b60c36f79f6e1de0e7868d109e97004','0x775256e60f88c5e0f149db67fbcb738da75143d7','0x2e27296db73efa090c33823b0b637f031d1a1f97','0xbc4a11a09a9898568e28533ef537adeb489900a6','0x3473b7de05cd3560a37e316c926f7284bc2656e4','0x95ac25fdecbc6a4b6ee398a62058bb048cee70c4','0xddbcdf710c21219dc5e56a6e1e8576fb4aa99d96']) AS wallet),
+fb AS (SELECT t.wallet, t.token, min(t.block_time) AS fb FROM trades t WHERE t.chain_id = 99901 AND t.kind = 'BUY' AND t.wallet IN (SELECT wallet FROM w) AND t.block_time >= now() - interval '37 days' GROUP BY 1, 2),
+d AS (SELECT fb.wallet, fb.token, extract(epoch FROM fb.fb - p.launched_at) AS delay FROM fb LEFT JOIN token_profiles p ON p.chain_id = 99901 AND p.address = fb.token),
+r AS (SELECT r.wallet, r.token, r.pnl_wei / 1e18 AS pnl FROM realized_pnl r JOIN trades t ON t.id = r.trade_id
+       WHERE r.chain_id = 99901 AND r.status = 'measured' AND r.pnl_wei IS NOT NULL AND t.block_time >= now() - interval '30 days' AND r.wallet IN (SELECT wallet FROM w))
+SELECT 'DATA', w.wallet,
+  (SELECT count(*) FROM d WHERE d.wallet = w.wallet), (SELECT count(*) FROM d WHERE d.wallet = w.wallet AND d.delay IS NULL),
+  (SELECT round(percentile_cont(0.5) WITHIN GROUP (ORDER BY d.delay)::numeric) FROM d WHERE d.wallet = w.wallet),
+  (SELECT count(*) FROM d WHERE d.wallet = w.wallet AND d.delay < 60),
+  (SELECT round(sum(r.pnl)::numeric, 1) FROM r JOIN d ON d.wallet = r.wallet AND d.token = r.token WHERE r.wallet = w.wallet AND d.delay < 60),
+  (SELECT round(sum(r.pnl)::numeric, 1) FROM r JOIN d ON d.wallet = r.wallet AND d.token = r.token WHERE r.wallet = w.wallet AND (d.delay >= 60 OR d.delay IS NULL)),
+  (SELECT x.to_address || ':' || count(*) FROM trades t JOIN transactions x ON x.chain_id = t.chain_id AND x.tx_hash = t.tx_hash WHERE t.chain_id = 99901 AND t.wallet = w.wallet AND t.kind = 'BUY' AND t.block_time >= now() - interval '30 days' GROUP BY x.to_address ORDER BY count(*) DESC LIMIT 1),
+  (SELECT string_agg(DISTINCT coalesce(p.launchpad, '?'), ',') FROM d JOIN token_profiles p ON p.chain_id = 99901 AND p.address = d.token WHERE d.wallet = w.wallet)
+FROM w;
 
 SQL
     ;;
