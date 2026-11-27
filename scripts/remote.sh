@@ -699,88 +699,83 @@ PY
     tracker_alive
     ;;
   wallet-probe)
-    # Read-only: time the website's slow pages statement by statement (dashboard_ro, 60 s timeout).
+    # Read-only: are send/receive (transfer) alerts useful? 3-day volume, composition, what follows.
     need_docker
-    rm -rf /tmp/elysium-probe && mkdir -p /tmp/elysium-probe && chmod 755 /tmp/elysium-probe
-    cat > /tmp/elysium-probe/run.py <<'PY_RUN'
-"""Read-only timing of the website's slow pages, statement by statement (dashboard_ro, 60 s timeout)."""
-import dataclasses
-import os
-import sys
-import time
-from datetime import datetime, timezone
+    log "alert settings on the VPS (alerts keys only)"
+    grep -nE '^\s*(alert_transfers|min_trade_hype|max_alert_age_s):' config/config.yaml || echo "  (not set in config.yaml: code defaults apply)"
+    docker inspect elysium-wallet-tracker --format '{{range .Config.Env}}{{println .}}{{end}}' | grep -E '^ALERTS_' | cut -d= -f1 || true
+    psql_admin -At -F'|' <<'SQL' || true
 
-import sqlalchemy as sa
+SET default_transaction_read_only = on; SET statement_timeout = '600s'; SET work_mem = '32MB';
+-- 1. Telegram alert volume, last 3 days
+SELECT 'DATA','ob', coalesce(payload->>'type','?'), coalesce(payload->>'kind',''), status, count(*)
+  FROM notification_outbox WHERE created_at > now() - interval '3 days' GROUP BY 3, 4, 5 ORDER BY 6 DESC;
+SELECT 'DATA','obday', to_char(created_at, 'MM-DD'), coalesce(payload->>'type','?'), coalesce(payload->>'kind',''), count(*)
+  FROM notification_outbox WHERE created_at > now() - interval '3 days' AND status = 'sent' GROUP BY 3, 4, 5 ORDER BY 3, 6 DESC;
+-- 2. trade legs, last 3 days
+SELECT 'DATA','kinds', kind, confidence, count(*), count(DISTINCT wallet), count(DISTINCT token)
+  FROM trades WHERE chain_id = 99901 AND block_time > now() - interval '3 days' GROUP BY 3, 4 ORDER BY 5 DESC;
+-- 3. what the transfers are
+WITH lt AS (SELECT DISTINCT t.token FROM trades t JOIN transactions x ON x.chain_id = t.chain_id AND x.tx_hash = t.tx_hash
+             WHERE t.chain_id = 99901 AND t.kind = 'BUY' AND x.to_address = '0x9c73d179b2911e89a4edc47cfd78765990bc6761'
+               AND t.block_time > now() - interval '12 days'),
+tracked AS (SELECT DISTINCT address FROM wallet_watchlist WHERE chain_id = 99901 AND removed_at IS NULL),
+ev AS (SELECT t.* FROM trades t WHERE t.chain_id = 99901 AND t.kind IN ('TRANSFER_IN', 'TRANSFER_OUT')
+          AND t.block_time > now() - interval '3 days'),
+cp AS (SELECT e.id, e.kind, e.wallet, e.token, e.confidence,
+              (SELECT CASE WHEN e.kind = 'TRANSFER_IN' THEN tt.from_address ELSE tt.to_address END FROM token_transfers tt
+                WHERE tt.chain_id = 99901 AND tt.tx_hash = e.tx_hash AND tt.token = e.token
+                  AND (CASE WHEN e.kind = 'TRANSFER_IN' THEN tt.to_address ELSE tt.from_address END) = e.wallet LIMIT 1) AS other
+         FROM ev e)
+SELECT 'DATA','tclass', kind, confidence,
+       CASE WHEN wallet = ANY(ARRAY['0x0b57a6900479eb5e0f991e2e7da43629563b2f7b','0x1035548d24662e5bf5ab6e7d902ee87d2a4cd1ce','0x134e50aafd9fe4e8525092ec0ee2b97218298f6a','0x1d9577c440a4873e1f21c187490f33a814a024b0','0x39cb0c2825e96f240d64b7a747355bf44fa49ce1','0x4838326a8aac6f82eb8e445a5c352afcc46f7bc1','0x48fc6c8bd65433acc28b90b5d1e5394a1df5f728','0x49236c042d5e4b4632c0c01b0860edf91895ea76','0x4945280027ffced153401d699f1621a46b1adb46','0x556c89cc2b3f33002576fed06873d84ca164ce62','0x5aee19c1cad037ba032ce2ccbb7fdac2a0ee89f3','0x5efce5f7ee75311fc498fe0d9778ff281f043f7c','0x6352d587293b39790f96f5ca945abc7e8881d36b','0x6712cc10003a6d231781188dc040e7fa89126c5e','0x782ffa3594d268290e9e2c93887afdaee5e7f495','0x7e9020380c608bcba4e47b6ccffa22c09387486d','0x8923a3a2dd21aa88b587ff3777ff5354f747363a','0x8dbe0a2f8ee46e2d0ac0530058466ae34f010838','0x95fa70efcb193961d3c0a7e6889616643a0c5576','0xa6799305843b9c5bf9f9a3a295a26dedbe79bbb8','0xa98ca0cdddbb239af17d4480230abd191a89221e','0xad9c6bc581921ca2dc5bd1a53b679d8f94960300','0xaeaa327a6fb6ee8ca0d97469118e8609c980c7a9','0xb05900da5eb138158d638b54a806749d95da879c','0xb1df17cb410fd0357663c0a387bdb367ff358c34','0xb561cfaf3ade352f9455654cf5bb026321b24e7a','0xb9fbb483e581b6e19d81cc47cabd5a4b8af791c9','0xc66d9fdbee720693026234c47c63311476b97321','0xc6c3e2bef88974bf8d038e95d54f7f813cecc514','0xd082b21c1d87bb21afdc3da53351b05d6610dc3b','0xd1fef0eab1eb3694c28a6403e0a63af5b5ff0f93','0xd4762f0b8751b85fc594c0b5e9dceb372fe94691','0xd576f2c5eac0a07c34c4b2f439107ae1bb9e86fe','0xdb2ecffc66f9b32ecace4046f9a2f34a0cc72a8f','0xe065bbc60b355be9d884489ad63fcb5c663fd52e','0xe3b36bbcb510e085dfd8b8930ba326656344b0ec','0xeb2767b1e3fc05ea9161fca48e686e64fed6db56','0xf1fbf01cf165915f70d43430a5eeb7d6bac82729','0xf88fd850a47974b40d7bcf8fa89ec0af48b163c1','0xfa5844c7d9e76914307b7ad1d37347ddb31d3fdb']::text[]) THEN 'wallet is a launcher'
+            WHEN token IN (SELECT token FROM lt) THEN 'launcher-made token'
+            WHEN other = '0x0000000000000000000000000000000000000000' THEN 'mint/burn'
+            WHEN other = ANY(ARRAY['0x0b57a6900479eb5e0f991e2e7da43629563b2f7b','0x1035548d24662e5bf5ab6e7d902ee87d2a4cd1ce','0x134e50aafd9fe4e8525092ec0ee2b97218298f6a','0x1d9577c440a4873e1f21c187490f33a814a024b0','0x39cb0c2825e96f240d64b7a747355bf44fa49ce1','0x4838326a8aac6f82eb8e445a5c352afcc46f7bc1','0x48fc6c8bd65433acc28b90b5d1e5394a1df5f728','0x49236c042d5e4b4632c0c01b0860edf91895ea76','0x4945280027ffced153401d699f1621a46b1adb46','0x556c89cc2b3f33002576fed06873d84ca164ce62','0x5aee19c1cad037ba032ce2ccbb7fdac2a0ee89f3','0x5efce5f7ee75311fc498fe0d9778ff281f043f7c','0x6352d587293b39790f96f5ca945abc7e8881d36b','0x6712cc10003a6d231781188dc040e7fa89126c5e','0x782ffa3594d268290e9e2c93887afdaee5e7f495','0x7e9020380c608bcba4e47b6ccffa22c09387486d','0x8923a3a2dd21aa88b587ff3777ff5354f747363a','0x8dbe0a2f8ee46e2d0ac0530058466ae34f010838','0x95fa70efcb193961d3c0a7e6889616643a0c5576','0xa6799305843b9c5bf9f9a3a295a26dedbe79bbb8','0xa98ca0cdddbb239af17d4480230abd191a89221e','0xad9c6bc581921ca2dc5bd1a53b679d8f94960300','0xaeaa327a6fb6ee8ca0d97469118e8609c980c7a9','0xb05900da5eb138158d638b54a806749d95da879c','0xb1df17cb410fd0357663c0a387bdb367ff358c34','0xb561cfaf3ade352f9455654cf5bb026321b24e7a','0xb9fbb483e581b6e19d81cc47cabd5a4b8af791c9','0xc66d9fdbee720693026234c47c63311476b97321','0xc6c3e2bef88974bf8d038e95d54f7f813cecc514','0xd082b21c1d87bb21afdc3da53351b05d6610dc3b','0xd1fef0eab1eb3694c28a6403e0a63af5b5ff0f93','0xd4762f0b8751b85fc594c0b5e9dceb372fe94691','0xd576f2c5eac0a07c34c4b2f439107ae1bb9e86fe','0xdb2ecffc66f9b32ecace4046f9a2f34a0cc72a8f','0xe065bbc60b355be9d884489ad63fcb5c663fd52e','0xe3b36bbcb510e085dfd8b8930ba326656344b0ec','0xeb2767b1e3fc05ea9161fca48e686e64fed6db56','0xf1fbf01cf165915f70d43430a5eeb7d6bac82729','0xf88fd850a47974b40d7bcf8fa89ec0af48b163c1','0xfa5844c7d9e76914307b7ad1d37347ddb31d3fdb']::text[]) THEN 'counterparty is a launcher'
+            WHEN other IN (SELECT address FROM tracked) THEN 'between tracked wallets'
+            WHEN other IS NULL THEN 'counterparty unknown'
+            ELSE 'external address' END AS cls,
+       count(*), count(DISTINCT wallet), count(DISTINCT token)
+  FROM cp GROUP BY 3, 4, 5 ORDER BY 6 DESC;
+-- 4. what happens to the token after each kind of event (Agora market cap snapshots)
+WITH lt AS (SELECT DISTINCT t.token FROM trades t JOIN transactions x ON x.chain_id = t.chain_id AND x.tx_hash = t.tx_hash
+             WHERE t.chain_id = 99901 AND t.kind = 'BUY' AND x.to_address = '0x9c73d179b2911e89a4edc47cfd78765990bc6761'
+               AND t.block_time > now() - interval '12 days'),
+ev AS (SELECT t.id, t.kind, t.wallet, t.token, t.block_time AS t, (t.token IN (SELECT token FROM lt) OR t.wallet = ANY(ARRAY['0x0b57a6900479eb5e0f991e2e7da43629563b2f7b','0x1035548d24662e5bf5ab6e7d902ee87d2a4cd1ce','0x134e50aafd9fe4e8525092ec0ee2b97218298f6a','0x1d9577c440a4873e1f21c187490f33a814a024b0','0x39cb0c2825e96f240d64b7a747355bf44fa49ce1','0x4838326a8aac6f82eb8e445a5c352afcc46f7bc1','0x48fc6c8bd65433acc28b90b5d1e5394a1df5f728','0x49236c042d5e4b4632c0c01b0860edf91895ea76','0x4945280027ffced153401d699f1621a46b1adb46','0x556c89cc2b3f33002576fed06873d84ca164ce62','0x5aee19c1cad037ba032ce2ccbb7fdac2a0ee89f3','0x5efce5f7ee75311fc498fe0d9778ff281f043f7c','0x6352d587293b39790f96f5ca945abc7e8881d36b','0x6712cc10003a6d231781188dc040e7fa89126c5e','0x782ffa3594d268290e9e2c93887afdaee5e7f495','0x7e9020380c608bcba4e47b6ccffa22c09387486d','0x8923a3a2dd21aa88b587ff3777ff5354f747363a','0x8dbe0a2f8ee46e2d0ac0530058466ae34f010838','0x95fa70efcb193961d3c0a7e6889616643a0c5576','0xa6799305843b9c5bf9f9a3a295a26dedbe79bbb8','0xa98ca0cdddbb239af17d4480230abd191a89221e','0xad9c6bc581921ca2dc5bd1a53b679d8f94960300','0xaeaa327a6fb6ee8ca0d97469118e8609c980c7a9','0xb05900da5eb138158d638b54a806749d95da879c','0xb1df17cb410fd0357663c0a387bdb367ff358c34','0xb561cfaf3ade352f9455654cf5bb026321b24e7a','0xb9fbb483e581b6e19d81cc47cabd5a4b8af791c9','0xc66d9fdbee720693026234c47c63311476b97321','0xc6c3e2bef88974bf8d038e95d54f7f813cecc514','0xd082b21c1d87bb21afdc3da53351b05d6610dc3b','0xd1fef0eab1eb3694c28a6403e0a63af5b5ff0f93','0xd4762f0b8751b85fc594c0b5e9dceb372fe94691','0xd576f2c5eac0a07c34c4b2f439107ae1bb9e86fe','0xdb2ecffc66f9b32ecace4046f9a2f34a0cc72a8f','0xe065bbc60b355be9d884489ad63fcb5c663fd52e','0xe3b36bbcb510e085dfd8b8930ba326656344b0ec','0xeb2767b1e3fc05ea9161fca48e686e64fed6db56','0xf1fbf01cf165915f70d43430a5eeb7d6bac82729','0xf88fd850a47974b40d7bcf8fa89ec0af48b163c1','0xfa5844c7d9e76914307b7ad1d37347ddb31d3fdb']::text[])) AS farm
+         FROM trades t WHERE t.chain_id = 99901 AND t.block_time > now() - interval '3 days'
+          AND (t.kind IN ('TRANSFER_IN', 'TRANSFER_OUT') OR (t.kind IN ('BUY', 'SELL') AND t.confidence = 'high' AND t.hype_wei >= 5e17))),
+m AS (SELECT e.*, b.m AS m0, f1.m AS m1, f6.m AS m6, f24.m AS m24 FROM ev e
+  LEFT JOIN LATERAL (SELECT s.mcap_hype m FROM token_market_snapshots s WHERE s.chain_id = 99901 AND s.token = e.token AND s.mcap_hype > 0
+        AND s.captured_at BETWEEN e.t - interval '15 min' AND e.t + interval '15 min' ORDER BY abs(extract(epoch FROM s.captured_at - e.t)) LIMIT 1) b ON true
+  LEFT JOIN LATERAL (SELECT s.mcap_hype m FROM token_market_snapshots s WHERE s.chain_id = 99901 AND s.token = e.token AND s.mcap_hype > 0
+        AND s.captured_at BETWEEN e.t + interval '30 min' AND e.t + interval '90 min' ORDER BY abs(extract(epoch FROM s.captured_at - e.t - interval '1 hour')) LIMIT 1) f1 ON true
+  LEFT JOIN LATERAL (SELECT s.mcap_hype m FROM token_market_snapshots s WHERE s.chain_id = 99901 AND s.token = e.token AND s.mcap_hype > 0
+        AND s.captured_at BETWEEN e.t + interval '5 hours' AND e.t + interval '7 hours' ORDER BY abs(extract(epoch FROM s.captured_at - e.t - interval '6 hours')) LIMIT 1) f6 ON true
+  LEFT JOIN LATERAL (SELECT s.mcap_hype m FROM token_market_snapshots s WHERE s.chain_id = 99901 AND s.token = e.token AND s.mcap_hype > 0
+        AND s.captured_at BETWEEN e.t + interval '22 hours' AND e.t + interval '26 hours' ORDER BY abs(extract(epoch FROM s.captured_at - e.t - interval '24 hours')) LIMIT 1) f24 ON true)
+SELECT 'DATA','fwd', kind, farm, count(*), count(m0),
+       count(m1), round(percentile_cont(0.5) WITHIN GROUP (ORDER BY m1 / m0)::numeric, 3),
+       count(m6), round(percentile_cont(0.5) WITHIN GROUP (ORDER BY m6 / m0)::numeric, 3),
+       count(m24), round(percentile_cont(0.5) WITHIN GROUP (ORDER BY m24 / m0)::numeric, 3),
+       count(*) FILTER (WHERE m24 / m0 >= 2), count(*) FILTER (WHERE m24 / m0 <= 0.5),
+       count(*) FILTER (WHERE m6 / m0 >= 1.5), count(*) FILTER (WHERE m6 / m0 <= 0.67),
+       round(avg(least(m24 / m0, 5))::numeric, 3), round(avg(least(m6 / m0, 5))::numeric, 3)
+  FROM m GROUP BY 3, 4 ORDER BY 3, 4;
+-- 5. what the wallet does next (24 h after the event)
+WITH ev AS (SELECT t.id, t.kind, t.wallet, t.token, t.block_time AS t FROM trades t
+             WHERE t.chain_id = 99901 AND t.kind IN ('TRANSFER_IN', 'TRANSFER_OUT', 'BUY')
+               AND t.block_time > now() - interval '3 days' AND t.block_time < now() - interval '1 day'
+               AND NOT t.wallet = ANY(ARRAY['0x0b57a6900479eb5e0f991e2e7da43629563b2f7b','0x1035548d24662e5bf5ab6e7d902ee87d2a4cd1ce','0x134e50aafd9fe4e8525092ec0ee2b97218298f6a','0x1d9577c440a4873e1f21c187490f33a814a024b0','0x39cb0c2825e96f240d64b7a747355bf44fa49ce1','0x4838326a8aac6f82eb8e445a5c352afcc46f7bc1','0x48fc6c8bd65433acc28b90b5d1e5394a1df5f728','0x49236c042d5e4b4632c0c01b0860edf91895ea76','0x4945280027ffced153401d699f1621a46b1adb46','0x556c89cc2b3f33002576fed06873d84ca164ce62','0x5aee19c1cad037ba032ce2ccbb7fdac2a0ee89f3','0x5efce5f7ee75311fc498fe0d9778ff281f043f7c','0x6352d587293b39790f96f5ca945abc7e8881d36b','0x6712cc10003a6d231781188dc040e7fa89126c5e','0x782ffa3594d268290e9e2c93887afdaee5e7f495','0x7e9020380c608bcba4e47b6ccffa22c09387486d','0x8923a3a2dd21aa88b587ff3777ff5354f747363a','0x8dbe0a2f8ee46e2d0ac0530058466ae34f010838','0x95fa70efcb193961d3c0a7e6889616643a0c5576','0xa6799305843b9c5bf9f9a3a295a26dedbe79bbb8','0xa98ca0cdddbb239af17d4480230abd191a89221e','0xad9c6bc581921ca2dc5bd1a53b679d8f94960300','0xaeaa327a6fb6ee8ca0d97469118e8609c980c7a9','0xb05900da5eb138158d638b54a806749d95da879c','0xb1df17cb410fd0357663c0a387bdb367ff358c34','0xb561cfaf3ade352f9455654cf5bb026321b24e7a','0xb9fbb483e581b6e19d81cc47cabd5a4b8af791c9','0xc66d9fdbee720693026234c47c63311476b97321','0xc6c3e2bef88974bf8d038e95d54f7f813cecc514','0xd082b21c1d87bb21afdc3da53351b05d6610dc3b','0xd1fef0eab1eb3694c28a6403e0a63af5b5ff0f93','0xd4762f0b8751b85fc594c0b5e9dceb372fe94691','0xd576f2c5eac0a07c34c4b2f439107ae1bb9e86fe','0xdb2ecffc66f9b32ecace4046f9a2f34a0cc72a8f','0xe065bbc60b355be9d884489ad63fcb5c663fd52e','0xe3b36bbcb510e085dfd8b8930ba326656344b0ec','0xeb2767b1e3fc05ea9161fca48e686e64fed6db56','0xf1fbf01cf165915f70d43430a5eeb7d6bac82729','0xf88fd850a47974b40d7bcf8fa89ec0af48b163c1','0xfa5844c7d9e76914307b7ad1d37347ddb31d3fdb']::text[])),
+nx AS (SELECT e.kind,
+         EXISTS (SELECT 1 FROM trades s WHERE s.chain_id = 99901 AND s.wallet = e.wallet AND s.token = e.token AND s.kind = 'SELL' AND s.block_time > e.t AND s.block_time <= e.t + interval '24 hours') AS sold,
+         EXISTS (SELECT 1 FROM trades s WHERE s.chain_id = 99901 AND s.wallet = e.wallet AND s.token = e.token AND s.kind = 'SELL' AND s.block_time > e.t AND s.block_time <= e.t + interval '1 hour') AS sold1h,
+         EXISTS (SELECT 1 FROM trades s WHERE s.chain_id = 99901 AND s.token = e.token AND s.kind = 'BUY' AND s.wallet <> e.wallet AND s.block_time > e.t AND s.block_time <= e.t + interval '6 hours') AS others_bought,
+         NOT EXISTS (SELECT 1 FROM trades s WHERE s.chain_id = 99901 AND s.token = e.token AND s.kind = 'BUY' AND s.block_time < e.t) AS first_sight
+       FROM ev e)
+SELECT 'DATA','next', kind, count(*), count(*) FILTER (WHERE sold1h), count(*) FILTER (WHERE sold), count(*) FILTER (WHERE others_bought), count(*) FILTER (WHERE first_sight)
+  FROM nx GROUP BY 3;
 
-sys.path.insert(0, "/app")
-from agora_tracker.config import load_config  # noqa: E402
-from agora_tracker.web.activity import parse_activity  # noqa: E402
-from agora_tracker.web.params import parse_range  # noqa: E402
-from agora_tracker.web.reports import PublicReports, StoredMarket  # noqa: E402
-from agora_tracker.web.usd import FxPolicy  # noqa: E402
-
-cfg = load_config(os.environ.get("CONFIG", "/config/config.yaml"))
-eng = sa.create_engine(os.environ["DATABASE_URL"], pool_size=2)
-slow = []
-
-
-@sa.event.listens_for(eng, "before_cursor_execute")
-def _b(conn, cursor, stmt, params, ctx, many):
-    conn.info["t0"] = time.monotonic()
-
-
-@sa.event.listens_for(eng, "after_cursor_execute")
-def _a(conn, cursor, stmt, params, ctx, many):
-    dt = time.monotonic() - conn.info.get("t0", time.monotonic())
-    if dt > 0.5:
-        slow.append((round(dt, 2), " ".join(stmt.split())[:230]))
-
-
-ui = dataclasses.replace(cfg.ui, query_timeout_ms=60000)
-rep = PublicReports(eng, cfg.chain.chain_id, ui, value_unit="HYPE",
-                    market=StoredMarket(eng, cfg.chain.chain_id, cfg.web.market_max_age_s),
-                    collector_interval_s=cfg.collector.interval_s)
-rep.fx_policy = FxPolicy.from_web(cfg.web)
-rep.hidden_tokens = tuple(sorted({*cfg.alerts.mute_tokens, *cfg.web.activity_hidden_tokens}))
-rep.hidden_wallets = tuple(cfg.tracking.muted_wallets)
-now = datetime.now(timezone.utc)
-
-
-def timed(name, fn):
-    slow.clear()
-    t = time.monotonic()
-    try:
-        fn()
-        res = "ok"
-    except Exception as e:  # noqa: BLE001
-        res = type(e).__name__ + ": " + str(e)[:120]
-    print(f"== {name}: {time.monotonic() - t:.1f}s {res}", flush=True)
-    for dt, s in sorted(slow, reverse=True)[:6]:
-        print(f"   {dt:6.2f}s  {s}", flush=True)
-
-
-for rng in ("24h", "7d"):
-    tr = parse_range({"range": rng}, now)
-    timed(f"market_overview {rng}", lambda: rep.market_overview(tr))
-    timed(f"coverage {rng}", lambda: rep.coverage(tr, now))
-    timed(f"trades recent {rng}", lambda: rep.trades(tr, limit=15, hidden=rep.hidden_tokens, hidden_wallets=rep.hidden_wallets))
-    timed(f"trending {rng}", lambda: rep.trending(tr, "score", now=now))
-timed("health", lambda: rep.health(now))
-p = parse_activity({}, now)
-timed("activity_page default", lambda: rep.activity_page(p))
-with eng.connect() as c:
-    c.execute(sa.text("SET statement_timeout = '60s'"))
-    t = time.monotonic()
-    n = c.execute(sa.text("SELECT count(*) FROM trades WHERE block_time > now() - interval '24 hours'")).scalar()
-    print(f"public trades 24h: {n} ({time.monotonic() - t:.1f}s)")
-    t = time.monotonic()
-    n = c.execute(sa.text("SELECT count(*) FROM public_wallets")).scalar()
-    print(f"public wallets: {n} ({time.monotonic() - t:.1f}s)")
-PY_RUN
-    chmod 644 /tmp/elysium-probe/*
-    docker compose run -T --rm --no-deps -v /tmp/elysium-probe:/probe:ro --entrypoint python web /probe/run.py 2>&1 | grep -v "^ Container\|Creating\|Created" || true
-    rm -rf /tmp/elysium-probe
-    resources
+SQL
     ;;
   ui-smoke)
     docker compose run --rm --no-deps ui --ui-smoke
