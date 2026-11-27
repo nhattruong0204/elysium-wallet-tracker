@@ -38,6 +38,23 @@ PATTERN = re.compile(r"0x[0-9a-f]{40}\Z")
 LOCK_ID = 0x434F4E53   # 'CONS', separate from the tracker and Stage C locks
 POLL_SECONDS = 45
 MAX_EVENTS = 10
+# Quality gate. 30-day replay with the channel's settings (wiki: Launcher tokens and a 30-day
+# Consensus replay, 2026-11-27): 439 judged cards, 22% reached 2x within 24 h and 45% were trash.
+# With this gate 212 are kept: 30% winners, 33% trash, two thirds of the winners kept. Cards
+# under $10k market cap were 76% trash and those with 0-1 independent operator 55%.
+# Env overrides on the consensus-alerts service.
+MIN_INDEPENDENT = int(os.environ.get("CONSENSUS_MIN_INDEPENDENT", "2"))
+MIN_MCAP_USD = float(os.environ.get("CONSENSUS_MIN_MCAP_USD", "10000"))
+UNKNOWN_MCAP_MIN_INDEPENDENT = 3   # no market data at all: only a clearly broad consensus
+# Two further rules from the same replay, found on the data they are scored on, so they start in
+# log-only mode: "log" writes "consensus: shadow rule would skip ..." and still posts; "enforce"
+# skips; "off" ignores them. With both, the replay kept 169 cards: 36% winners, 33% trash.
+#   * a token's 3rd+ consensus within 7 days (22 gate-passing cards: 1 winner, 9 trash);
+#   * Agora's 1-hour change below 0 at the signal (32 cards: 9% winners), when known.
+EXTRA_RULES = os.environ.get("CONSENSUS_EXTRA_RULES", "log").strip().lower()
+if EXTRA_RULES not in ("log", "enforce", "off"):
+    EXTRA_RULES = "log"
+REPEAT_SKIP_MIN = 2          # earlier consensus events on the token within 7 days
 MAX_SENDS = 5
 # Consensus cards with this many launch-cohort wallets among the traders are never posted.
 COHORT_SKIP_MIN = 2
@@ -112,6 +129,36 @@ def make_settings_engine(url: str) -> Engine:
     return engine
 
 
+
+def skip_reason(card: dict[str, Any]) -> str | None:
+    """Why a card is not worth posting, or None. Pure."""
+    if int(card.get("cohort_wallets") or 0) - int(card.get("launcher_wallets") or 0) \
+            >= COHORT_SKIP_MIN:
+        return "a launch cohort is in"
+    if card.get("launcher_token"):
+        return "token created by a serial launcher"
+    indep = int(card.get("independent") or 0) - int(card.get("launcher_wallets") or 0)
+    if indep < MIN_INDEPENDENT:
+        return f"{max(indep, 0)} independent wallet(s): one operator, not a consensus"
+    mc = card.get("mcap_at_usd")
+    if mc is not None and float(mc) < MIN_MCAP_USD:
+        return f"market cap ${float(mc):,.0f} below ${MIN_MCAP_USD:,.0f}"
+    if mc is None and indep < UNKNOWN_MCAP_MIN_INDEPENDENT:
+        return "no market data and fewer than 3 independent wallets"
+    return None
+
+def extra_reasons(card: dict[str, Any]) -> list[str]:
+    """The log-only rules (EXTRA_RULES) that would skip this card. Pure."""
+    out = []
+    prior = int(card.get("prior_events") or 0)
+    if prior >= REPEAT_SKIP_MIN:
+        out.append(f"consensus no. {prior + 1} on this token within 7 days")
+    ch = card.get("change_1h")
+    if ch is not None and float(ch) < 0:
+        out.append(f"price {float(ch):+.0%} over the hour before the signal")
+    return out
+
+
 class ConsensusSettingsStore:
     """Writable only as the isolated consensus_rw DB role; no tracker tables accessible."""
 
@@ -174,8 +221,16 @@ class ConsensusSettingsStore:
                     continue
                 if not PATTERN.fullmatch(token) or not tx.startswith("0x"):
                     continue
-                if int(card.get("cohort_wallets") or 0) >= COHORT_SKIP_MIN:
-                    continue                # a launch cohort is in: not a signal to follow
+                why = skip_reason(card)
+                extra = extra_reasons(card) if EXTRA_RULES != "off" and not why else []
+                if extra and EXTRA_RULES == "enforce":
+                    why = "; ".join(extra)
+                if why:
+                    log.info("consensus: not posting %s: %s", token, why)
+                    continue
+                if extra:
+                    log.info("consensus: shadow rule would skip %s (%s, trigger %s): %s", token,
+                             card.get("symbol") or "?", at.isoformat(), "; ".join(extra))
                 body, buttons = render_card(card, links)
                 key = f"{token}:{at.isoformat()}:{tx}"
                 result = c.execute(sa.text(f"""

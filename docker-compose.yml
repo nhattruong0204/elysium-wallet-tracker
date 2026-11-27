@@ -64,6 +64,8 @@ services:
       # decoded buy or sell): launch cohort 1 on router 0x3e328152 (16), three more wallets
       # using only that router, and the 7-wallet group on contract 0x1b341fdd.
       # Last: 0xc57bf04f (2026-11-12), buys ~60% of a launch then splits it across 50 wallets.
+      # 2026-11-27: 13 more transfer-only wallets on router 0x3e328152 (Agora ranks 60-100, silent
+      # since 2026-11-20; wiki "Transfer-only group 2 router 0x3e328152").
       # (No comment lines inside the list: a folded scalar would read them as addresses.)
       TRACKING_BLOCKED_WALLETS: &blocked-wallets >-
         0xf70da97812cb96acdf810712aa562db8dfa3dbef
@@ -98,6 +100,19 @@ services:
         0xf25d0310cc65c3638a9582cf7dcb0ce41645bd30
         0xfdde597156af67e7ab5c76edeef91cb292d2e017
         0xc57bf04f886c7cc754f66fd30fdc39373e6b9947
+        0x17ef80f877e04746089faf7dd4ee0c404250ad23
+        0x276da0b40416cd299fbc5aa94354aac23dbe17b7
+        0x28a6bbc8e030974fa79bbf2518c2b82f8bbb50cb
+        0x3a014bfd532c6b430970d010ba91f6df16f46a66
+        0x4ebfc752c2536105cc5359d76ae6ef976839ebfd
+        0x71da0947605ff234083465184ce692ae4cd3278e
+        0x7f5e1246c48d84c5e10330e4b82011a9b15b0e12
+        0xad89a1599659fbb0d426c2313b76aa8b6290c98f
+        0xae88f8821da1e320f80f393b1a84e644e32e9d03
+        0xb879684baa65c02a7fa1a39ad068c287c8044d93
+        0xbde6fdcbc0e882388727583327497e0c4a4573b0
+        0xe0925725a3eaf65bd744eb970415e7f114ddfabe
+        0xfe167490561449a8138ed5e7b062a9583ed14a43
     volumes:
       - ./config:/config:ro        # config.yaml + watchlist.txt
       - tracker-data:/data         # v0.1/v0.2 SQLite file lives here (for --import-sqlite)
@@ -190,6 +205,8 @@ services:
       CONSENSUS_TG_CHAT_ID: ${CONSENSUS_TG_CHAT_ID:-}
       # Never alert the group about tokens the website hides (Elysium mainnet USDC).
       CONSENSUS_HIDDEN_TOKENS: "0xb47c4c8f73f009cc0c0d3f92b388d13e293f0b65"
+      # Repeat-consensus and falling-price rules: log | enforce | off (docs/OPERATIONS.md)
+      CONSENSUS_EXTRA_RULES: "log"
     volumes:
       - ./config:/config:ro
     depends_on:

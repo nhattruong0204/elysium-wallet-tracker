@@ -28,7 +28,13 @@ from .activity import (
     filter_sql,
     order_and_cursor,
 )
-from .consensus import MAX_CARDS, RANGE_CHOICES, ConsensusParams, build_cards
+from .consensus import (
+    MAX_CARDS,
+    RANGE_CHOICES,
+    ConsensusParams,
+    build_cards,
+    count_prior_events,
+)
 from .usd import FX_LATERAL, FxPolicy, format_usd, to_usd
 
 UTC = timezone.utc
@@ -246,6 +252,22 @@ _ACT_MARKET = """
         ) c ORDER BY abs(extract(epoch FROM c.captured_at - x.ts)) LIMIT 1
     ) near ON true""" + FX_LATERAL.format(ts="x.ts")
 
+# Agora's 1-hour price change from the last snapshot taken at most :near seconds BEFORE the
+# signal (Consensus: a consensus into a falling price rarely ran, see consensus_delivery)
+_ACT_CHANGE = """
+    SELECT x.id, b.captured_at AS ch_at, b.change_1h
+    FROM unnest(CAST(:ids AS bigint[]), CAST(:toks AS text[]), CAST(:ts AS timestamptz[]))
+         AS x(id, token, ts)
+    LEFT JOIN LATERAL (
+        SELECT s.captured_at, s.change_1h FROM token_market_snapshots s
+         WHERE s.chain_id = :c AND s.token = x.token AND s.change_1h IS NOT NULL
+           AND s.captured_at <= x.ts AND s.captured_at > x.ts - make_interval(secs => :near)
+         ORDER BY s.captured_at DESC LIMIT 1
+    ) b ON true"""
+
+# earlier consensus events on the same token within this many days (Consensus cards)
+PRIOR_EVENT_DAYS = 7
+
 # supply implied by each token's latest snapshot with both a price and a market cap
 _ACT_SUPPLY = """
     SELECT DISTINCT ON (token) token, mcap_hype / price_hype AS supply
@@ -383,6 +405,16 @@ class PublicReports(_BasePublicReports):
             GROUP BY b.token HAVING count(DISTINCT b.wallet) >= :n)
         ORDER BY t.token, t.block_time, t.id"""
 
+    # the card tokens' legs over a longer span, to count their earlier consensus events
+    _CONS_TOKEN_LEGS = """
+        SELECT t.token, t.wallet, t.kind, t.hype_wei, t.block_time, t.block_number, t.tx_hash
+        FROM trades t
+        WHERE t.chain_id = :c AND t.token = ANY(CAST(:toks AS text[]))
+          AND t.kind IN ('BUY', 'SELL') AND t.confidence = 'high'
+          AND t.hype_wei IS NOT NULL AND t.hype_wei > 0
+          AND t.block_time >= :lo AND t.block_time < :hi
+        ORDER BY t.token, t.block_time, t.id"""
+
     # wallets buying a token in the same block as >= 2 other public wallets, >= 5 times
     _CONS_BUNDLES = """
         SELECT b.wallet FROM trades b
@@ -426,9 +458,18 @@ class PublicReports(_BasePublicReports):
             cards = cards[:MAX_CARDS]
             # market cap when the threshold was reached, and the HYPE rate of that moment
             if cards:
-                mk = {r["id"]: r for r in self._all(
-                    c, _ACT_MARKET, ids=list(range(len(cards))), toks=[k["token"] for k in cards],
-                    ts=[k["trigger_at"] for k in cards], near=MCAP_NEAR_S)}
+                ids, toks = list(range(len(cards))), [k["token"] for k in cards]
+                trig = [k["trigger_at"] for k in cards]
+                mk = {r["id"]: r for r in self._all(c, _ACT_MARKET, ids=ids, toks=toks, ts=trig,
+                                                    near=MCAP_NEAR_S)}
+                for r in self._all(c, _ACT_CHANGE, ids=ids, toks=toks, ts=trig, near=MCAP_NEAR_S):
+                    cards[r["id"]]["change_1h"] = (float(r["change_1h"])
+                                                   if r["change_1h"] is not None else None)
+                    cards[r["id"]]["change_1h_at"] = r["ch_at"]
+                span = timedelta(days=PRIOR_EVENT_DAYS)
+                hist = self._all(c, self._CONS_TOKEN_LEGS, toks=sorted(set(toks)),
+                                 lo=min(trig) - span - timedelta(minutes=p.window_min), hi=now)
+                count_prior_events(cards, hist, p, bundles, days=PRIOR_EVENT_DAYS)
                 wallets = sorted({m["wallet"] for k in cards for m in k["members"]})
                 ranks = {r["address"]: r["rank"] for r in self._all(c, self._CONS_RANKS,
                                                                     a=wallets)}

@@ -582,6 +582,12 @@ class Store:
             return load_cohorts(c, table="trades", chain_id=self.chain_id, ic=ic,
                                 skip_tokens=skip_tokens)
 
+    def launchers(self, ic: Any) -> Any:
+        from .launchers import load_launchers
+        with self.engine.connect() as c:
+            return load_launchers(c, chain_id=self.chain_id, lookback_days=ic.launcher_lookback_days,
+                                  window_s=ic.launcher_window_s, min_launches=ic.launcher_min)
+
     def wallets_on_tokens(self, tokens: Iterable[str], wallets: Iterable[str],
                           since_days: int) -> dict[str, set[str]]:
         """Per token: which of `wallets` traded it in the last `since_days` (committed rows)."""

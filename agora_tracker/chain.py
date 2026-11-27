@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from .classify import TradeEvent, classify
 from .config import ChainConfig
 from .db import Store
+from .launchers import minted_tokens
 from .rpc import RpcClient, RpcError
 
 log = logging.getLogger(__name__)
@@ -99,6 +100,9 @@ class ScanResult:
     block_hashes: dict[int, tuple[str | None, str | None]] = field(default_factory=dict)
     transactions: list[dict] = field(default_factory=list)   # raw evidence
     transfers: list[dict] = field(default_factory=list)      # raw evidence
+    # (tx, wallet, token) BUY legs made in the transaction that minted the token: the wallet
+    # created it (agora_tracker/launchers.py). Not stored; the engine uses it for alerts.
+    creator_legs: set[tuple[str, str, str]] = field(default_factory=set)
 
     def __iter__(self):  # back-compat: `events, ts = follower.scan(...)`
         return iter((self.events, self.block_times))
@@ -159,12 +163,19 @@ class ChainFollower:
         if n_wallets and self.uses_full_scan(n_wallets):
             top = min(top, self.cfg.full_scan_max_span)
         if self.span_cap is None:
+            self._last_span = top
             return top
         self._ok_ranges += 1
         if self._ok_ranges >= 20:
             self._ok_ranges = 0
             self.span_cap = None if self.span_cap * 2 >= top else self.span_cap * 2
-        return min(top, self.span_cap or top)
+        self._last_span = min(top, self.span_cap or top)
+        return self._last_span
+
+    def shrink_after_failure(self) -> None:
+        """The last range failed for a reason that retrying as-is will not cure (rate limit,
+        partial data): ask for half as many blocks next time. It grows back by itself."""
+        self._shrink_span(getattr(self, "_last_span", self.cfg.max_block_range))
 
     # --- strategy -------------------------------------------------------------
     def wallet_chunk(self) -> int:
@@ -359,6 +370,9 @@ class ChainFollower:
                                    trade_hype_wei=trade_hype, dust_wei=self.dust_wei,
                                    is_sender=is_sender, confidence=conf, hype_method=method))
 
+        minted = {t: minted_tokens(receipts[t], TRANSFER_TOPIC) for t in txs}
+        out.creator_legs = {(e.tx, e.wallet, e.token) for e in events
+                            if e.kind == "BUY" and e.token in minted.get(e.tx, ())}
         blocks = sorted({e.block for e in events})
         ts: dict[int, int] = {}
         if blocks:
