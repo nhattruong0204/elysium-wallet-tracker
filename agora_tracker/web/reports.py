@@ -391,19 +391,26 @@ class PublicReports(_BasePublicReports):
             it["market_cap_text"] = format_usd(usd) if usd is not None else None
 
     # --- consensus buys ----------------------------------------------------------------------
+    # The window's legs are read once (MATERIALIZED) and both the token filter and the result
+    # come from that copy. Reading `trades` twice let the planner, which believes a fresh time
+    # range holds ~1 row until the next ANALYZE (index (chain_id, block_time): no endpoint
+    # probe), rescan the window once per qualifying token through the public-wallet filter:
+    # 9.7 s instead of 0.24 s on 2026-11-27 (24 h), past the 5 s limit, so the Consensus
+    # sender failed every cycle. Same rows as before.
     _CONS_LEGS = """
-        SELECT t.token, t.wallet, t.kind, t.hype_wei, t.block_time, t.block_number, t.tx_hash
-        FROM trades t
-        WHERE t.chain_id = :c AND t.kind IN ('BUY', 'SELL') AND t.confidence = 'high'
-          AND t.hype_wei IS NOT NULL AND t.hype_wei > 0
-          AND t.block_time >= :lo AND t.block_time < :hi
-          AND NOT (t.token = ANY(CAST(:hidden AS text[])))
-          AND t.token IN (
-            SELECT b.token FROM trades b
-            WHERE b.chain_id = :c AND b.kind = 'BUY' AND b.confidence = 'high'
-              AND b.block_time >= :lo AND b.block_time < :hi
-            GROUP BY b.token HAVING count(DISTINCT b.wallet) >= :n)
-        ORDER BY t.token, t.block_time, t.id"""
+        WITH legs AS MATERIALIZED (
+            SELECT t.id, t.token, t.wallet, t.kind, t.hype_wei, t.block_time, t.block_number,
+                   t.tx_hash
+            FROM trades t
+            WHERE t.chain_id = :c AND t.kind IN ('BUY', 'SELL') AND t.confidence = 'high'
+              AND t.block_time >= :lo AND t.block_time < :hi)
+        SELECT l.token, l.wallet, l.kind, l.hype_wei, l.block_time, l.block_number, l.tx_hash
+        FROM legs l
+        WHERE l.hype_wei IS NOT NULL AND l.hype_wei > 0
+          AND NOT (l.token = ANY(CAST(:hidden AS text[])))
+          AND l.token IN (SELECT b.token FROM legs b WHERE b.kind = 'BUY'
+                          GROUP BY b.token HAVING count(DISTINCT b.wallet) >= :n)
+        ORDER BY l.token, l.block_time, l.id"""
 
     # the card tokens' legs over a longer span, to count their earlier consensus events
     _CONS_TOKEN_LEGS = """
