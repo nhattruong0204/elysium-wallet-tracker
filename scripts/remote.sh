@@ -698,6 +698,26 @@ PY
     consensus_state
     tracker_alive
     ;;
+  wallet-probe)
+    # Read-only: cost of the public_api token filter vs a plain semi-join (same rows?).
+    need_docker
+    psql_admin <<'SQL_Q' 2>&1 | cut -c1-300 | sed 's/^/PT|/' || true
+\pset format unaligned
+\pset fieldsep '|'
+\pset tuples_only on
+\timing on
+BEGIN READ ONLY;
+SET LOCAL statement_timeout = '120s';
+SELECT 'N_PUBLIC_WALLETS', count(*) FROM public_api.public_wallets;
+SELECT 'N_PUBLIC_TOKENS', count(*) FROM public_api.public_tokens;
+SELECT 'N_TOKENS_ALL', count(DISTINCT (chain_id, token)) FROM trades;
+SELECT 'N_ALT', count(*) FROM (SELECT DISTINCT t.chain_id, t.token FROM trades t WHERE t.wallet IN (SELECT address FROM public_api.public_wallets)) z;
+SELECT 'DIFF_ALT_MINUS_VIEW', count(*) FROM (SELECT DISTINCT t.chain_id, t.token::text FROM trades t WHERE t.wallet IN (SELECT address FROM public_api.public_wallets) EXCEPT SELECT chain_id, token::text FROM public_api.public_tokens) z;
+SELECT 'DIFF_VIEW_MINUS_ALT', count(*) FROM (SELECT chain_id, token::text FROM public_api.public_tokens EXCEPT SELECT DISTINCT t.chain_id, t.token::text FROM trades t WHERE t.wallet IN (SELECT address FROM public_api.public_wallets)) z;
+ROLLBACK;
+SELECT 'IDX', indexname, indexdef FROM pg_indexes WHERE tablename = 'trades' ORDER BY 2;
+SQL_Q
+    ;;
   ui-smoke)
     docker compose run --rm --no-deps ui --ui-smoke
     ;;
