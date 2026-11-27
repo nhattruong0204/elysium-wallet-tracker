@@ -188,6 +188,8 @@ def _dash(cohorts):
     d = Dashboard.__new__(Dashboard)
     d.cfg, d.rep = cfg, _Rep()
     d._cohorts, d._cohorts_at = cohorts, time.monotonic()
+    from agora_tracker.launchers import Launchers
+    d._launchers, d._launchers_at = Launchers(), time.monotonic()
     return d
 
 

@@ -612,3 +612,40 @@ the range was retried in full every 2 minutes, and each retry used up the quota 
 **If it happens again:** `docker inspect elysium-wallet-tracker` shows `heartbeat age`; the log
 repeats the same transaction hash. The website's scanner indicator turns red, but nothing pages
 the owner yet.
+
+## Serial token launchers and the Consensus quality gate (2026-11-27)
+
+Review of 2026-11-19..26 (wiki "Weekly review 2026-11-26"):
+- **Launchers:** 41 tracked wallets created 2,573 tokens through the eleos launch contract. Each bought in the creation transaction and sold to the first buyers about a minute later. They made 97% of all measured profit, sent 68% of the Telegram trade alerts, and hold about half of Agora's top 100.
+- **Consensus:** every bad card came from one coordinated group or sat at a tiny market cap.
+
+**Launchers** (`agora_tracker/launchers.py`):
+
+| Where | Rule |
+|---|---|
+| Tracker, real time | The buy's receipt mints the token in the same transaction (`ScanResult.creator_legs`). That leg is never alerted, and the token counts as launched. |
+| Tracker, website, sender (stored rows) | The wallet's first buy lies within 2 s of Agora's `launched_at` and is the token's first tracked trade, on 3+ tokens in 7 days. This rule matched the receipt evidence exactly on the review week (41 of 41 wallets, none extra). |
+| Alerts | Launcher wallets: no alerts of their own, and never independent buyers in cluster/strong signals. Other wallets' alerts on tokens a launcher created: muted by default (`intel.launcher_tokens: mute`), or sent with a warning line (`warn`). Everything is still indexed. |
+| Wallet intelligence | Label `launcher` (status and flag, ranked after blocked/contract; `labels-v3`). |
+
+Settings:
+- `intel.launcher_min` (3), `launcher_lookback_days` (7), `launcher_window_s` (2), `launcher_tokens`.
+- Off switch: `ALERTS_LAUNCHER_FILTER=off`; `ALERTS_LAUNCHER_TOKENS=warn|mute` (tracker).
+
+**Consensus quality gate** (`consensus_delivery.skip_reason`, sender only; the website's Consensus tab still shows every card):
+1. **Coordinated groups:** skip when a launch cohort is in (2+ cohort or muted wallets), or when the token was created by a launcher.
+2. **Independent wallets:** skip when fewer than `CONSENSUS_MIN_INDEPENDENT` (2) remain after removing launchers. This applies even when the channel's "independent only" setting is off.
+3. **Market cap:** skip when the market cap at the signal is below `CONSENSUS_MIN_MCAP_USD` ($10k). With no market data at all, 3 independent wallets are required.
+4. **Same-size buys:** 3+ wallets whose net buys are within 1% of each other and whose first buys fall within 2 minutes count as one operator (cohort 2 bought 5 x 1.30 HYPE).
+
+On the 14 cards posted between 11-17 and 11-26, the gate keeps the 7 winners (1.9x-7.9x) and SMOOR twice (-45%). It drops the 5 bad cards and one card driven by a single trio whose token later rose. On a 30-day replay (wiki: *Launcher tokens and a 30-day Consensus replay*) it keeps 212 of 439 judged cards: 30% reached 2x within 24 h and 33% were trash, against 22% and 45% without it.
+
+**Log-only rules** (`CONSENSUS_EXTRA_RULES`: `log` by default, `enforce`, or `off`; consensus-alerts service). They are checked only on cards that pass the gate:
+- **Repeat consensus:** this is the token's 3rd or later consensus event (same thresholds) within 7 days (`prior_events` ≥ 2 on the card).
+- **Falling price:** Agora's 1-hour change is below 0 in the last snapshot taken up to 30 minutes before the signal (`change_1h`). With no such snapshot the rule has no opinion.
+
+In `log` mode the card is still posted, and the sender logs `consensus: shadow rule would skip <token> (<symbol>, trigger <time>): <reasons>`. Read the lines with `docker logs elysium-consensus-alerts 2>&1 | grep "shadow rule"`. After 1-2 weeks, compare those cards' outcomes with the posted ones before setting `enforce`. Replay basis: the two rules together kept 169 cards, 36% winners and 33% trash. They were found on the same data they are scored on, which is why they start in log-only mode.
+
+**Website:** the wallet table, the label refresh and the launcher query run with a 30 s statement timeout (`HEAVY_TIMEOUT_MS`). They are cached, and the role's 5 s default made the CSV export answer 503 once volume grew about 10x.
+
+**Block list:** 13 more transfer-only wallets on router `0x3e328152` (45 addresses in total).

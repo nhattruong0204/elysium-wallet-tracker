@@ -50,6 +50,9 @@ SORTS = {                       # key -> (label, default descending)
 }
 PAGE_SIZES = (25, 50, 100)
 MAX_ROWS = 20_000
+# The wallet table over 800+ wallets outgrew the role's 5 s default once volume rose ~10x
+# (2026-11-26: the CSV export answered 503). It is cached, so a longer limit costs nothing.
+HEAVY_TIMEOUT_MS = 30_000
 _NUM = re.compile(r"^-?[0-9]{1,12}(?:\.[0-9]{1,18})?$")
 
 
@@ -497,7 +500,7 @@ class WalletIntel:
     def table(self, window: str, now: datetime) -> dict[str, Any]:
         delta = WINDOWS[window]
         since = (now - delta) if delta else datetime(2000, 1, 1, tzinfo=UTC)
-        with self.rep.ro() as c:
+        with self.rep.ro(HEAVY_TIMEOUT_MS) as c:     # cached: built at most once per TTL
             rows = self.rep._all(c, BASE_SQL, since=since, cap=MAX_ROWS + 1, ver=self.score_version)
             snap = self.rep._one(c, """
                 SELECT id, captured_at, row_count FROM leaderboard_snapshots
