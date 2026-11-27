@@ -699,8 +699,9 @@ PY
     tracker_alive
     ;;
   wallet-probe)
-    # Read-only: time the Consensus legs query as dashboard_ro (web image) and show its plan.
+    # Read-only: Consensus legs query plan with timings, and trades table statistics.
     need_docker
+    psql_admin -At -F'|' -c "SELECT 'STAT', relname, n_live_tup, n_mod_since_analyze, last_analyze, last_autoanalyze, autoanalyze_count FROM pg_stat_user_tables WHERE relname IN ('trades', 'leaderboard_snapshot_entries', 'wallet_enrollment', 'realized_pnl', 'token_market_snapshots')" || true
     rm -rf /tmp/elysium-probe && mkdir -p /tmp/elysium-probe && chmod 755 /tmp/elysium-probe
     cat > /tmp/elysium-probe/run.py <<'PY_RUN'
 """Read-only: time the Consensus legs query as dashboard_ro and show its plan."""
@@ -731,16 +732,13 @@ with eng.connect() as c:
     print("public trades 24h:", c.execute(sa.text("SELECT count(*) FROM trades WHERE block_time > now() - interval '24 hours'")).scalar(), f"{time.monotonic() - t:.2f}s")
     t = time.monotonic()
     print("public wallets:", c.execute(sa.text("SELECT count(*) FROM wallets")).scalar(), f"{time.monotonic() - t:.2f}s")
-    plan = c.execute(sa.text("EXPLAIN (ANALYZE, BUFFERS, TIMING OFF) " + Reports._CONS_LEGS), p).all()
-    for r in plan[:45]:
-        print("  " + r[0][:200])
+    plan = c.execute(sa.text("EXPLAIN (ANALYZE, BUFFERS) " + Reports._CONS_LEGS), p).all()
+    for r in plan:
+        print("PLAN|" + r[0][:220])
 PY_RUN
     chmod 644 /tmp/elysium-probe/*
     docker compose run -T --rm --no-deps -v /tmp/elysium-probe:/probe:ro --entrypoint python web /probe/run.py 2>&1 | grep -v "^ Container\|Creating\|Created" || true
     rm -rf /tmp/elysium-probe
-    log "postgres: running > 3 s"
-    psql_admin -At -F'|' -c "SELECT usename, round(extract(epoch FROM now() - query_start)::numeric, 1), left(regexp_replace(query, '\s+', ' ', 'g'), 110) FROM pg_stat_activity WHERE state <> 'idle' AND now() - query_start > interval '3 seconds' AND pid <> pg_backend_pid()" || true
-    resources
     ;;
   ui-smoke)
     docker compose run --rm --no-deps ui --ui-smoke
