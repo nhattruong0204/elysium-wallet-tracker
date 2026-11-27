@@ -76,7 +76,7 @@ def test_buy_card_layout_links_and_buttons():
     lines = text.split("\n")
     assert lines[0].startswith("🆕🟢 <b>BUY</b>") and lines[0].endswith("(ElysPump)")
     assert lines[1] == "💰 <b>MC</b>: $856.64K"                    # prominent second line
-    assert "<b>whale-1</b>" in lines[2] and "<b>#3</b>" in lines[2] and "PnL +$60.91K" in lines[2]
+    assert "<b>whale-1</b>" in lines[2] and ">Agora #3</a>" in lines[2] and "PnL +$60.91K" in lines[2]
     assert lines[3] == ""                                         # breathing space, like Raybot
     assert "whale-1 swapped <b>3.20 HYPE ($274.88)</b> for <b>12.40M</b>" in lines[4]
     assert "@$0.0000222" in lines[4]                               # execution price, no 1e-05

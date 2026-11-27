@@ -698,29 +698,6 @@ PY
     consensus_state
     tracker_alive
     ;;
-  wallet-probe)
-    # Read-only: are the top-ranked wallets launch snipers?
-    need_docker
-    psql_admin -At -F'|' <<'SQL' || true
-
-SET default_transaction_read_only = on; SET statement_timeout = '300s';
-WITH w AS (SELECT unnest(ARRAY['0x85a5fd592debdf4831b7099ae556b48d021230fa','0x267be60d97db793db3316590e84d28ab26e44af9','0x0641315fda9935624bbb014a38b7a30e6b1e6e46','0x93f5af632ce523286e033f0510e9b3c9710f4489','0xc16f65b92bc7a4105b1cbcc1c12a2a2b73abc96e','0xf86a7c853b60c36f79f6e1de0e7868d109e97004','0x775256e60f88c5e0f149db67fbcb738da75143d7','0x2e27296db73efa090c33823b0b637f031d1a1f97','0xbc4a11a09a9898568e28533ef537adeb489900a6','0x3473b7de05cd3560a37e316c926f7284bc2656e4','0x95ac25fdecbc6a4b6ee398a62058bb048cee70c4','0xddbcdf710c21219dc5e56a6e1e8576fb4aa99d96']) AS wallet),
-fb AS (SELECT t.wallet, t.token, min(t.block_time) AS fb FROM trades t WHERE t.chain_id = 99901 AND t.kind = 'BUY' AND t.wallet IN (SELECT wallet FROM w) AND t.block_time >= now() - interval '37 days' GROUP BY 1, 2),
-d AS (SELECT fb.wallet, fb.token, extract(epoch FROM fb.fb - p.launched_at) AS delay FROM fb LEFT JOIN token_profiles p ON p.chain_id = 99901 AND p.address = fb.token),
-r AS (SELECT r.wallet, r.token, r.pnl_wei / 1e18 AS pnl FROM realized_pnl r JOIN trades t ON t.id = r.trade_id
-       WHERE r.chain_id = 99901 AND r.status = 'measured' AND r.pnl_wei IS NOT NULL AND t.block_time >= now() - interval '30 days' AND r.wallet IN (SELECT wallet FROM w))
-SELECT 'DATA', w.wallet,
-  (SELECT count(*) FROM d WHERE d.wallet = w.wallet), (SELECT count(*) FROM d WHERE d.wallet = w.wallet AND d.delay IS NULL),
-  (SELECT round(percentile_cont(0.5) WITHIN GROUP (ORDER BY d.delay)::numeric) FROM d WHERE d.wallet = w.wallet),
-  (SELECT count(*) FROM d WHERE d.wallet = w.wallet AND d.delay < 60),
-  (SELECT round(sum(r.pnl)::numeric, 1) FROM r JOIN d ON d.wallet = r.wallet AND d.token = r.token WHERE r.wallet = w.wallet AND d.delay < 60),
-  (SELECT round(sum(r.pnl)::numeric, 1) FROM r JOIN d ON d.wallet = r.wallet AND d.token = r.token WHERE r.wallet = w.wallet AND (d.delay >= 60 OR d.delay IS NULL)),
-  (SELECT x.to_address || ':' || count(*) FROM trades t JOIN transactions x ON x.chain_id = t.chain_id AND x.tx_hash = t.tx_hash WHERE t.chain_id = 99901 AND t.wallet = w.wallet AND t.kind = 'BUY' AND t.block_time >= now() - interval '30 days' GROUP BY x.to_address ORDER BY count(*) DESC LIMIT 1),
-  (SELECT string_agg(DISTINCT coalesce(p.launchpad, '?'), ',') FROM d JOIN token_profiles p ON p.chain_id = 99901 AND p.address = d.token WHERE d.wallet = w.wallet)
-FROM w;
-
-SQL
-    ;;
   ui-smoke)
     docker compose run --rm --no-deps ui --ui-smoke
     ;;

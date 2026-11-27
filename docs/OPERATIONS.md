@@ -537,6 +537,31 @@ are not classified here by design.
 Thresholds live in `LabelRules`; changing one changes what a label means, so bump `VERSION`.
 Flags are inferences from on-chain patterns, not proof of common control or misconduct.
 
+## Trader badges on alert cards (2026-11-27)
+
+Every trade card shows how the wallet has done lately, so a reader can decide in a glance whether to tail it (`agora_tracker/performance.py`, rendered by `cards.perf_lines`).
+
+| Our rank | Title line | Banner |
+|---|---|---|
+| #1-10 | `👑#3 🟢 BUY …` | 👑 ELITE TRADER · #3 of N by 30d PnL |
+| #11-30 | `💎#14 …` | 💎 PRO TRADER |
+| #31-100 | `🏅#37 …` | 🏅 TOP 100 TRADER |
+| unranked | none | one line: `▫️ 30d +3.0 HYPE · 60% win (3/5) · ⬜⬜🟩🟩`, with ⚠️ when losing |
+
+**Banner content:** 30-day and 7-day PnL in HYPE (with a USD estimate), the win rate, and four weekly results, oldest to newest: 🟩 up, 🟥 down, ⬜ no closed trade. Cluster cards list each buyer with their badge and record, and put the best badge first. Agora's own rank stays on the card as "Agora #42"; Agora's PnL is left out when our record is shown.
+
+**What counts:**
+- Realized PnL we *measured*, on sells in the last 30 days.
+- Wallets that are never alerted are left out: launch cohorts, serial launchers and muted wallets.
+- Muted tokens and tokens made by serial launchers are left out.
+- Positions a wallet opened within 60 s of the token's launch are left out. A launch snipe cannot be copied: on 2026-11-27 the two wallets on top of the raw list made 99% and 96% of their PnL that way.
+- A wallet is ranked when it closed 5+ trades on 2+ tokens and is up. On 2026-11-27, 52 wallets qualified.
+
+**Operation:**
+- The ranking is refreshed every 15 min in the tracker; a failed refresh keeps the last one. The record is frozen into the alert payload when the alert is created.
+- `ALERTS_PERF_BADGES=off` (tracker env) removes it. `alerts.perf_*` in `config.yaml` tunes the window, minimums, snipe seconds and refresh time.
+- The log line `trader ranking: N ranked wallet(s) …` appears whenever the count changes.
+
 ## Buys and sells only (Telegram cards and the Activity tab; 2026-11-27)
 
 **Telegram:** only `alerts.alert_kinds` become trade cards. The default is `[BUY, SELL]`; `ALERTS_KINDS` (tracker env, e.g. `BUY,SELL,TRANSFER_OUT`) overrides it. Cluster buys, leaderboard and health alerts are not affected. Transfer bursts are built from TRANSFER_OUT cards, so they stop too.

@@ -1,2 +1,2 @@
-action=wallet-probe
-# top wallets launch delay 2026-11-27T09:00Z
+action=tracker
+# deploy PR #141 (merge 8990c5a) 2026-11-27T09:57Z
