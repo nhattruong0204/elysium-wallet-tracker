@@ -329,16 +329,9 @@ def render_card(c: dict[str, Any], links: Any) -> tuple[str, dict[str, Any]]:
         lines.append(f"🔹 <code>{address[:8]}…{address[-4:]}</code>{rank}"
                      f" · {float(m['net_hype']):.2f} HYPE")
     lines.append(f"📋 <code>{token}</code>")
-    address = links.token(token)
-    buttons = [[{"text": "📊 Consensus on web", "url": "https://onchainflow.app/consensus"},
-                {"text": "🔎 Elyscan", "url": address["Elyscan"]}],
-               [{"text": "⚡ Maestro", "url": f"https://t.me/Maestro?start={token}"}]]
+    # one button only (owner, 2026-11-27): open the token in Fomo
     fomo = links.fomo_token(token)
-    if fomo:
-        buttons[1].append({"text": "📱 Fomo", "url": fomo})
-    tx = str(c.get("trigger_tx") or "")
-    if re.fullmatch(r"0x[0-9a-fA-F]{64}", tx):
-        buttons.append([{"text": "Trigger tx", "url": links.tx(tx)}])
+    buttons = [[{"text": "📱 Open in Fomo", "url": fomo}]] if fomo else []
     return "\n".join(lines)[:3900], {"inline_keyboard": buttons}
 
 
@@ -372,7 +365,9 @@ class ConsensusSender:
             r = self.session.post(
                 f"https://api.telegram.org/bot{self.token}/sendMessage",
                 json={"chat_id": self.group, "text": body, "parse_mode": "HTML",
-                      "disable_web_page_preview": True, "reply_markup": buttons},
+                      "disable_web_page_preview": True,
+                      **({"reply_markup": buttons} if (buttons or {}).get("inline_keyboard")
+                         else {})},
                 timeout=12)
             self.last_sent = time.monotonic()
             if r.status_code == 429:

@@ -121,3 +121,49 @@ def test_no_fomo_button_without_a_single_valid_token():
     assert _buttons(kb, FOMO_LABEL) == []
     kb = cards.keyboard(links, "bad-token", "BLOB", None, TX)
     assert _buttons(kb, FOMO_LABEL) == []
+
+
+# --- only the Fomo button under alert cards (owner, 2026-11-27) -------------------------------
+def _sent(monkeypatch, mode, p):
+    if mode is None:
+        monkeypatch.delenv("ALERT_BUTTONS", raising=False)
+    else:
+        monkeypatch.setenv("ALERT_BUTTONS", mode)
+    links = Links(LinksConfig())
+    full = cards.render(p, links)[1]
+    return cards.alert_keyboard(links, p, full), full
+
+
+@pytest.mark.parametrize("kind", ["BUY", "SELL"])
+def test_trade_cards_carry_only_the_fomo_button_by_default(monkeypatch, kind):
+    sent, full = _sent(monkeypatch, None, payload(kind=kind))
+    assert sent == {"inline_keyboard": [[{"text": FOMO_LABEL, "url": URL}]]}
+    assert len([b for row in full["inline_keyboard"] for b in row]) > 1   # the full set exists
+
+
+def test_cluster_and_burst_cards_too(monkeypatch):
+    for p in ({"type": "cluster", "token": TOKEN, "symbol": "KLEOS", "wallets": [WALLET],
+               "window_s": 600, "total_hype": 3.0},
+              {"type": "burst", "token": TOKEN, "symbol": "KLEOS", "wallet": WALLET,
+               "stage": "start", "count": 4, "recipients": 4, "first_ts": 1, "last_ts": 2,
+               "window_s": 120.0, "sample": []}):
+        monkeypatch.delenv("ALERT_BUTTONS", raising=False)
+        links = Links(LinksConfig())
+        assert cards.alert_keyboard(links, p, None) == {
+            "inline_keyboard": [[{"text": FOMO_LABEL, "url": URL}]]}, p["type"]
+
+
+def test_no_token_or_fomo_off_means_no_buttons(monkeypatch):
+    monkeypatch.delenv("ALERT_BUTTONS", raising=False)
+    links = Links(LinksConfig())
+    assert cards.alert_keyboard(links, {"type": "launch", "kind": "new_launchpad"},
+                                {"inline_keyboard": [[{"text": "x", "url": "https://a"}]]}) is None
+    monkeypatch.setenv("FOMO_BUTTON", "off")
+    assert cards.alert_keyboard(Links(LinksConfig()), payload(kind="BUY"), None) is None
+
+
+def test_all_mode_restores_the_full_keyboard(monkeypatch):
+    sent, full = _sent(monkeypatch, "all", payload(kind="BUY"))
+    assert sent is full and _buttons(full, MAESTRO_LABEL) and _buttons(full, FOMO_LABEL)
+    sent, _ = _sent(monkeypatch, "bogus", payload(kind="BUY"))      # unknown value: default
+    assert sent == {"inline_keyboard": [[{"text": FOMO_LABEL, "url": URL}]]}

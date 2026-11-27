@@ -210,6 +210,7 @@ def test_sell_percentage_requires_native_gas_balance():
 def test_alert_renderer_is_unchanged_when_flag_off(monkeypatch):
     from agora_tracker import cards
     from agora_tracker.__main__ import Tracker
+    monkeypatch.setenv('ALERT_BUTTONS', 'all')     # the full keyboard (default: Fomo only)
     t = Tracker.__new__(Tracker)
     t.cfg = SimpleNamespace(trading=TradingConfig(), alerts=SimpleNamespace(token_image=False),
                             chain=SimpleNamespace(chain_id=99901))

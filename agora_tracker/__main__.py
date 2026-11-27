@@ -100,8 +100,9 @@ class Tracker:
         if not out:
             return row["text"], None, None
         img = cards.preview_url(self.links, info) if self.cfg.alerts.token_image else None
-        markup: dict | None = out[1]
-        if self.cfg.trading.paper_enabled and token and payload.get("type") in ("trade", "early", "cluster", "consensus", "launch"):
+        markup = cards.alert_keyboard(self.links, payload, out[1])
+        if (self.links.alert_buttons == "all" and self.cfg.trading.paper_enabled and token
+                and payload.get("type") in ("trade", "early", "cluster", "consensus", "launch")):
             from .trading.telegram import alert_controls
             markup = alert_controls(markup, token, self.cfg.chain.chain_id)
         return out[0], markup, img
