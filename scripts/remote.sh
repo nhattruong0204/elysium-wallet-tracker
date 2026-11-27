@@ -727,15 +727,17 @@ def timed(c, sql, **kw):
         print("T|%s|%.2fs" % (name, time.monotonic() - t), flush=True)
 rep._all = timed
 with eng.connect() as c:
-    for label, q in (("public_tokens count", "SELECT count(*) FROM public_tokens"),
-                     ("public_wallets count", "SELECT count(*) FROM public_wallets"),
-                     ("snap view 1 token", "SELECT count(*) FROM token_market_snapshots WHERE chain_id = :c AND token = '0x56e1e08fe536de0f18dcee008f57068788d61d33'")):
+    print('Q|search_path|%s' % c.execute(sa.text('SHOW search_path')).scalar())
+    for label, q in (("public_tokens count", "SELECT count(*) FROM public_api.public_tokens"),
+                     ("public_wallets count", "SELECT count(*) FROM public_api.public_wallets"),
+                     ("snap view 1 token", "SELECT count(*) FROM public_api.token_market_snapshots WHERE chain_id = :c AND token = '0x56e1e08fe536de0f18dcee008f57068788d61d33'")):
         c.execute(sa.text("SET statement_timeout = 60000"))
         t = time.monotonic()
         try:
             v = c.execute(sa.text(q), {"c": CHAIN}).scalar()
         except Exception as e:
-            v = type(e).__name__
+            v = type(e).__name__ + ": " + str(getattr(e, "orig", e)).split("\n")[0][:120]
+            c.rollback()
         print("Q|%s|%s|%.2fs" % (label, v, time.monotonic() - t), flush=True)
 p = ConsensusParams(min_traders=3, window_min=30, min_net_hype=0, range="24h", launchpad=None, independent=False)
 now = datetime.now(timezone.utc)
