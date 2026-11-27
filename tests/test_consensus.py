@@ -134,3 +134,11 @@ def test_consensus_fomo_token_validation_and_independent_off_switch(monkeypatch)
     assert Links(LinksConfig()).fomo_token(TOK_PUB) is None
     monkeypatch.setenv("FOMO_BUTTON", "on")
     assert Links(LinksConfig()).fomo_token(TOK_PUB) == url
+
+
+def test_window_is_read_once():
+    """Regression (2026-11-27): reading `trades` twice let the planner rescan a fresh 24 h
+    window once per token (9.7 s vs 0.24 s) and the Consensus sender failed every cycle."""
+    from agora_tracker.web.reports import PublicReports
+    sql = PublicReports._CONS_LEGS
+    assert "AS MATERIALIZED" in sql and sql.count("FROM trades") == 1
