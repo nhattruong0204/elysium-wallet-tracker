@@ -698,6 +698,32 @@ PY
     consensus_state
     tracker_alive
     ;;
+  wallet-probe)
+    # Read-only check after the PR #141 deploy, and why the Consensus sender reports unhealthy.
+    need_docker
+    log "tracker: ranking log lines"
+    docker compose logs --no-color --since 10m tracker 2>&1 | grep -iE "trader ranking|Traceback|ERROR" | grep -v api.telegram.org | tail -10 | cut -c1-220 || true
+    log "tracker: live ranking (read-only)"
+    docker exec elysium-wallet-tracker python -c "
+import os
+from agora_tracker.config import load_config
+from agora_tracker.db import Store, make_engine
+from agora_tracker.performance import Rules
+cfg = load_config('/config/config.yaml')
+st = Store(make_engine(os.environ['DATABASE_URL']), chain_id=cfg.chain.chain_id)
+b = st.performance(Rules(), skip_wallets=cfg.tracking.muted_wallets, skip_tokens=set(cfg.alerts.mute_tokens) | set(cfg.alerts.telegram_mute_tokens))
+r = sorted((v['rank'], w, v) for w, v in b.items() if v.get('rank'))
+print('  wallets with closes:', len(b), 'ranked:', len(r))
+for k, w, v in r[:12]:
+    print('  #%d %s 30d %+.1f 7d %+.1f win %d/%d tokens %d weeks %s' % (k, w[:10], v['pnl'], v['pnl_7d'], v['wins'], v['closes'], v['tokens'], v['weeks']))
+" 2>&1 | grep -v api.telegram.org | cut -c1-200 || true
+    log "consensus sender: health and recent log"
+    docker inspect elysium-consensus-alerts --format '{{.State.Health.Status}} streak={{.State.Health.FailingStreak}}' || true
+    docker inspect elysium-consensus-alerts --format '{{range .State.Health.Log}}{{.End}} exit={{.ExitCode}} {{.Output}}{{"\n"}}{{end}}' | tail -4 | cut -c1-200 || true
+    docker logs --since 4h elysium-consensus-alerts 2>&1 | grep -v api.telegram.org | grep -vE "shadow rule would skip|not posting" | tail -25 | sed -E 's/[0-9a-f]{40,}/<hex>/g' | cut -c1-220 || true
+    echo "  shadow/not-posting lines (4h): $(docker logs --since 4h elysium-consensus-alerts 2>&1 | grep -cE 'shadow rule would skip|not posting' || true)"
+    psql_admin -At -F'|' -c "SELECT 'DATA', status, count(*), max(created_at) FROM consensus_alerts.deliveries GROUP BY status" || true
+    ;;
   ui-smoke)
     docker compose run --rm --no-deps ui --ui-smoke
     ;;
