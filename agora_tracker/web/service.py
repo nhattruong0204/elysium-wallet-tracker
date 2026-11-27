@@ -20,6 +20,7 @@ from ..config import Config
 from ..launchers import Launchers, load_launchers
 from ..timerange import TimeRange
 from .activity import (
+    FEED_KINDS,
     ActivityParams,
     encode_cursor,
 )
@@ -142,7 +143,8 @@ class Dashboard:
                 "coverage": self.rep.coverage(tr, now),
                 "health": public_health(self.rep.health(now), self.w),
                 "recent": self.rep.trades(tr, limit=15, hidden=self.rep.hidden_tokens,
-                                          hidden_wallets=self.rep.hidden_wallets),
+                                          hidden_wallets=self.rep.hidden_wallets,
+                                          kinds=FEED_KINDS),   # as the Activity tab
             }
         hit = self._cached(("overview", range_key(tr)), build)
         return {**hit.value, "meta": self._meta(hit, tr, now)}

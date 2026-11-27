@@ -54,6 +54,9 @@ leaderboard:
 alerts:
   min_trade_hype: 0.5          # ignore smaller buys/sells
   alert_transfers: true        # token moved wallet-to-wallet (rotation to a fresh wallet, OTC)
+  # Kinds that become Telegram cards (default: BUY, SELL). Add TRANSFER_IN / TRANSFER_OUT /
+  # SWAP / MULTI to get those back; ALERTS_KINDS (tracker env) overrides.
+  alert_kinds: [BUY, SELL]
   leaderboard_alerts: true
   rank_change: 10              # alert when a wallet moves >= 10 places
   pnl_change: 5000             # alert when PnL moves this much (in leaderboard.value_unit)

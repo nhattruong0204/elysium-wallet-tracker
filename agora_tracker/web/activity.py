@@ -33,14 +33,19 @@ from .params import BUCKET_S, ParamError, parse_ts
 
 UTC = timezone.utc
 
-# public name -> stored trades.kind
-ACTIONS: dict[str, str | None] = {
-    "all": None, "buy": "BUY", "sell": "SELL", "transfer_in": "TRANSFER_IN",
-    "transfer_out": "TRANSFER_OUT", "swap": "SWAP", "other": "MULTI"}
-ACTION_LABELS = {"all": "All activity", "buy": "Buy", "sell": "Sell",
-                 "transfer_in": "Transfer in", "transfer_out": "Transfer out",
-                 "swap": "Swap", "other": "Multi / other"}
-KIND_TO_ACTION = {v: k for k, v in ACTIONS.items() if v}
+# The Activity tab lists buys and sells only (owner, 2026-11-27). Sends and receives were
+# automatic holder payouts and serial launchers spreading supply, with no price; swaps and multi
+# legs are rare. All kinds stay stored (positions, PnL, wallet pages).
+FEED_KINDS = ("BUY", "SELL")
+# public name -> stored trades.kind ("all" = every FEED_KIND)
+ACTIONS: dict[str, str | None] = {"all": None, "buy": "BUY", "sell": "SELL"}
+ACTION_LABELS = {"all": "Buys and sells", "buy": "Buy", "sell": "Sell"}
+# filters this tab offered before: old links still open, showing buys and sells
+RETIRED_ACTIONS = frozenset({"transfer_in", "transfer_out", "swap", "other", "multi",
+                             "transfers"})
+# display name of every stored kind (rows rendered elsewhere can still be transfers)
+KIND_TO_ACTION = {"BUY": "buy", "SELL": "sell", "TRANSFER_IN": "transfer_in",
+                  "TRANSFER_OUT": "transfer_out", "SWAP": "swap", "MULTI": "other"}
 
 RANGES: dict[str, int | None] = {"15m": 900, "1h": 3600, "4h": 14400, "12h": 43200,
                                  "24h": 86400, "7d": 7 * 86400, "30d": 30 * 86400, "all": None}
@@ -190,6 +195,8 @@ def parse_activity(q: Mapping[str, str], now: datetime, *, default_size: int = 5
                    max_size: int = 100) -> ActivityParams:
     now = now.astimezone(UTC)
     action = (q.get("action") or "all").strip().lower()
+    if action in RETIRED_ACTIONS:
+        action = "all"
     if action not in ACTIONS:
         raise ParamError(f"unknown action {action[:20]!r}; use one of {', '.join(ACTIONS)}")
     sort = (q.get("sort") or "newest").strip().lower()
@@ -294,6 +301,9 @@ def filter_sql(p: ActivityParams, *, with_cursor: bool = True,
     if kind:
         cond.append("t.kind = :kind")
         prm["kind"] = kind
+    else:
+        cond.append("t.kind = ANY(:feed_kinds)")
+        prm["feed_kinds"] = list(FEED_KINDS)
     conf = BASES[p.basis]
     if conf:
         cond.append("t.confidence = ANY(:conf)")
