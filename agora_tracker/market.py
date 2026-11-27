@@ -237,7 +237,7 @@ class MontraMarket:
                              timeout=self.cfg.timeout_s)
         if r.status_code == 429:
             lo, dflt, hi = self.PAUSE_S
-            wait = min(max(_f((r.headers or {}).get("retry-after")) or dflt, lo), hi)
+            wait = min(max(_f(r.headers.get("retry-after")) or dflt, lo), hi)
             self._paused_until = time.monotonic() + wait
             log.warning("montra: rate limited (429), pausing Montra calls for %.0f s", wait)
         if r.status_code == 404:
@@ -295,7 +295,9 @@ class AgoraMarket:
         self.session = requests.Session()
         self.session.headers.update({"user-agent": UA, "accept": "application/json"})
         self._tokens: dict[str, tuple[float, TokenInfo | None]] = {}
-        self._hype_usd: tuple[float, float | None] = (0.0, None)
+        # -inf, not 0: time.monotonic() starts near 0 at boot, and a 0 here would hide the
+        # rate for the first 5 minutes after a host restart.
+        self._hype_usd: tuple[float, float | None] = (float("-inf"), None)
         self._lists: dict[tuple, tuple[float, dict | None]] = {}
         self._details: dict[tuple, tuple[float, dict | None]] = {}
         self.montra = MontraMarket(cfg, self.session) if cfg.montra else None

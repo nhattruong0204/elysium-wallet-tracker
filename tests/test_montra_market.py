@@ -228,3 +228,11 @@ def test_list_tokens_outside_montras_busiest_are_looked_up_one_by_one():
     assert rel(toks[1].mcap_hype * HYPE_USD, 35511.20592030877) < 1e-12
     toks, _ = market(http, montra_list_lookups=0).top_tokens(2)
     assert [x.source for x in toks] == ["montra", "agora"]            # bounded: none looked up
+
+
+def test_hype_rate_is_fetched_right_after_a_host_boot(monkeypatch):
+    """time.monotonic() is near 0 after a boot (CI runners): the rate cache must still miss."""
+    http = FakeHttp({}, {})
+    m = market(http)
+    monkeypatch.setattr("agora_tracker.market.time.monotonic", lambda: 12.0)
+    assert m.hype_usd() == HYPE_USD
