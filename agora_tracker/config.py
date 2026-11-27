@@ -83,6 +83,15 @@ class AlertConfig:
     # wallet pages). Transfer bursts are built from TRANSFER_OUT alerts, so they stop too.
     # Kinds: BUY SELL SWAP MULTI TRANSFER_IN TRANSFER_OUT. ALERTS_KINDS overrides (tracker).
     alert_kinds: list[str] = field(default_factory=lambda: ["BUY", "SELL"])
+    # Trader performance badge + panel on alert cards (agora_tracker/performance.py): our own
+    # 30-day ranking by measured realized PnL, launch snipes and launch-farm tokens left out.
+    # ALERTS_PERF_BADGES=off removes it.
+    perf_badges: bool = True
+    perf_window_days: float = 30.0
+    perf_min_closes: int = 5
+    perf_min_tokens: int = 2
+    perf_snipe_s: float = 60.0
+    perf_refresh_s: float = 900.0
     leaderboard_alerts: bool = True     # rank/PnL change alerts (snapshots are always recorded)
     cluster_alerts: bool = True         # cluster-buy alerts (signals are always recorded)
     token_image: bool = True            # show the token's picture above the alert card
@@ -483,6 +492,8 @@ def load_config(path: str | Path) -> Config:
         intel.bot_filter = False
     if os.environ.get("ALERTS_AIRDROP_FILTER", "").strip().lower() in ("off", "0", "false", "no"):
         intel.airdrop_filter = False
+    if os.environ.get("ALERTS_PERF_BADGES", "").strip().lower() in ("off", "0", "false", "no"):
+        alerts.perf_badges = False
     env_kinds = os.environ.get("ALERTS_KINDS", "").replace(",", " ").upper().split()
     alerts.alert_kinds = env_kinds or [str(k).upper() for k in alerts.alert_kinds]
     bad = sorted(set(alerts.alert_kinds) - set(ALERT_KINDS))

@@ -588,6 +588,14 @@ class Store:
             return load_launchers(c, chain_id=self.chain_id, lookback_days=ic.launcher_lookback_days,
                                   window_s=ic.launcher_window_s, min_launches=ic.launcher_min)
 
+    def performance(self, rules: Any, *, skip_wallets: Iterable[str] = (),
+                    skip_tokens: Iterable[str] = ()) -> dict[str, dict]:
+        """Trader performance board (agora_tracker/performance.py), read-only."""
+        from .performance import load_board
+        with self.engine.connect() as c:
+            return load_board(c, chain_id=self.chain_id, rules=rules,
+                              skip_wallets=set(skip_wallets), skip_tokens=set(skip_tokens))
+
     def wallets_on_tokens(self, tokens: Iterable[str], wallets: Iterable[str],
                           since_days: int) -> dict[str, set[str]]:
         """Per token: which of `wallets` traded it in the last `since_days` (committed rows)."""

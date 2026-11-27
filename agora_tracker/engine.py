@@ -24,6 +24,7 @@ from .db import BASIS_ESTIMATED, BASIS_KNOWN, BASIS_PARTIAL, Position, Store
 from .launchers import Launchers
 from .launchintel import count_independent, tier_label
 from .leaderboard import Trader
+from .performance import Rules
 
 log = logging.getLogger(__name__)
 WEI = 10 ** 18
@@ -60,6 +61,8 @@ class Engine:
         self.store, self.tokens = store, tokens
         # operator mute list (TrackingConfig.muted_wallets): treated as cohort wallets, always
         self._muted_wallets: dict[str, str] = {w: "muted" for w in muted_wallets}
+        self._perf: dict[str, dict] = {}       # trader ranking (performance.py)
+        self._perf_at = float("-inf")
         self.intel = intel or IntelConfig()
         self._muted = set(alert_cfg.mute_tokens)
         self._tg_muted = set(alert_cfg.telegram_mute_tokens)   # Telegram-only (signals kept)
@@ -88,9 +91,36 @@ class Engine:
     # text, no market data) and again by the notifier right before sending (fresh data).
     def _wallet_ctx(self, wallet: str) -> dict:
         row = self.store.trader(wallet)
-        return {"wallet": wallet, "label": self.labels.get(wallet),
-                "rank": row["rank"] if row is not None and row["in_top"] else None,
-                "pnl": row["pnl"] if row is not None else None, "pnl_unit": self.value_unit}
+        ctx = {"wallet": wallet, "label": self.labels.get(wallet),
+               "rank": row["rank"] if row is not None and row["in_top"] else None,
+               "pnl": row["pnl"] if row is not None else None, "pnl_unit": self.value_unit}
+        perf = self.performance().get(wallet)
+        if perf:
+            ctx["perf"] = perf
+        return ctx
+
+    def performance(self) -> dict[str, dict]:
+        """wallet -> 30-day record and rank (agora_tracker/performance.py), refreshed every
+        perf_refresh_s. A failed refresh keeps the last board; switched off -> empty."""
+        cfg = self.cfg
+        if not cfg.perf_badges:
+            return {}
+        if time.monotonic() - self._perf_at >= cfg.perf_refresh_s:
+            self._perf_at = time.monotonic()
+            try:
+                rules = Rules(window_days=cfg.perf_window_days, min_closes=cfg.perf_min_closes,
+                              min_tokens=cfg.perf_min_tokens, snipe_s=cfg.perf_snipe_s)
+                board = self.store.performance(
+                    rules, skip_wallets=self.cohort_wallets(),
+                    skip_tokens=self._muted | self._tg_muted | self.launched_tokens())
+                ranked = sum(1 for v in board.values() if v.get("rank"))
+                if ranked != sum(1 for v in self._perf.values() if v.get("rank")):
+                    log.info("trader ranking: %d ranked wallet(s) of %d with closed trades "
+                             "in %g d", ranked, len(board), cfg.perf_window_days)
+                self._perf = board
+            except Exception:  # noqa: BLE001 - a badge must never block alerts
+                log.exception("trader ranking refresh failed; keeping the last board")
+        return self._perf
 
     def _trade_payload(self, ev: TradeEvent, notes: list[str], ts: int | None,
                        extra: dict | None = None) -> dict:
