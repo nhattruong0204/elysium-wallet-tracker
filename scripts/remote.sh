@@ -699,33 +699,58 @@ PY
     tracker_alive
     ;;
   wallet-probe)
-    # Read-only: transfer alerts, part 2 (what they are; alerts since the PR #138 deploy).
+    # Read-only: what delivers the TRANSFER_IN tokens (sample receipts, contract code size).
     need_docker
-    psql_admin -At -F'|' <<'SQL' || true
+    psql_admin -At -F'|' > /tmp/probe_samp.txt <<'SQL' || true
 
-SET default_transaction_read_only = on; SET statement_timeout = '300s';
-SELECT 'DATA','post', coalesce(payload->>'type','?'), coalesce(payload->>'kind',''), count(*) FROM notification_outbox
- WHERE created_at > '2026-11-27 03:31+00' AND status = 'sent' GROUP BY 3, 4 ORDER BY 5 DESC;
-SELECT 'DATA','obsym', payload->>'kind', coalesce(payload->>'symbol','?'), count(*), count(DISTINCT payload->>'wallet'), (array_agg(DISTINCT payload->>'token'))[1:3]
-  FROM notification_outbox WHERE created_at > now() - interval '3 days' AND status = 'sent' AND payload->>'kind' IN ('TRANSFER_IN','TRANSFER_OUT')
- GROUP BY 3, 4 ORDER BY 5 DESC LIMIT 25;
-SELECT 'DATA','obwal', payload->>'kind', payload->>'wallet', count(*), count(DISTINCT payload->>'token'), (payload->>'wallet') = ANY(ARRAY['0x0b57a6900479eb5e0f991e2e7da43629563b2f7b','0x1035548d24662e5bf5ab6e7d902ee87d2a4cd1ce','0x134e50aafd9fe4e8525092ec0ee2b97218298f6a','0x1d9577c440a4873e1f21c187490f33a814a024b0','0x39cb0c2825e96f240d64b7a747355bf44fa49ce1','0x4838326a8aac6f82eb8e445a5c352afcc46f7bc1','0x48fc6c8bd65433acc28b90b5d1e5394a1df5f728','0x49236c042d5e4b4632c0c01b0860edf91895ea76','0x4945280027ffced153401d699f1621a46b1adb46','0x556c89cc2b3f33002576fed06873d84ca164ce62','0x5aee19c1cad037ba032ce2ccbb7fdac2a0ee89f3','0x5efce5f7ee75311fc498fe0d9778ff281f043f7c','0x6352d587293b39790f96f5ca945abc7e8881d36b','0x6712cc10003a6d231781188dc040e7fa89126c5e','0x782ffa3594d268290e9e2c93887afdaee5e7f495','0x7e9020380c608bcba4e47b6ccffa22c09387486d','0x8923a3a2dd21aa88b587ff3777ff5354f747363a','0x8dbe0a2f8ee46e2d0ac0530058466ae34f010838','0x95fa70efcb193961d3c0a7e6889616643a0c5576','0xa6799305843b9c5bf9f9a3a295a26dedbe79bbb8','0xa98ca0cdddbb239af17d4480230abd191a89221e','0xad9c6bc581921ca2dc5bd1a53b679d8f94960300','0xaeaa327a6fb6ee8ca0d97469118e8609c980c7a9','0xb05900da5eb138158d638b54a806749d95da879c','0xb1df17cb410fd0357663c0a387bdb367ff358c34','0xb561cfaf3ade352f9455654cf5bb026321b24e7a','0xb9fbb483e581b6e19d81cc47cabd5a4b8af791c9','0xc66d9fdbee720693026234c47c63311476b97321','0xc6c3e2bef88974bf8d038e95d54f7f813cecc514','0xd082b21c1d87bb21afdc3da53351b05d6610dc3b','0xd1fef0eab1eb3694c28a6403e0a63af5b5ff0f93','0xd4762f0b8751b85fc594c0b5e9dceb372fe94691','0xd576f2c5eac0a07c34c4b2f439107ae1bb9e86fe','0xdb2ecffc66f9b32ecace4046f9a2f34a0cc72a8f','0xe065bbc60b355be9d884489ad63fcb5c663fd52e','0xe3b36bbcb510e085dfd8b8930ba326656344b0ec','0xeb2767b1e3fc05ea9161fca48e686e64fed6db56','0xf1fbf01cf165915f70d43430a5eeb7d6bac82729','0xf88fd850a47974b40d7bcf8fa89ec0af48b163c1','0xfa5844c7d9e76914307b7ad1d37347ddb31d3fdb']::text[])
-  FROM notification_outbox WHERE created_at > now() - interval '3 days' AND status = 'sent' AND payload->>'kind' IN ('TRANSFER_IN','TRANSFER_OUT')
- GROUP BY 3, 4 ORDER BY 5 DESC LIMIT 15;
-WITH ev AS (SELECT t.* FROM trades t WHERE t.chain_id = 99901 AND t.kind = 'TRANSFER_IN' AND t.block_time > now() - interval '3 days'),
-cp AS (SELECT e.token, e.wallet, e.qty, (SELECT tt.from_address FROM token_transfers tt WHERE tt.chain_id = 99901 AND tt.tx_hash = e.tx_hash AND tt.token = e.token AND tt.to_address = e.wallet LIMIT 1) AS frm,
-              (SELECT x.from_address FROM transactions x WHERE x.chain_id = 99901 AND x.tx_hash = e.tx_hash) AS txfrom,
-              (SELECT x.to_address FROM transactions x WHERE x.chain_id = 99901 AND x.tx_hash = e.tx_hash) AS txto
-         FROM ev e)
-SELECT 'DATA','tin', cp.token, coalesce(m.symbol, '?'), coalesce(p.launchpad, '?'), count(*), count(DISTINCT cp.wallet), count(DISTINCT cp.frm), (array_agg(DISTINCT cp.frm))[1:2],
-       count(*) FILTER (WHERE cp.txfrom = cp.wallet), (array_agg(DISTINCT cp.txto))[1:2],
-       (SELECT count(*) FROM trades b WHERE b.chain_id = 99901 AND b.token = cp.token AND b.kind IN ('BUY','SELL') AND b.block_time > now() - interval '3 days')
-  FROM cp LEFT JOIN token_metadata m ON m.chain_id = 99901 AND m.address = cp.token LEFT JOIN token_profiles p ON p.chain_id = 99901 AND p.address = cp.token
- GROUP BY cp.token, m.symbol, p.launchpad ORDER BY 6 DESC LIMIT 20;
-SELECT 'DATA','tout', t.wallet, count(*), count(DISTINCT t.token), (t.wallet = ANY(ARRAY['0x0b57a6900479eb5e0f991e2e7da43629563b2f7b','0x1035548d24662e5bf5ab6e7d902ee87d2a4cd1ce','0x134e50aafd9fe4e8525092ec0ee2b97218298f6a','0x1d9577c440a4873e1f21c187490f33a814a024b0','0x39cb0c2825e96f240d64b7a747355bf44fa49ce1','0x4838326a8aac6f82eb8e445a5c352afcc46f7bc1','0x48fc6c8bd65433acc28b90b5d1e5394a1df5f728','0x49236c042d5e4b4632c0c01b0860edf91895ea76','0x4945280027ffced153401d699f1621a46b1adb46','0x556c89cc2b3f33002576fed06873d84ca164ce62','0x5aee19c1cad037ba032ce2ccbb7fdac2a0ee89f3','0x5efce5f7ee75311fc498fe0d9778ff281f043f7c','0x6352d587293b39790f96f5ca945abc7e8881d36b','0x6712cc10003a6d231781188dc040e7fa89126c5e','0x782ffa3594d268290e9e2c93887afdaee5e7f495','0x7e9020380c608bcba4e47b6ccffa22c09387486d','0x8923a3a2dd21aa88b587ff3777ff5354f747363a','0x8dbe0a2f8ee46e2d0ac0530058466ae34f010838','0x95fa70efcb193961d3c0a7e6889616643a0c5576','0xa6799305843b9c5bf9f9a3a295a26dedbe79bbb8','0xa98ca0cdddbb239af17d4480230abd191a89221e','0xad9c6bc581921ca2dc5bd1a53b679d8f94960300','0xaeaa327a6fb6ee8ca0d97469118e8609c980c7a9','0xb05900da5eb138158d638b54a806749d95da879c','0xb1df17cb410fd0357663c0a387bdb367ff358c34','0xb561cfaf3ade352f9455654cf5bb026321b24e7a','0xb9fbb483e581b6e19d81cc47cabd5a4b8af791c9','0xc66d9fdbee720693026234c47c63311476b97321','0xc6c3e2bef88974bf8d038e95d54f7f813cecc514','0xd082b21c1d87bb21afdc3da53351b05d6610dc3b','0xd1fef0eab1eb3694c28a6403e0a63af5b5ff0f93','0xd4762f0b8751b85fc594c0b5e9dceb372fe94691','0xd576f2c5eac0a07c34c4b2f439107ae1bb9e86fe','0xdb2ecffc66f9b32ecace4046f9a2f34a0cc72a8f','0xe065bbc60b355be9d884489ad63fcb5c663fd52e','0xe3b36bbcb510e085dfd8b8930ba326656344b0ec','0xeb2767b1e3fc05ea9161fca48e686e64fed6db56','0xf1fbf01cf165915f70d43430a5eeb7d6bac82729','0xf88fd850a47974b40d7bcf8fa89ec0af48b163c1','0xfa5844c7d9e76914307b7ad1d37347ddb31d3fdb']::text[])) FROM trades t
- WHERE t.chain_id = 99901 AND t.kind = 'TRANSFER_OUT' AND t.block_time > now() - interval '3 days' GROUP BY t.wallet ORDER BY 2 DESC LIMIT 10;
+SET default_transaction_read_only = on; SET statement_timeout = '120s';
+SELECT 'DATA','samp', t.wallet, t.token, t.tx_hash, t.block_time FROM trades t
+ WHERE t.chain_id = 99901 AND t.kind = 'TRANSFER_IN' AND t.block_time > now() - interval '3 days'
+   AND t.wallet IN ('0x2dc94f0db9ad9f662dc211c9486c96fff5d49d1f','0x775256e60f88c5e0f149db67fbcb738da75143d7','0x518d64f7b7fb3cc05f0dcc402167e657294470aa')
+   AND t.token <> '0xe45a355d9e9cad2ad85f2d03e3ee3102a036acf0'
+ ORDER BY t.block_time DESC LIMIT 6;
+SELECT 'DATA','w2dc', kind, count(*), count(DISTINCT token), min(block_time), max(block_time) FROM trades
+ WHERE chain_id = 99901 AND wallet = '0x2dc94f0db9ad9f662dc211c9486c96fff5d49d1f' AND block_time > now() - interval '3 days' GROUP BY 3;
+SELECT 'DATA','w2dcout', x.to_address, count(*) FROM trades t JOIN transactions x ON x.chain_id = t.chain_id AND x.tx_hash = t.tx_hash
+ WHERE t.chain_id = 99901 AND t.wallet = '0x2dc94f0db9ad9f662dc211c9486c96fff5d49d1f' AND t.block_time > now() - interval '3 days' AND t.kind IN ('TRANSFER_OUT','SELL','BUY') GROUP BY 3 ORDER BY 4 DESC LIMIT 5;
 
 SQL
+    grep '^DATA|w2dc' /tmp/probe_samp.txt || true
+    cat > /tmp/probe_rc.py <<'PY'
+import json, re, time, urllib.request
+urls = re.findall(r"^\s*-\s*(https?://\S+)", open("config/config.yaml").read(), re.M)
+url = next((u for u in urls if "boxa" not in u), urls[0])
+T = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
+WHYPE = "0xba876237b0f021a6c6d852d6c26e107997cc5e81"
+def rpc(m, p):
+    req = urllib.request.Request(url, data=json.dumps({"jsonrpc": "2.0", "id": 1, "method": m, "params": p}).encode(), headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        j = json.loads(r.read())
+    time.sleep(0.4)
+    return j.get("result")
+for a in ("0x55b72113928dbfd047ce8752a50384ff7b89688d", "0x0729e2a4716d9f7dd17858d5d504426d228697f7", "0x5567954cd026cebfe486062cb75848e0f1c12e58", "0x836b336fca26913176efc45a5a6e5e72cd7bd13b"):
+    code = rpc("eth_getCode", [a, "latest"]) or "0x"
+    n = int(rpc("eth_getTransactionCount", [a, "latest"]), 16)
+    print("DATA|code|%s|code_bytes=%d|nonce=%d" % (a, (len(code) - 2) // 2, n))
+for line in open("/tmp/probe_samp.txt"):
+    f = line.strip().split("|")
+    if len(f) < 6 or f[1] != "samp":
+        continue
+    w, tok, tx = f[2], f[3], f[4]
+    t = rpc("eth_getTransactionByHash", [tx]); rc = rpc("eth_getTransactionReceipt", [tx])
+    tr = []
+    for lg in rc.get("logs") or []:
+        tp = lg.get("topics") or []
+        if tp and tp[0] == T and len(tp) >= 3:
+            frm, to = "0x" + tp[1][-40:], "0x" + tp[2][-40:]
+            amt = int(lg.get("data") or "0x0", 16)
+            tag = "WHYPE" if lg["address"].lower() == WHYPE else ("TOKEN" if lg["address"].lower() == tok else lg["address"][:10])
+            tr.append("%s:%s>%s:%.4g" % (tag, frm[:8] + ("*" if frm == w else ""), to[:8] + ("*" if to == w else ""), amt / 1e18))
+    sel = (t.get("input") or "0x")[:10]
+    print("DATA|rc|%s|%s|tx_from=%s|tx_to=%s|value=%.4g|sel=%s|logs=%d|%s" % (w[:10], tx[:12], t["from"][:10] + ("*" if t["from"].lower() == w else ""), (t.get("to") or "")[:10], int(t.get("value") or "0x0", 16) / 1e18, sel, len(rc.get("logs") or []), " ".join(tr)[:600]))
+PY
+    python3 /tmp/probe_rc.py || true
+    rm -f /tmp/probe_rc.py /tmp/probe_samp.txt
     ;;
   ui-smoke)
     docker compose run --rm --no-deps ui --ui-smoke
