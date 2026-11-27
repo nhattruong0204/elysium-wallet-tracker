@@ -34,6 +34,7 @@ from .cohorts import warning_line
 from .config import LinksConfig
 from .launchers import warning_line as launcher_warning
 from .market import TokenInfo
+from .performance import tier_of
 
 WEI = 10 ** 18
 ICON = {"BUY": "🟢", "SELL": "🔴", "SWAP": "🔁", "TRANSFER_IN": "📥", "TRANSFER_OUT": "📤",
@@ -500,23 +501,74 @@ def dd_lines(dd: Any, L: Links, hype_usd: float | None) -> list[str]:
 
 
 def name_of(p: dict) -> str:
-    """Short handle for the trader: label, else #rank, else short address."""
+    """Short handle for the trader: label, else short address. (Not a rank: "#n" on a card is
+    our performance rank, see perf_badge.)"""
     if p.get("label"):
         return esc(p["label"])
-    if p.get("rank"):
-        return f"#{p['rank']}"
     return short(p["wallet"])
 
 
-def who(L: Links, p: dict, hype_usd: float | None = None) -> str:
-    """🔹 #42 · 0x93f5…4489 · PnL $15.7K  (rank -> Agora trader page, address -> Elyscan)"""
+# --- trader performance (agora_tracker/performance.py) ----------------------------------------
+WEEK_ICON = {1: "🟩", -1: "🟥", 0: "⬜", None: "⬜"}
+
+
+def _hype(v: float) -> str:
+    x = abs(v)
+    return ("+" if v >= 0 else "−") + (f"{x:,.0f}" if x >= 100 else f"{x:,.1f}")
+
+
+def perf_badge(perf: dict | None) -> str:
+    """'👑#3 ' for a wallet in a ranked tier (title line, wallet lists), else ''."""
+    t = tier_of((perf or {}).get("rank"))
+    return f"{t[1]}#{perf['rank']} " if t and perf else ""
+
+
+def _record(perf: dict) -> str:
+    wins, closes = int(perf.get("wins") or 0), int(perf.get("closes") or 0)
+    rate = round(100 * wins / closes) if closes else 0
+    weeks = "".join(WEEK_ICON.get(x, "⬜") for x in perf.get("weeks") or [])
+    return f"{rate}% win ({wins}/{closes})" + (f" · {weeks}" if weeks else "")
+
+
+def perf_lines(perf: dict | None, hype_usd: float | None = None) -> list[str]:
+    """The trader's recent record. A ranked tier gets a banner (quote block); anyone else with
+    closed trades gets one compact line, flagged when losing. Weeks run oldest -> newest."""
+    if not perf or not perf.get("closes"):
+        return []
+    pnl, days = float(perf["pnl"]), int(perf.get("days") or 30)
+    t = tier_of(perf.get("rank"))
+    if t:
+        cash = f" ≈ {usd(pnl * hype_usd, signed=True)}" if hype_usd else ""
+        return ["<blockquote>"
+                f"{t[1]} <b>{t[2]} TRADER · #{perf['rank']}</b> of {perf.get('of', '?')} by "
+                f"{days}d PnL\n"
+                f"💹 {days}d <b>{_hype(pnl)} HYPE</b>{cash} · 7d {_hype(float(perf['pnl_7d']))}\n"
+                f"🎯 {_record(perf)}</blockquote>"]
+    rank = f"#{perf['rank']} · " if perf.get("rank") else ""
+    icon = "⚠️" if pnl < 0 else "▫️"
+    return [f"{icon} {rank}{days}d {_hype(pnl)} HYPE · {_record(perf)}"]
+
+
+def who(L: Links, p: dict, hype_usd: float | None = None, record: bool = False) -> str:
+    """🔹 👑#3 · Agora #42 · 0x93f5…4489 · PnL $15.7K  (Agora rank -> Agora trader page,
+    address -> Elyscan). With our own record known, Agora's PnL is left out; `record` (wallet
+    lists) appends that record in short: 30d +278 HYPE · 88% win."""
     w = p["wallet"]
+    perf = p.get("perf")
     bits = []
+    if record and perf_badge(perf):        # a trade card shows it in its title and banner
+        bits.append(f"<b>{perf_badge(perf).strip()}</b>")
     if p.get("label"):
         bits.append(f"<b>{esc(p['label'])}</b>")
     if p.get("rank"):
-        bits.append(a(L.agora_trader(w), f"<b>#{p['rank']}</b>"))
+        bits.append(a(L.agora_trader(w), f"Agora #{p['rank']}"))
     bits.append(a(L.address(w), f"<code>{short(w)}</code>"))
+    if perf and perf.get("closes"):
+        if record:
+            closes = int(perf["closes"])
+            bits.append(f"{int(perf.get('days') or 30)}d {_hype(float(perf['pnl']))} HYPE · "
+                        f"{round(100 * int(perf.get('wins') or 0) / closes)}% win")
+        return "🔹 " + " · ".join(bits)
     if p.get("pnl") is not None:
         unit = (p.get("pnl_unit") or "USD").upper()
         v = float(p["pnl"])
@@ -539,7 +591,7 @@ def _header(p: dict, L: Links, info: TokenInfo | None, sym: str) -> str:
     pad = (info.launchpad if info else None) or p.get("launchpad")
     pad_s = f" ({esc(LAUNCHPAD_NAMES.get(pad, pad))})" if pad else ""
     title = a(L.agora_token(p["token"]), f"<b>{esc(sym)}</b>")
-    return f"{new}{icon} <b>{esc(label)}</b> {title}{pad_s}"
+    return f"{perf_badge(p.get('perf'))}{new}{icon} <b>{esc(label)}</b> {title}{pad_s}"
 
 
 def render_trade(p: dict, L: Links, info: TokenInfo | None = None,
@@ -551,7 +603,7 @@ def render_trade(p: dict, L: Links, info: TokenInfo | None = None,
     qty = int(p["qty"]) / 10 ** dec
     approx = conf != "high"
     me = name_of(p)
-    lines = [_header(p, L, info, sym)]
+    lines = [_header(p, L, info, sym), *perf_lines(p.get("perf"), hype_usd)]
     if p.get("cohort_wallets"):
         lines.append("<b>" + esc(warning_line(int(p["cohort_wallets"]))) + "</b>")
     if p.get("launcher_token"):
@@ -694,8 +746,14 @@ def render_cluster(p: dict, L: Links, info: TokenInfo | None = None,
     sym = (info.symbol if info and info.symbol else None) or p.get("symbol") or token[:8]
     strong = bool(p.get("strong"))
     icon = "🚨🚨" if strong else "🚨"
-    lines = [f"{icon} <b>CLUSTER BUY</b> {a(L.agora_token(token), '<b>' + esc(sym) + '</b>')}"
+    ranked = sorted((b for b in p["buyers"] if perf_badge(b.get("perf"))),
+                    key=lambda b: int(b["perf"]["rank"]))
+    best = perf_badge(ranked[0]["perf"]) if ranked else ""
+    lines = [f"{best}{icon} <b>CLUSTER BUY</b> {a(L.agora_token(token), '<b>' + esc(sym) + '</b>')}"
              + (" ✅ independent" if strong else "")]
+    if ranked:
+        lines.append("🏆 <b>" + " · ".join(perf_badge(b["perf"]).strip() for b in ranked[:5])
+                     + f"</b> among {len(p['buyers'])} buyers")
     if p.get("tier"):
         n_raw = p.get("n_raw", len(p["buyers"]))
         lines.append(f"🎯 <b>{esc(p['tier'])}</b> · {n_raw} addresses")
@@ -704,7 +762,7 @@ def render_cluster(p: dict, L: Links, info: TokenInfo | None = None,
     lines += [f"<b>{len(p['buyers'])} tracked wallets</b> bought ≥{p['min_hype']:g} HYPE within "
               f"{p['window_min']} min", ""]
     for b in p["buyers"][:10]:
-        lines.append(who(L, b, hype_usd))
+        lines.append(who(L, b, hype_usd, record=True))
     note = ("Same-block buyers and known bundle wallets count as one operator."
             if p.get("tier") else "Measured buys only; different addresses may share an owner.")
     lines += [f"<i>{note}</i>", ""]
