@@ -699,32 +699,64 @@ PY
     tracker_alive
     ;;
   wallet-probe)
-    # Read-only: how Agora labels tokens quoted in MONTRA or other assets.
-    cat > /tmp/probe_b.py <<'PY_RUN'
+    # Read-only: Agora vs Montra market caps for Montra tokens.
+    cat > /tmp/probe_c.py <<'PY_RUN'
 import json, time, urllib.request
+from collections import Counter, defaultdict
 UA = {"user-agent": "elysium-wallet-tracker research", "accept": "application/json"}
-def get(url):
-    with urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=20) as r:
+def get(url, hdr=False):
+    with urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=25) as r:
+        h = {k.lower(): v for k, v in r.headers.items()}
         out = json.loads(r.read())
-    time.sleep(0.6)
-    return out
+    time.sleep(0.7)
+    return (out, h) if hdr else out
 A, M = "https://api.agoradex.app", "https://api.montramarkets.xyz"
-for tok in ("0x345d1e58ea14d2bfeeaadcb9d5c13aa74d30c590", "0xb0b3ac8801f6b3904f51a0ed2e2953d0d540280c", "0x2c41ff518f0a9ea28fab7047055545c5ff3552d3", "0x063f7cc5339f92a5fd7baf3d22233044fda1f327"):
-    g = get(A + "/api/tokens/" + tok + "?range=1h")
-    st = g.get("stats") or {}
-    extra = {k: g.get(k) for k in g if k.lower().endswith("hype") or k.lower().endswith("usd") or k in ("base", "quote", "pair")}
-    m = get(M + "/api/tokens/" + tok)
-    q = m.get("quote") or {}
-    print("Q|%s|%s|agora base=%s extra=%s price=%s mcap=%s|montra quote=%s price=%s mc=%s mcUsd=%s quoteUsd=%s" % (
-        tok[:10], g.get("symbol"), json.dumps(g.get("base")), json.dumps(extra), st.get("price"), st.get("mcap"),
-        q.get("symbol"), m.get("price"), m.get("marketCap"), m.get("marketCapUsd"), q.get("usd")))
-lst = get(A + "/api/tokens?sort=new&window=24h&launchpad=montra&limit=200")
-from collections import Counter
-print("BASES_MONTRA_NEW|" + json.dumps(Counter(str(i.get("base")) for i in lst.get("tokens") or []).most_common()))
-print("TOPKEYS|" + ",".join(sorted(lst.keys())))
+p1, h1 = get(M + "/api/tokens?sort=volume&limit=100&page=1", True)
+print("MHDR|" + json.dumps({k: v for k, v in h1.items() if "rate" in k or "limit" in k or "cache" in k or "retry" in k or k in ("age", "cf-cache-status", "server")}))
+print("MLIST|" + json.dumps({k: p1.get(k) for k in p1 if k != "tokens"}) + "|n=%d" % len(p1.get("tokens") or []))
+p2 = get(M + "/api/tokens?sort=volume&limit=100&page=2")
+cards = (p1.get("tokens") or []) + (p2.get("tokens") or [])
+c0 = cards[0]
+print("MKEYS|" + ",".join(sorted(c0.keys())))
+print("MCARD0|" + json.dumps({k: c0.get(k) for k in ("symbol","price","priceUsd","marketCap","marketCapUsd","supply","burned","volume24h","volume24hUsd","volume1h","volume1hUsd","change24hPct","holders","swaps","launchedAt","lastTradeAt","quote")})[:1200])
+hq = next((c for c in cards if (c.get("quote") or {}).get("native")), None)
+if hq:
+    print("MCARDH|" + json.dumps({k: hq.get(k) for k in ("symbol","price","priceUsd","marketCap","marketCapUsd","volume24h","volume24hUsd","quote")})[:900])
+ag = {}
+for off in (0, 200):
+    pg = get(A + "/api/tokens?sort=volume&window=24h&launchpad=montra&limit=200&offset=%d" % off)
+    kh, hu = pg.get("kntqHype"), pg.get("hypeUsd")
+    for it in pg.get("tokens") or []:
+        ag[it["address"].lower()] = it
+    if len(pg.get("tokens") or []) < 200:
+        break
+print("AGORA|n=%d kntqHype=%s hypeUsd=%s" % (len(ag), kh, hu))
+def bucket(r):
+    if r is None: return "missing"
+    e = abs(r - 1)
+    return "<=2%" if e <= 0.02 else "2-10%" if e <= 0.10 else "10-50%" if e <= 0.5 else ">50%"
+old, new = defaultdict(Counter), defaultdict(Counter)
+bad = []
+for c in cards:
+    q = (c.get("quote") or {}).get("symbol")
+    mu = float(c["marketCapUsd"]) if c.get("marketCapUsd") not in (None, "") else None
+    it = ag.get(c["address"].lower())
+    if not mu or it is None:
+        old[q]["missing"] += 1; new[q]["missing"] += 1; continue
+    m = float((it.get("stats") or {}).get("mcap") or 0)
+    base = str(it.get("base") or "HYPE").upper()
+    k = 1.0 if base == "HYPE" else (kh if base == "KNTQ" else None)
+    ro = m * hu / mu
+    rn = m * k * hu / mu if k else None
+    old[q][bucket(ro)] += 1; new[q][bucket(rn)] += 1
+    if rn is None or abs(rn - 1) > 0.1:
+        bad.append((c.get("symbol"), q, base, round(ro, 3), None if rn is None else round(rn, 3), round(mu)))
+for q in sorted(old, key=lambda x: -sum(old[x].values())):
+    print("CMP|%s|old=%s|new=%s" % (q, json.dumps(old[q]), json.dumps(new[q])))
+print("BAD|" + json.dumps(bad[:40]))
 PY_RUN
-    python3 /tmp/probe_b.py 2>&1 | cut -c1-900 || true
-    rm -f /tmp/probe_b.py
+    python3 /tmp/probe_c.py 2>&1 | cut -c1-1300 || true
+    rm -f /tmp/probe_c.py
     ;;
   ui-smoke)
     docker compose run --rm --no-deps ui --ui-smoke
