@@ -1,2 +1,2 @@
-action=web-hotfix
-# PR #142 consensus query, retry 2026-11-27T12:25Z
+action=wallet-probe
+# public_tokens cost 2026-11-27T12:35Z
