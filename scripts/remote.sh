@@ -699,58 +699,12 @@ PY
     tracker_alive
     ;;
   wallet-probe)
-    # Read-only: time each statement of the Consensus cycle (dashboard_ro, 60 s cap).
+    # Read-only: Consensus sender cycles since the restart, and recent deliveries.
     need_docker
-    rm -rf /tmp/elysium-probe && mkdir -p /tmp/elysium-probe && chmod 755 /tmp/elysium-probe
-    cat > /tmp/elysium-probe/run.py <<'PY_RUN'
-"""Read-only: time each statement of the Consensus cycle (dashboard_ro, web image, 60 s cap)."""
-import os, sys, time
-from datetime import datetime, timezone
-sys.path.insert(0, "/app")
-import sqlalchemy as sa
-from agora_tracker.config import UiConfig
-from agora_tracker.web import reports as R
-from agora_tracker.web.consensus import ConsensusParams
-CHAIN = 99901
-eng = sa.create_engine(os.environ["DATABASE_URL"],
-                       connect_args={"options": "-c statement_timeout=60000"})
-rep = R.PublicReports(eng, CHAIN, UiConfig(query_timeout_ms=60000), value_unit="HYPE")
-rep.hidden_tokens = ("0xb47c4c8f73f009cc0c0d3f92b388d13e293f0b65",)
-orig = rep._all
-def timed(c, sql, **kw):
-    t = time.monotonic()
-    try:
-        return orig(c, sql, **kw)
-    finally:
-        name = next((k for k, v in vars(R).items() if v is sql), None) or next(
-            (k for k, v in vars(type(rep)).items() if v is sql), None) or sql.strip().split("\n")[0][:60]
-        print("T|%s|%.2fs" % (name, time.monotonic() - t), flush=True)
-rep._all = timed
-with eng.connect() as c:
-    print('Q|search_path|%s' % c.execute(sa.text('SHOW search_path')).scalar())
-    for label, q in (("public_tokens count", "SELECT count(*) FROM public_api.public_tokens"),
-                     ("public_wallets count", "SELECT count(*) FROM public_api.public_wallets"),
-                     ("snap view 1 token", "SELECT count(*) FROM public_api.token_market_snapshots WHERE chain_id = :c AND token = '0x56e1e08fe536de0f18dcee008f57068788d61d33'")):
-        c.execute(sa.text("SET statement_timeout = 60000"))
-        t = time.monotonic()
-        try:
-            v = c.execute(sa.text(q), {"c": CHAIN}).scalar()
-        except Exception as e:
-            v = type(e).__name__ + ": " + str(getattr(e, "orig", e)).split("\n")[0][:120]
-            c.rollback()
-        print("Q|%s|%s|%.2fs" % (label, v, time.monotonic() - t), flush=True)
-p = ConsensusParams(min_traders=3, window_min=30, min_net_hype=0, range="24h", launchpad=None, independent=False)
-now = datetime.now(timezone.utc)
-t = time.monotonic()
-try:
-    out = rep.consensus(p, now, set())
-    print("TOTAL|%.2fs|cards=%d" % (time.monotonic() - t, len(out.get("cards") or [])))
-except Exception as e:
-    print("TOTAL|fail %s %.2fs" % (type(e).__name__, time.monotonic() - t))
-PY_RUN
-    chmod 644 /tmp/elysium-probe/*.py
-    docker compose run -T --rm --no-deps -v /tmp/elysium-probe:/probe:ro --entrypoint python web /probe/run.py 2>&1 | grep -v "^ Container\|Creating\|Created" | cut -c1-300 || true
-    rm -rf /tmp/elysium-probe
+    L=$(docker logs --since 40m elysium-consensus-alerts 2>&1 | grep -vE 'api\.telegram\.org')
+    echo "CYC|started=$(echo "$L" | grep -c 'Consensus sender started') failed=$(echo "$L" | grep -c 'Consensus cycle failed closed') queued_lines=$(echo "$L" | grep -c 'Consensus: queued=')"
+    echo "$L" | grep -E 'failed closed|Consensus: queued=|shadow rule|stale|WARNING' | cut -c1-220 | tail -15 | sed 's/^/CYC|/'
+    psql_admin -At -F'|' -c "SELECT 'DLV', id, status, created_at, sent_at, left(regexp_replace(body, '\s+', ' ', 'g'), 70) FROM consensus_alerts.deliveries ORDER BY id DESC LIMIT 6" 2>&1 | cut -c1-220 || true
     ;;
   ui-smoke)
     docker compose run --rm --no-deps ui --ui-smoke
