@@ -729,6 +729,8 @@ Montra (montramarkets.xyz/docs/api, public, no key, per-client rate limit, 429 =
   GET /api/tokens/<address>            -> token card + pool details
   GET /api/tokens?sort=volume&limit<=100&page=N
                                        -> token cards, {tokens, total, page, pages}
+                                          (list views: montra_list_pages of these, plus up
+                                          to montra_list_lookups single cards for the rest)
 A card has price (pool price after the last trade, quote per whole token), marketCap
 (price x (supply - burned)), volume1h/volume24h (quote smallest units), the same in dollars
 (priceUsd, marketCapUsd, volume*Usd: valued at quote.usd), change24hPct, holders,
@@ -1086,7 +1088,14 @@ class AgoraMarket:
             offset += len(items)
         out = out[:n]
         if self.montra is not None and any(is_montra(x) for x in out):
-            cards = self.montra.by_volume()
+            cards = dict(self.montra.by_volume())
+            # Montra tokens outside Montra's busiest list: looked up one by one, bounded
+            # (14 of 103 on Agora's top 150 on 2026-11-27); the rest keep Agora's figures.
+            missing = [x.address for x in out if is_montra(x) and x.address not in cards]
+            for a in missing[:max(0, self.cfg.montra_list_lookups)]:
+                c = self.montra.card(a)
+                if c is not None:
+                    cards[a] = c
             rate = _f(meta.get("hypeUsd")) or self.hype_usd()
             out = [(with_montra(x.address, x, cards.get(x.address), rate) or x)
                    if is_montra(x) else x for x in out]
@@ -1139,7 +1148,8 @@ import agora_tracker  # noqa: F401
 spec = importlib.util.spec_from_file_location("agora_tracker.market_new", "/probe/market_new.py")
 mn = importlib.util.module_from_spec(spec); sys.modules[spec.name] = mn; spec.loader.exec_module(mn)
 cfg = SimpleNamespace(enabled=True, api="https://api.agoradex.app", cache_s=600, timeout_s=10,
-                      montra=True, montra_api="https://api.montramarkets.xyz", montra_list_pages=2)
+                      montra=True, montra_api="https://api.montramarkets.xyz", montra_list_pages=2,
+                      montra_list_lookups=25)
 m = mn.AgoraMarket(cfg)
 hu = m.hype_usd()
 print("RATE|hypeUsd=%s" % hu)
@@ -1148,7 +1158,7 @@ print("LIST|montra cards=%d" % len(busy))
 fixed = ["0x56e1e08fe536de0f18dcee008f57068788d61d33", "0x345d1e58ea14d2bfeeaadcb9d5c13aa74d30c590",
          "0xb0b3ac8801f6b3904f51a0ed2e2953d0d540280c", "0x2c41ff518f0a9ea28fab7047055545c5ff3552d3",
          "0x063f7cc5339f92a5fd7baf3d22233044fda1f327"]
-picks = fixed + [a for a in list(busy)[:30] if a not in fixed]
+picks = fixed + [a for a in list(busy)[:15] if a not in fixed]
 def b(r):
     if r is None: return "none"
     e = abs(r - 1); return "<=1%" if e <= 0.01 else "1-5%" if e <= 0.05 else "5-25%" if e <= 0.25 else ">25%"
@@ -1157,7 +1167,7 @@ for a in picks:
     time.sleep(1.3)
     d = m.token_detail(a, "24h") or {}
     info = m.token(a)
-    card = m.montra.card(a) if info is None or info.source != "montra" else (busy.get(a) or m.montra.card(a))
+    card = m.montra.card(a)   # the very card token() used (cached 600 s)
     mu = float(card["marketCapUsd"]) if card and card.get("marketCapUsd") is not None else None
     raw = ((d.get("stats") or {}).get("mcap"))
     old = float(raw) * hu / mu if raw is not None and mu else None
