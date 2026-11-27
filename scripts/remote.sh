@@ -699,47 +699,37 @@ PY
     tracker_alive
     ;;
   wallet-probe)
-    # Read-only: Montra API vs Agora market cap (SENDU and the 40 busiest Montra tokens).
-    cat > /tmp/probe_m.py <<'PY_RUN'
+    # Read-only: Agora quote fields (base, kntqHype) vs Montra for KNTQ- and HYPE-quoted tokens.
+    cat > /tmp/probe_a.py <<'PY_RUN'
 import json, time, urllib.request
 UA = {"user-agent": "elysium-wallet-tracker research", "accept": "application/json"}
 def get(url):
-    try:
-        with urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=20) as r:
-            return json.loads(r.read())
-    except Exception as e:
-        return {"_error": str(e)[:150]}
-    finally:
-        time.sleep(0.6)
-M = "https://api.montramarkets.xyz"
+    with urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=20) as r:
+        out = json.loads(r.read())
+    time.sleep(0.6)
+    return out
 A = "https://api.agoradex.app"
-cfg = get(M + "/api/config")
-print("CONFIG|" + json.dumps(cfg)[:1500])
-tok = "0x56e1e08fe536de0f18dcee008f57068788d61d33"
-t = get(M + "/api/tokens/" + tok)
-keep = {k: t.get(k) for k in ("symbol", "name", "price", "priceUsd", "supply", "burned", "marketCap", "marketCapUsd", "poolId", "quote", "volume24hUsd", "createdAt", "stage", "graduated")}
-print("MONTRA|" + json.dumps(keep))
-print("MONTRA_KEYS|" + ",".join(sorted(t.keys())))
-for k in ("pool", "live", "config"):
-    print("MONTRA_" + k.upper() + "|" + json.dumps(t.get(k))[:900])
-ag = get(A + "/api/tokens/" + tok + "?range=1h")
-print("AGORA|" + json.dumps({"symbol": ag.get("symbol"), "launchpad": ag.get("launchpad"), "stats": {k: (ag.get("stats") or {}).get(k) for k in ("price", "mcap", "liquidity")}, "hypeUsd": ag.get("hypeUsd"), "keys": sorted(ag.keys())})[:900])
-lst = get(M + "/api/tokens?sort=volume&limit=40")
-rows = lst.get("tokens") or lst.get("items") or lst.get("data") or []
-print("LIST|n=%d keys=%s" % (len(rows), ",".join(sorted(rows[0].keys())) if rows else lst.get("_error") or list(lst.keys())))
-for r in rows[:40]:
-    a = r.get("address") or r.get("token")
-    g = get(A + "/api/tokens/" + a + "?range=1h")
+M = "https://api.montramarkets.xyz"
+for tok in ("0x56e1e08fe536de0f18dcee008f57068788d61d33", "0xe2b8bcb648a842127efe2a5a773b2628c11f0a2b", "0x547a2a9c5af6e4372ead794e80eaf3f42dbbaaac"):
+    g = get(A + "/api/tokens/" + tok + "?range=1h")
     st = g.get("stats") or {}
-    hu = g.get("hypeUsd")
-    amc = float(st["mcap"]) * float(hu) if st.get("mcap") and hu else None
-    q = r.get("quote") or {}
-    print("CMP|%s|%s|quote=%s/%s usd=%s|montra_mc_usd=%s|agora_mc_usd=%s|ratio=%s" % (
-        a, r.get("symbol"), q.get("symbol"), (q.get("address") or "")[:10], q.get("usd"), r.get("marketCapUsd"),
-        round(amc, 2) if amc else None, round(amc / float(r["marketCapUsd"]), 3) if amc and r.get("marketCapUsd") else None))
+    print("DETAIL|%s|%s|base=%s|kntqHype=%s|price=%s|mcap=%s|volume=%s|liq=%s|tax=%s|venues=%s" % (
+        tok[:10], g.get("symbol"), json.dumps(g.get("base")), g.get("kntqHype"), st.get("price"), st.get("mcap"),
+        json.dumps(st.get("volume")), st.get("liquidity"), json.dumps(g.get("tax"))[:80], json.dumps(g.get("venues"))[:200]))
+    print("STATKEYS|" + ",".join(sorted(st.keys())))
+    m = get(M + "/api/tokens/" + tok)
+    q = m.get("quote") or {}
+    print("MONTRA|%s|quote=%s|price=%s|mc=%s|mcUsd=%s|vol24hUsd=%s|vol24h=%s" % (tok[:10], q.get("symbol"), m.get("price"), m.get("marketCap"), m.get("marketCapUsd"), m.get("volume24hUsd"), m.get("volume24h")))
+lst = get(A + "/api/tokens?sort=volume&window=24h&launchpad=all&limit=50")
+print("LISTTOP|" + ",".join(sorted(lst.keys())) + "|hypeUsd=%s|kntqHype=%s" % (lst.get("hypeUsd"), lst.get("kntqHype")))
+items = lst.get("tokens") or []
+print("ITEMKEYS|" + ",".join(sorted(items[0].keys())))
+from collections import Counter
+print("BASES|" + json.dumps(Counter(json.dumps(i.get("base"), sort_keys=True) for i in items).most_common(6)))
+print("PADS_KNTQ|" + json.dumps(Counter((i.get("launchpad"), json.dumps(i.get("base"), sort_keys=True)) for i in items).most_common(12)))
 PY_RUN
-    python3 /tmp/probe_m.py 2>&1 | cut -c1-1500 || true
-    rm -f /tmp/probe_m.py
+    python3 /tmp/probe_a.py 2>&1 | cut -c1-1200 || true
+    rm -f /tmp/probe_a.py
     ;;
   ui-smoke)
     docker compose run --rm --no-deps ui --ui-smoke
