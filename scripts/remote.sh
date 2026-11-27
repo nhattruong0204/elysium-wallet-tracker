@@ -699,30 +699,36 @@ PY
     tracker_alive
     ;;
   wallet-probe)
-    # Read-only check after the PR #140 deploy: the buttons each running bot would attach.
+    # Read-only: calibrate a 30-day realized-PnL ranking for alert-card badges.
     need_docker
-    T=0x0d442948a8748f0296af853c85ec054d875c010f
-    echo "  tracker ALERT_BUTTONS: $(docker inspect elysium-wallet-tracker --format '{{range .Config.Env}}{{println .}}{{end}}' | grep -c '^ALERT_BUTTONS=' || true) set (0 = default fomo)"
-    docker exec elysium-wallet-tracker python -c "
-from agora_tracker import cards
-from agora_tracker.config import load_config
-import glob
-cfg = load_config(sorted(glob.glob('/config/config.yaml'))[0])
-L = cards.Links(cfg.links, cfg.chain.chain_id)
-p = {'type': 'trade', 'kind': 'BUY', 'token': '$T', 'symbol': 'LEASH', 'tx': '0x' + '1' * 64, 'wallet': '0x' + '2' * 40, 'qty': '1', 'hype_wei': '1', 'confidence': 'high', 'hype_method': 'balance_diff', 'notes': [], 'block': 1, 'ts': 1, 'decimals': 18}
-full = cards.render(p, L)[1]
-print('  trade card buttons sent:', cards.alert_keyboard(L, p, full))
-print('  (full keyboard would have', sum(len(r) for r in full['inline_keyboard']), 'buttons)')
-" 2>&1 | grep -v api.telegram.org | cut -c1-300 || true
-    docker exec elysium-consensus-alerts python -c "
-from agora_tracker.consensus_delivery import render_card
-from agora_tracker.config import load_config
-from agora_tracker.web.format import Links
-cfg = load_config('/config/config.yaml')
-c = {'token': '$T', 'symbol': 'LEASH', 'traders': 3, 'independent': 3, 'bundled': False, 'first_n': 3, 'net_hype': 6.0, 'net_usd': 380.0, 'mcap_at_usd': 66964, 'mcap_now': {'market_cap_usd': 196471}, 'members': [], 'trigger_tx': '0x' + '1' * 64}
-print('  consensus card buttons:', render_card(c, Links(cfg.links))[1])
-" 2>&1 | cut -c1-300 || true
-    psql_admin -At -F'|' -c "SELECT 'DATA', count(*), max(sent_at) FROM notification_outbox WHERE sent_at > '2026-11-27 06:37:00+00' AND status = 'sent'" || true
+    psql_admin -At -F'|' <<'SQL' || true
+
+SET default_transaction_read_only = on; SET statement_timeout = '300s';
+WITH fb AS (SELECT wallet, token, min(block_time) AS fb FROM trades WHERE chain_id = 99901 AND kind = 'BUY' AND block_time >= now() - interval '37 days' GROUP BY wallet, token),
+t0 AS (SELECT token, min(block_time) AS t0 FROM trades WHERE chain_id = 99901 AND token IN (SELECT token FROM fb) GROUP BY token),
+lr AS (SELECT fb.wallet, fb.token FROM fb JOIN t0 ON t0.token = fb.token JOIN token_profiles p ON p.chain_id = 99901 AND p.address = fb.token
+        WHERE p.launched_at IS NOT NULL AND fb.fb BETWEEN p.launched_at - interval '2 s' AND p.launched_at + interval '2 s' AND fb.fb <= t0.t0 + interval '2 s'),
+launchers AS (SELECT wallet FROM lr GROUP BY wallet HAVING count(DISTINCT token) >= 3),
+ltok AS (SELECT DISTINCT token FROM lr WHERE wallet IN (SELECT wallet FROM launchers)),
+r AS (SELECT r.wallet, r.token, r.pnl_wei / 1e18 AS pnl, t.block_time AS bt FROM realized_pnl r JOIN trades t ON t.id = r.trade_id
+       WHERE r.chain_id = 99901 AND r.status = 'measured' AND r.pnl_wei IS NOT NULL AND t.block_time >= now() - interval '30 days'
+         AND r.token NOT IN (SELECT token FROM ltok) AND r.wallet NOT IN (SELECT wallet FROM launchers)
+         AND r.token NOT IN ('0xb47c4c8f73f009cc0c0d3f92b388d13e293f0b65','0xba876237b0f021a6c6d852d6c26e107997cc5e81','0xe45a355d9e9cad2ad85f2d03e3ee3102a036acf0')),
+agg AS (SELECT wallet, sum(pnl) AS p30, coalesce(sum(pnl) FILTER (WHERE bt >= now() - interval '7 days'), 0) AS p7, count(*) AS n,
+         count(*) FILTER (WHERE pnl > 0) AS w, count(DISTINCT token) AS toks,
+         sum(pnl) FILTER (WHERE bt >= now() - interval '28 days' AND bt < now() - interval '21 days') AS wk4,
+         sum(pnl) FILTER (WHERE bt >= now() - interval '21 days' AND bt < now() - interval '14 days') AS wk3,
+         sum(pnl) FILTER (WHERE bt >= now() - interval '14 days' AND bt < now() - interval '7 days') AS wk2,
+         sum(pnl) FILTER (WHERE bt >= now() - interval '7 days') AS wk1, max(bt) AS last_close
+       FROM r GROUP BY wallet),
+el AS (SELECT *, row_number() OVER (ORDER BY p30 DESC) AS rk FROM agg WHERE n >= 5 AND toks >= 2 AND p30 > 0)
+SELECT 'DATA','sum', (SELECT count(*) FROM launchers), (SELECT count(*) FROM ltok), (SELECT count(*) FROM agg), (SELECT count(*) FROM agg WHERE p30 > 0),
+       (SELECT count(*) FROM el), (SELECT count(*) FROM agg WHERE n >= 5 AND toks >= 2);
+SELECT 'DATA','el', rk, wallet, round(p30::numeric, 1), round(p7::numeric, 1), n, w, toks, round(wk4::numeric, 1), round(wk3::numeric, 1), round(wk2::numeric, 1), round(wk1::numeric, 1), last_close
+  FROM el WHERE rk <= 40 OR rk IN (50, 60, 70, 80, 90, 100) ORDER BY rk;
+SELECT 'DATA','neg', count(*), round(min(p30)::numeric, 1) FROM agg WHERE p30 < 0 AND n >= 5;
+
+SQL
     ;;
   ui-smoke)
     docker compose run --rm --no-deps ui --ui-smoke
