@@ -698,14 +698,6 @@ PY
     consensus_state
     tracker_alive
     ;;
-  wallet-probe)
-    # Read-only: Consensus sender cycles since the restart, and recent deliveries.
-    need_docker
-    L=$(docker logs --since 40m elysium-consensus-alerts 2>&1 | grep -vE 'api\.telegram\.org')
-    echo "CYC|started=$(echo "$L" | grep -c 'Consensus sender started') failed=$(echo "$L" | grep -c 'Consensus cycle failed closed') queued_lines=$(echo "$L" | grep -c 'Consensus: queued=')"
-    echo "$L" | grep -E 'failed closed|Consensus: queued=|shadow rule|stale|WARNING' | cut -c1-220 | tail -15 | sed 's/^/CYC|/'
-    psql_admin -At -F'|' -c "SELECT 'DLV', id, status, created_at, sent_at, left(regexp_replace(body, '\s+', ' ', 'g'), 70) FROM consensus_alerts.deliveries ORDER BY id DESC LIMIT 6" 2>&1 | cut -c1-220 || true
-    ;;
   ui-smoke)
     docker compose run --rm --no-deps ui --ui-smoke
     ;;

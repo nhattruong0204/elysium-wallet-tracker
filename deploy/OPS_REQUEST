@@ -1,2 +1,2 @@
-action=wallet-probe
-# sender cycles 2026-11-27T12:20Z
+action=web-hotfix
+# PR #142 consensus query, retry 2026-11-27T12:25Z
