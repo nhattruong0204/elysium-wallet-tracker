@@ -1,2 +1,2 @@
-action=web-hotfix
-# deploy PR #139 (merge dceb181) 2026-11-27T05:25Z
+action=wallet-probe
+# post-deploy check PR #139 2026-11-27T05:33Z
