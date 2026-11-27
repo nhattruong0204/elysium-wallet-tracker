@@ -1,2 +1,2 @@
-action=consensus-restart
-# PR #142 consensus sender 2026-11-27T11:45Z
+action=wallet-probe
+# sender diag 2026-11-27T11:50Z
