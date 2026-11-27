@@ -4,7 +4,7 @@
 {% block head %}<script src="/static/activity.js?v={{ asset_v }}" defer></script>{% endblock %}
 {% block body %}
 <h1>Activity</h1>
-<p class="lead">Every transaction the tracked wallets made, newest first. A <b>transfer</b> moves tokens without a HYPE payment and is never counted as a buy or a sell. <b>Verified</b> amounts were measured on-chain; <b>estimated</b> ones are shown apart.</p>
+<p class="lead">Every buy and sell the tracked wallets made, newest first. Token sends and receives (no HYPE payment) are left out here; they still count in each wallet's position. <b>Verified</b> amounts were measured on-chain; <b>estimated</b> ones are shown apart.</p>
 
 <form class="controls act-filters" method="get" action="/activity" id="act-form">
   <label>Action <select name="action">{% for k, label in d.action_labels.items() %}<option value="{{ k }}"{% if p.action == k %} selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>

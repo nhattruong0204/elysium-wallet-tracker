@@ -10,7 +10,7 @@ import sqlalchemy as sa
 
 from agora_tracker.chain import TRANSFER_TOPIC, ChainFollower, pad_topic
 from agora_tracker.classify import classify
-from agora_tracker.config import AlertConfig, ChainConfig, LeaderboardConfig
+from agora_tracker.config import ALERT_KINDS, AlertConfig, ChainConfig, LeaderboardConfig
 from agora_tracker.engine import WEI, Engine
 from agora_tracker.leaderboard import diff_leaderboard, guess_mapping, parse_curl, parse_items
 from agora_tracker.rpc import RpcError
@@ -144,7 +144,10 @@ def chain():
 
 def build(store, chain):
     ccfg = ChainConfig(rpc_urls=["fake"], wallet_chunk=2)
-    acfg = AlertConfig(min_trade_hype=0.1, cluster_min_wallets=3, cluster_window_s=3600)
+    # every kind: these tests exercise the transfer/burst/airdrop alert paths too (the
+    # production default, buys and sells only, is covered in test_alert_kinds.py)
+    acfg = AlertConfig(min_trade_hype=0.1, cluster_min_wallets=3, cluster_window_s=3600,
+                       alert_kinds=list(ALERT_KINDS))
     follower = ChainFollower(chain, store, ccfg, int(acfg.hype_dust * WEI), set())
     engine = Engine(store, follower.tokens, ccfg, acfg, {W1: "whale-1"})
     return store, follower, engine

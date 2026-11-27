@@ -288,8 +288,9 @@ the newest-15 preview with a "View All Activity" link (range carried over, 6h ma
   wallet (link + copy), token (link), action, HYPE amount when known, basis
   (verified / estimated / unknown), tx hash, block, explorer link. Transfers are never shown as
   buys or sells; several legs of one tx stay separate rows.
-* **Filters (server-side):** `action` = all | buy | sell | transfer_in | transfer_out | swap |
-  multi_other; `range` = 15m | 1h | 4h | 12h | 24h | 7d | 30d | all, or `start`+`end` (UTC,
+* **Filters (server-side):** `action` = all (buys and sells) | buy | sell. Since 2026-11-27 the
+  tab lists BUY and SELL rows only; the old transfer_in / transfer_out / swap / other values
+  still open and show buys and sells. `range` = 15m | 1h | 4h | 12h | 24h | 7d | 30d | all, or `start`+`end` (UTC,
   half-open); `basis`; `q` (token address, symbol, wallet address, tx hash; exact or partial, hex
   prefixes need >= 6 digits; LIKE wildcards are escaped and everything is bound); `wallet`,
   `token`; `sort` = newest | oldest | largest_buy | largest_sell. Invalid input returns 400, an

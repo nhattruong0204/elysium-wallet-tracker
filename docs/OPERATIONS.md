@@ -531,6 +531,24 @@ are not classified here by design.
 Thresholds live in `LabelRules`; changing one changes what a label means, so bump `VERSION`.
 Flags are inferences from on-chain patterns, not proof of common control or misconduct.
 
+## Buys and sells only (Telegram cards and the Activity tab; 2026-11-27)
+
+**Telegram:** only `alerts.alert_kinds` become trade cards. The default is `[BUY, SELL]`; `ALERTS_KINDS` (tracker env, e.g. `BUY,SELL,TRANSFER_OUT`) overrides it. Cluster buys, leaderboard and health alerts are not affected. Transfer bursts are built from TRANSFER_OUT cards, so they stop too.
+
+**Website:** the Activity tab and `/api/v1/activity` list BUY and SELL rows only (`action` = all | buy | sell). Old `transfer_in` / `transfer_out` / `swap` / `other` links open the buy and sell list.
+
+**What is unchanged:** every kind is still indexed. Transfers still move positions (a token sent away takes its cost with it), PnL and wallet pages.
+
+**Why (3 days to 2026-11-27):**
+- **Volume:** the 1,085 send/receive cards were 15% of the Telegram cards. After the launcher mute (PR #138) they were three quarters of what was left.
+- **Receives:** automatic payouts from distributor contracts. `0x55b72113…` pays the holders of about ten Montra tokens (MONTRA, BLOB, PANTHEON, TAIL, TOKOS, LiquidV…) in one transaction, several times an hour; airdrops make up the rest. One wallet got 360 of them for 15 tokens in 12 hours. None of those transactions was sent by the receiving wallet.
+- **Sends:** 96% came from serial launchers spreading supply.
+- **No signal:**
+  - none of them has a price;
+  - after a receive the wallet sold within 24 h only 7% of the time;
+  - another tracked wallet bought the token within 6 h after 1% of receives, against 8% after a buy;
+  - the token's market cap moved no differently afterwards than after a buy.
+
 ## Muted wallets (tracked, never alerted; 2026-11-12)
 
 `TRACKING_MUTED_WALLETS` (`tracking.muted_wallets`) is the middle ground between following a

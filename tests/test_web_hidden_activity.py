@@ -54,12 +54,16 @@ def usdc(kinds):
         fake.append(add(kinds, "BUY", f"0xf{i:02d}", token=FAKE_USDC, hype=0.7,
                         seconds_ago=35 - i, block=7100 + i))
     kinds.real_usdc, kinds.fake_usdc = real, fake
+    # the Activity tab lists buys and sells only
+    kinds.real_usdc_listed = [r for r, k in zip(real, KINDS * 3, strict=True)
+                              if k in A.FEED_KINDS]
     return kinds
 
 
 def public_ids(engine, *, exclude=()):
     with engine.connect() as c:
-        rows = c.execute(sa.text("SELECT id, token FROM public_api.trades WHERE chain_id = :c"),
+        rows = c.execute(sa.text("SELECT id, token FROM public_api.trades WHERE chain_id = :c "
+                                 "AND kind IN ('BUY', 'SELL')"),        # the tab's kinds
                          {"c": CHAIN}).all()
     return {r.id for r in rows if r.token not in exclude}
 
@@ -133,11 +137,11 @@ def test_without_the_setting_nothing_changes(usdc, make_live):
 def test_explicit_token_filter_and_address_search_still_show_usdc(usdc, make_live):
     lv = make_live(hide_cfg())
     only = items(lv, range="all", limit=100, token=USDC)
-    assert sorted(r["id"] for r in only) == sorted(usdc.real_usdc)
-    assert {r["kind"] for r in only} == set(KINDS)
-    assert get(lv, range="all", token=USDC).json()["total"]["count"] == len(usdc.real_usdc)
+    assert sorted(r["id"] for r in only) == sorted(usdc.real_usdc_listed)
+    assert {r["kind"] for r in only} == set(A.FEED_KINDS)
+    assert get(lv, range="all", token=USDC).json()["total"]["count"] == len(usdc.real_usdc_listed)
     mixed = items(lv, range="all", limit=100, token=USDC_MIXED)        # case-insensitive input
-    assert sorted(r["id"] for r in mixed) == sorted(usdc.real_usdc)
+    assert sorted(r["id"] for r in mixed) == sorted(usdc.real_usdc_listed)
     found = items(lv, range="all", limit=100, q=USDC)                   # full-address search
     assert {r["token"] for r in found} == {USDC}
     # a symbol search is not an exact address: the real one stays hidden, the look-alike shows
@@ -202,7 +206,7 @@ def test_live_since_id_poll_skips_usdc_but_still_advances(usdc, make_live):
     assert lv.get(API, params={"range": "all", "since_id": inc["head_id"]}).json()["items"] == []
     # a page showing only USDC polls USDC
     tok = lv.get(API, params={"range": "all", "since_id": head, "token": USDC}).json()
-    assert sorted(r["id"] for r in tok["items"]) == sorted([a, b])
+    assert sorted(r["id"] for r in tok["items"]) == [a]        # b is a transfer: not listed
     # only hidden rows arrived: the poll is empty but the head still advances
     e = add(usdc, "SWAP", "0xe5", token=USDC, hype=None, seconds_ago=0, block=9102)
     j = lv.get(API, params={"range": "all", "since_id": inc["head_id"]}).json()

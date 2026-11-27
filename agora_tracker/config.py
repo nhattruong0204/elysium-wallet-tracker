@@ -64,6 +64,9 @@ class LeaderboardConfig:
     timeout_s: float = 20.0
 
 
+ALERT_KINDS = ("BUY", "SELL", "SWAP", "MULTI", "TRANSFER_IN", "TRANSFER_OUT")
+
+
 @dataclass
 class AlertConfig:
     # Catching up after downtime: events whose block is older than this are indexed (trades,
@@ -72,6 +75,14 @@ class AlertConfig:
     max_alert_age_s: float = 7200.0
     min_trade_hype: float = 0.5
     alert_transfers: bool = True        # wallet moving tokens to another address (rotation, OTC)
+    # Trade kinds that become Telegram alert cards. Buys and sells only by default (owner,
+    # 2026-11-27): over 3 days the 1,085 send/receive cards were automatic payouts (one
+    # distributor contract paying ~10 Montra tokens' holders several times an hour) and serial
+    # launchers spreading supply; none carried a price, and the token moved no differently
+    # afterwards than after any buy. Every kind is still indexed (positions, PnL, website
+    # wallet pages). Transfer bursts are built from TRANSFER_OUT alerts, so they stop too.
+    # Kinds: BUY SELL SWAP MULTI TRANSFER_IN TRANSFER_OUT. ALERTS_KINDS overrides (tracker).
+    alert_kinds: list[str] = field(default_factory=lambda: ["BUY", "SELL"])
     leaderboard_alerts: bool = True     # rank/PnL change alerts (snapshots are always recorded)
     cluster_alerts: bool = True         # cluster-buy alerts (signals are always recorded)
     token_image: bool = True            # show the token's picture above the alert card
@@ -472,6 +483,11 @@ def load_config(path: str | Path) -> Config:
         intel.bot_filter = False
     if os.environ.get("ALERTS_AIRDROP_FILTER", "").strip().lower() in ("off", "0", "false", "no"):
         intel.airdrop_filter = False
+    env_kinds = os.environ.get("ALERTS_KINDS", "").replace(",", " ").upper().split()
+    alerts.alert_kinds = env_kinds or [str(k).upper() for k in alerts.alert_kinds]
+    bad = sorted(set(alerts.alert_kinds) - set(ALERT_KINDS))
+    if bad:
+        raise ValueError(f"alerts.alert_kinds: unknown kind(s) {bad}; use {list(ALERT_KINDS)}")
     if os.environ.get("ALERTS_MAX_AGE_S", "").strip():
         alerts.max_alert_age_s = float(os.environ["ALERTS_MAX_AGE_S"])
     if os.environ.get("ALERTS_LAUNCHER_FILTER", "").strip().lower() in ("off", "0", "false", "no"):

@@ -698,60 +698,6 @@ PY
     consensus_state
     tracker_alive
     ;;
-  wallet-probe)
-    # Read-only: what delivers the TRANSFER_IN tokens (sample receipts, contract code size).
-    need_docker
-    psql_admin -At -F'|' > /tmp/probe_samp.txt <<'SQL' || true
-
-SET default_transaction_read_only = on; SET statement_timeout = '120s';
-SELECT 'DATA','samp', t.wallet, t.token, t.tx_hash, t.block_time FROM trades t
- WHERE t.chain_id = 99901 AND t.kind = 'TRANSFER_IN' AND t.block_time > now() - interval '3 days'
-   AND t.wallet IN ('0x2dc94f0db9ad9f662dc211c9486c96fff5d49d1f','0x775256e60f88c5e0f149db67fbcb738da75143d7','0x518d64f7b7fb3cc05f0dcc402167e657294470aa')
-   AND t.token <> '0xe45a355d9e9cad2ad85f2d03e3ee3102a036acf0'
- ORDER BY t.block_time DESC LIMIT 6;
-SELECT 'DATA','w2dc', kind, count(*), count(DISTINCT token), min(block_time), max(block_time) FROM trades
- WHERE chain_id = 99901 AND wallet = '0x2dc94f0db9ad9f662dc211c9486c96fff5d49d1f' AND block_time > now() - interval '3 days' GROUP BY 3;
-SELECT 'DATA','w2dcout', x.to_address, count(*) FROM trades t JOIN transactions x ON x.chain_id = t.chain_id AND x.tx_hash = t.tx_hash
- WHERE t.chain_id = 99901 AND t.wallet = '0x2dc94f0db9ad9f662dc211c9486c96fff5d49d1f' AND t.block_time > now() - interval '3 days' AND t.kind IN ('TRANSFER_OUT','SELL','BUY') GROUP BY 3 ORDER BY 4 DESC LIMIT 5;
-
-SQL
-    grep '^DATA|w2dc' /tmp/probe_samp.txt || true
-    cat > /tmp/probe_rc.py <<'PY'
-import json, re, time, urllib.request
-urls = re.findall(r"^\s*-\s*(https?://\S+)", open("config/config.yaml").read(), re.M)
-url = next((u for u in urls if "boxa" not in u), urls[0])
-T = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
-WHYPE = "0xba876237b0f021a6c6d852d6c26e107997cc5e81"
-def rpc(m, p):
-    req = urllib.request.Request(url, data=json.dumps({"jsonrpc": "2.0", "id": 1, "method": m, "params": p}).encode(), headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=30) as r:
-        j = json.loads(r.read())
-    time.sleep(0.4)
-    return j.get("result")
-for a in ("0x55b72113928dbfd047ce8752a50384ff7b89688d", "0x0729e2a4716d9f7dd17858d5d504426d228697f7", "0x5567954cd026cebfe486062cb75848e0f1c12e58", "0x836b336fca26913176efc45a5a6e5e72cd7bd13b"):
-    code = rpc("eth_getCode", [a, "latest"]) or "0x"
-    n = int(rpc("eth_getTransactionCount", [a, "latest"]), 16)
-    print("DATA|code|%s|code_bytes=%d|nonce=%d" % (a, (len(code) - 2) // 2, n))
-for line in open("/tmp/probe_samp.txt"):
-    f = line.strip().split("|")
-    if len(f) < 6 or f[1] != "samp":
-        continue
-    w, tok, tx = f[2], f[3], f[4]
-    t = rpc("eth_getTransactionByHash", [tx]); rc = rpc("eth_getTransactionReceipt", [tx])
-    tr = []
-    for lg in rc.get("logs") or []:
-        tp = lg.get("topics") or []
-        if tp and tp[0] == T and len(tp) >= 3:
-            frm, to = "0x" + tp[1][-40:], "0x" + tp[2][-40:]
-            amt = int(lg.get("data") or "0x0", 16)
-            tag = "WHYPE" if lg["address"].lower() == WHYPE else ("TOKEN" if lg["address"].lower() == tok else lg["address"][:10])
-            tr.append("%s:%s>%s:%.4g" % (tag, frm[:8] + ("*" if frm == w else ""), to[:8] + ("*" if to == w else ""), amt / 1e18))
-    sel = (t.get("input") or "0x")[:10]
-    print("DATA|rc|%s|%s|tx_from=%s|tx_to=%s|value=%.4g|sel=%s|logs=%d|%s" % (w[:10], tx[:12], t["from"][:10] + ("*" if t["from"].lower() == w else ""), (t.get("to") or "")[:10], int(t.get("value") or "0x0", 16) / 1e18, sel, len(rc.get("logs") or []), " ".join(tr)[:600]))
-PY
-    python3 /tmp/probe_rc.py || true
-    rm -f /tmp/probe_rc.py /tmp/probe_samp.txt
-    ;;
   ui-smoke)
     docker compose run --rm --no-deps ui --ui-smoke
     ;;
