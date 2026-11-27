@@ -698,6 +698,17 @@ PY
     consensus_state
     tracker_alive
     ;;
+  wallet-probe)
+    # Read-only: why the Consensus sender is still unhealthy, table statistics, web timing.
+    need_docker
+    echo "SENDERLOG|begin"
+    docker logs --since 20m elysium-consensus-alerts 2>&1 | grep -vE 'api\.telegram\.org' | grep -E "Error|Exception|Timeout|Cancel|timeout|consensus|WARNING|ERROR|INFO" | grep -vE "^\s+(SELECT|FROM|WHERE|AND|ORDER|UNION|LEFT|JOIN|\(|\))" | tail -40 | cut -c1-260 | sed 's/^/SENDERLOG|/' || true
+    psql_admin -At -F'|' -c "SELECT 'STAT', relname, n_live_tup, n_mod_since_analyze, last_analyze, last_autoanalyze FROM pg_stat_user_tables WHERE relname IN ('trades','token_market_snapshots','hype_usd_rates','realized_pnl','token_profiles') ORDER BY relname" || true
+    psql_admin -At -F'|' -c "SELECT 'SET', name, setting FROM pg_settings WHERE name IN ('autovacuum','autovacuum_analyze_scale_factor','autovacuum_analyze_threshold','autovacuum_naptime')" || true
+    for l in 97 98 99; do curl -s -o /dev/null -m 30 -w "WEB|activity limit=$l %{http_code} %{time_total}s\n" "http://127.0.0.1:8100/api/v1/activity?range=24h&limit=$l" || true; done
+    curl -s -o /dev/null -m 30 -w "WEB|overview %{http_code} %{time_total}s\n" "http://127.0.0.1:8100/api/v1/overview" || true
+    docker logs --since 20m elysium-web 2>&1 | grep -E "timeout|Timeout|Cancel|503|ERROR" | tail -12 | cut -c1-260 | sed 's/^/WEBLOG|/' || true
+    ;;
   ui-smoke)
     docker compose run --rm --no-deps ui --ui-smoke
     ;;
