@@ -699,25 +699,87 @@ PY
     tracker_alive
     ;;
   wallet-probe)
-    # Read-only post-deploy check (PR #138): launcher log line, Consensus sender, website timings.
+    # Read-only: time the website's slow pages statement by statement (dashboard_ro, 60 s timeout).
     need_docker
-    log "tracker: launcher rule and errors since start"
-    docker compose logs --no-color --since 30m tracker 2>&1 | grep -iE "serial launchers|launcher|Traceback|ERROR" | grep -v api.telegram.org | tail -15 | cut -c1-240 || true
-    log "consensus sender: env and log"
-    docker inspect elysium-consensus-alerts --format '{{range .Config.Env}}{{println .}}{{end}}' | grep -E '^CONSENSUS_(EXTRA_RULES|MIN_|HIDDEN)' || true
-    docker logs --since 30m elysium-consensus-alerts 2>&1 | grep -v api.telegram.org | tail -25 | cut -c1-240 || true
-    log "web: warnings and errors (15 min)"
-    docker logs --since 15m elysium-web 2>&1 | grep -iE "warning|error|timeout|cancel" | grep -v api.telegram.org | sed -E 's/[0-9a-f]{40,}/<hex>/g' | tail -25 | cut -c1-240 || true
-    log "web: timings now (status, seconds, bytes)"
-    for p in / "/?range=7d" /consensus "/api/v1/consensus?range=24h&traders=3&window=30&min_net=0" "/consensus?range=7d" /leaderboard /early /scanner /api/v1/overview; do
-      out=$(curl -s -o /tmp/probe_body -m 40 -w '%{http_code} %{time_total} %{size_download}' "http://127.0.0.1:8100$p" || echo "fail")
-      echo "  $p -> $out"
-    done
-    curl -s -m 40 "http://127.0.0.1:8100/api/v1/consensus?range=24h&traders=3&window=30&min_net=0" | python3 -c 'import json,sys; j=json.load(sys.stdin); cs=j.get("cards",[]); print("  consensus 24h cards:", len(cs), "with prior_events:", sum(1 for c in cs if "prior_events" in c), "with change_1h known:", sum(1 for c in cs if c.get("change_1h") is not None), "launcher_token:", sum(1 for c in cs if c.get("launcher_token")))' || true
-    log "postgres: queries running > 3 s"
-    psql_admin -At -F'|' -c "SELECT usename, state, round(extract(epoch FROM now() - query_start)::numeric, 1), left(regexp_replace(query, '\s+', ' ', 'g'), 120) FROM pg_stat_activity WHERE state <> 'idle' AND now() - query_start > interval '3 seconds' AND pid <> pg_backend_pid()" || true
-    psql_admin -At -c "SELECT 'cancelled (statement timeout) in log, last 15 min: ' || count(*) FROM pg_stat_database WHERE false" >/dev/null 2>&1 || true
-    tracker_alive
+    rm -rf /tmp/elysium-probe && mkdir -p /tmp/elysium-probe && chmod 755 /tmp/elysium-probe
+    cat > /tmp/elysium-probe/run.py <<'PY_RUN'
+"""Read-only timing of the website's slow pages, statement by statement (dashboard_ro, 60 s timeout)."""
+import dataclasses
+import os
+import sys
+import time
+from datetime import datetime, timezone
+
+import sqlalchemy as sa
+
+sys.path.insert(0, "/app")
+from agora_tracker.config import load_config  # noqa: E402
+from agora_tracker.web.activity import parse_activity  # noqa: E402
+from agora_tracker.web.params import parse_range  # noqa: E402
+from agora_tracker.web.reports import PublicReports, StoredMarket  # noqa: E402
+from agora_tracker.web.usd import FxPolicy  # noqa: E402
+
+cfg = load_config(os.environ.get("CONFIG", "/config/config.yaml"))
+eng = sa.create_engine(os.environ["DATABASE_URL"], pool_size=2)
+slow = []
+
+
+@sa.event.listens_for(eng, "before_cursor_execute")
+def _b(conn, cursor, stmt, params, ctx, many):
+    conn.info["t0"] = time.monotonic()
+
+
+@sa.event.listens_for(eng, "after_cursor_execute")
+def _a(conn, cursor, stmt, params, ctx, many):
+    dt = time.monotonic() - conn.info.get("t0", time.monotonic())
+    if dt > 0.5:
+        slow.append((round(dt, 2), " ".join(stmt.split())[:230]))
+
+
+ui = dataclasses.replace(cfg.ui, query_timeout_ms=60000)
+rep = PublicReports(eng, cfg.chain.chain_id, ui, value_unit="HYPE",
+                    market=StoredMarket(eng, cfg.chain.chain_id, cfg.web.market_max_age_s),
+                    collector_interval_s=cfg.collector.interval_s)
+rep.fx_policy = FxPolicy.from_web(cfg.web)
+rep.hidden_tokens = tuple(sorted({*cfg.alerts.mute_tokens, *cfg.web.activity_hidden_tokens}))
+rep.hidden_wallets = tuple(cfg.tracking.muted_wallets)
+now = datetime.now(timezone.utc)
+
+
+def timed(name, fn):
+    slow.clear()
+    t = time.monotonic()
+    try:
+        fn()
+        res = "ok"
+    except Exception as e:  # noqa: BLE001
+        res = type(e).__name__ + ": " + str(e)[:120]
+    print(f"== {name}: {time.monotonic() - t:.1f}s {res}", flush=True)
+    for dt, s in sorted(slow, reverse=True)[:6]:
+        print(f"   {dt:6.2f}s  {s}", flush=True)
+
+
+for rng in ("24h", "7d"):
+    tr = parse_range({"range": rng}, now)
+    timed(f"market_overview {rng}", lambda: rep.market_overview(tr))
+    timed(f"coverage {rng}", lambda: rep.coverage(tr, now))
+    timed(f"trades recent {rng}", lambda: rep.trades(tr, limit=15, hidden=rep.hidden_tokens, hidden_wallets=rep.hidden_wallets))
+    timed(f"trending {rng}", lambda: rep.trending(tr, "score", now=now))
+timed("health", lambda: rep.health(now))
+p = parse_activity({}, now)
+timed("activity_page default", lambda: rep.activity_page(p))
+with eng.connect() as c:
+    c.execute(sa.text("SET statement_timeout = '60s'"))
+    t = time.monotonic()
+    n = c.execute(sa.text("SELECT count(*) FROM trades WHERE block_time > now() - interval '24 hours'")).scalar()
+    print(f"public trades 24h: {n} ({time.monotonic() - t:.1f}s)")
+    t = time.monotonic()
+    n = c.execute(sa.text("SELECT count(*) FROM public_wallets")).scalar()
+    print(f"public wallets: {n} ({time.monotonic() - t:.1f}s)")
+PY_RUN
+    chmod 644 /tmp/elysium-probe/*
+    docker compose run -T --rm --no-deps -v /tmp/elysium-probe:/probe:ro --entrypoint python web /probe/run.py 2>&1 | grep -v "^ Container\|Creating\|Created" || true
+    rm -rf /tmp/elysium-probe
     resources
     ;;
   ui-smoke)
