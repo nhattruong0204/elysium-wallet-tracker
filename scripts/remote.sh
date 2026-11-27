@@ -699,43 +699,56 @@ PY
     tracker_alive
     ;;
   wallet-probe)
-    # Read-only: the public_api snapshot view and the Consensus market-cap lookup plan.
+    # Read-only: time each statement of the Consensus cycle (dashboard_ro, 60 s cap).
     need_docker
-    psql_admin <<'SQL_Q' 2>&1 | cut -c1-400 | sed 's/^/PLAN|/' || true
-\pset format unaligned
-\pset fieldsep '|'
-\pset tuples_only on
-SELECT 'VIEWDEF', pg_get_viewdef('public_api.token_market_snapshots'::regclass, true);
-SELECT 'VIEWDEF2', c.relname, pg_get_viewdef(c.oid, true) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public_api' AND c.relkind IN ('v','m') AND c.relname ILIKE '%public_token%';
-BEGIN READ ONLY;
-SET LOCAL statement_timeout = '90s';
-SET LOCAL search_path = public_api, public;
-CREATE TEMP TABLE IF NOT EXISTS _x AS SELECT 1;
-ROLLBACK;
-BEGIN READ ONLY;
-SET LOCAL statement_timeout = '90s';
-SET LOCAL search_path = public_api, public;
-EXPLAIN (ANALYZE, BUFFERS, TIMING OFF, SUMMARY ON)
-WITH k AS (SELECT token, max(block_time) AS ts FROM public.trades WHERE chain_id = 999 AND block_time > now() - interval '24 hours' GROUP BY token ORDER BY count(*) DESC LIMIT 34),
-     a AS (SELECT array_agg(row_number) AS ids, array_agg(token) AS toks, array_agg(ts) AS ts FROM (SELECT (row_number() OVER ())::bigint AS row_number, token, ts FROM k) z)
-SELECT x.id, near.captured_at, near.mcap_hype
-FROM a, unnest(a.ids, a.toks, a.ts) AS x(id, token, ts)
-LEFT JOIN LATERAL (
-    SELECT c.captured_at, c.mcap_hype FROM (
-        (SELECT s.captured_at, s.mcap_hype FROM token_market_snapshots s
-          WHERE s.chain_id = 999 AND s.token = x.token AND s.mcap_hype IS NOT NULL
-            AND s.captured_at <= x.ts AND s.captured_at > x.ts - make_interval(secs => 1800)
-          ORDER BY s.captured_at DESC LIMIT 1)
-        UNION ALL
-        (SELECT s.captured_at, s.mcap_hype FROM token_market_snapshots s
-          WHERE s.chain_id = 999 AND s.token = x.token AND s.mcap_hype IS NOT NULL
-            AND s.captured_at > x.ts AND s.captured_at < x.ts + make_interval(secs => 1800)
-          ORDER BY s.captured_at ASC LIMIT 1)
-    ) c ORDER BY abs(extract(epoch FROM c.captured_at - x.ts)) LIMIT 1
-) near ON true;
-ROLLBACK;
-SELECT 'CHAIN', chain_id, count(*) FROM public.trades WHERE block_time > now() - interval '1 hour' GROUP BY chain_id;
-SQL_Q
+    rm -rf /tmp/elysium-probe && mkdir -p /tmp/elysium-probe && chmod 755 /tmp/elysium-probe
+    cat > /tmp/elysium-probe/run.py <<'PY_RUN'
+"""Read-only: time each statement of the Consensus cycle (dashboard_ro, web image, 60 s cap)."""
+import os, sys, time
+from datetime import datetime, timezone
+sys.path.insert(0, "/app")
+import sqlalchemy as sa
+from agora_tracker.config import UiConfig
+from agora_tracker.web import reports as R
+from agora_tracker.web.consensus import ConsensusParams
+CHAIN = 99901
+eng = sa.create_engine(os.environ["DATABASE_URL"],
+                       connect_args={"options": "-c statement_timeout=60000"})
+rep = R.PublicReports(eng, CHAIN, UiConfig(query_timeout_ms=60000), value_unit="HYPE")
+rep.hidden_tokens = ("0xb47c4c8f73f009cc0c0d3f92b388d13e293f0b65",)
+orig = rep._all
+def timed(c, sql, **kw):
+    t = time.monotonic()
+    try:
+        return orig(c, sql, **kw)
+    finally:
+        name = next((k for k, v in vars(R).items() if v is sql), None) or next(
+            (k for k, v in vars(type(rep)).items() if v is sql), None) or sql.strip().split("\n")[0][:60]
+        print("T|%s|%.2fs" % (name, time.monotonic() - t), flush=True)
+rep._all = timed
+with eng.connect() as c:
+    for label, q in (("public_tokens count", "SELECT count(*) FROM public_tokens"),
+                     ("public_wallets count", "SELECT count(*) FROM public_wallets"),
+                     ("snap view 1 token", "SELECT count(*) FROM token_market_snapshots WHERE chain_id = :c AND token = '0x56e1e08fe536de0f18dcee008f57068788d61d33'")):
+        c.execute(sa.text("SET statement_timeout = 60000"))
+        t = time.monotonic()
+        try:
+            v = c.execute(sa.text(q), {"c": CHAIN}).scalar()
+        except Exception as e:
+            v = type(e).__name__
+        print("Q|%s|%s|%.2fs" % (label, v, time.monotonic() - t), flush=True)
+p = ConsensusParams(min_traders=3, window_min=30, min_net_hype=0, range="24h", launchpad=None, independent=False)
+now = datetime.now(timezone.utc)
+t = time.monotonic()
+try:
+    out = rep.consensus(p, now, set())
+    print("TOTAL|%.2fs|cards=%d" % (time.monotonic() - t, len(out.get("cards") or [])))
+except Exception as e:
+    print("TOTAL|fail %s %.2fs" % (type(e).__name__, time.monotonic() - t))
+PY_RUN
+    chmod 644 /tmp/elysium-probe/*.py
+    docker compose run -T --rm --no-deps -v /tmp/elysium-probe:/probe:ro --entrypoint python web /probe/run.py 2>&1 | grep -v "^ Container\|Creating\|Created" | cut -c1-300 || true
+    rm -rf /tmp/elysium-probe
     ;;
   ui-smoke)
     docker compose run --rm --no-deps ui --ui-smoke
