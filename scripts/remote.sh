@@ -699,12 +699,11 @@ PY
     tracker_alive
     ;;
   wallet-probe)
-    # Read-only: Consensus legs query plan with timings, and trades table statistics.
+    # Read-only: old vs new Consensus legs query (time, identical rows).
     need_docker
-    psql_admin -At -F'|' -c "SELECT 'STAT', relname, n_live_tup, n_mod_since_analyze, last_analyze, last_autoanalyze, autoanalyze_count FROM pg_stat_user_tables WHERE relname IN ('trades', 'leaderboard_snapshot_entries', 'wallet_enrollment', 'realized_pnl', 'token_market_snapshots')" || true
     rm -rf /tmp/elysium-probe && mkdir -p /tmp/elysium-probe && chmod 755 /tmp/elysium-probe
     cat > /tmp/elysium-probe/run.py <<'PY_RUN'
-"""Read-only: time the Consensus legs query as dashboard_ro and show its plan."""
+"""Read-only: old vs new Consensus legs query (dashboard_ro, web image): time and identical rows."""
 import os
 import sys
 import time
@@ -713,28 +712,36 @@ from datetime import datetime, timedelta, timezone
 import sqlalchemy as sa
 
 sys.path.insert(0, "/app")
-from agora_tracker.web.reports import PublicReports as Reports  # noqa: E402
+from agora_tracker.web.reports import PublicReports  # noqa: E402
 
+NEW = """
+    WITH legs AS MATERIALIZED (
+        SELECT t.id, t.token, t.wallet, t.kind, t.hype_wei, t.block_time, t.block_number, t.tx_hash
+        FROM trades t
+        WHERE t.chain_id = :c AND t.kind IN ('BUY', 'SELL') AND t.confidence = 'high'
+          AND t.block_time >= :lo AND t.block_time < :hi)
+    SELECT l.token, l.wallet, l.kind, l.hype_wei, l.block_time, l.block_number, l.tx_hash
+    FROM legs l
+    WHERE l.hype_wei IS NOT NULL AND l.hype_wei > 0
+      AND NOT (l.token = ANY(CAST(:hidden AS text[])))
+      AND l.token IN (SELECT b.token FROM legs b WHERE b.kind = 'BUY'
+                      GROUP BY b.token HAVING count(DISTINCT b.wallet) >= :n)
+    ORDER BY l.token, l.block_time, l.id"""
 HID = ["0xb47c4c8f73f009cc0c0d3f92b388d13e293f0b65", "0xba876237b0f021a6c6d852d6c26e107997cc5e81",
        "0xe45a355d9e9cad2ad85f2d03e3ee3102a036acf0"]
 eng = sa.create_engine(os.environ["DATABASE_URL"])
 now = datetime.now(timezone.utc)
-p = {"c": 99901, "lo": now - timedelta(hours=24, minutes=30), "hi": now, "hidden": HID, "n": 3}
 with eng.connect() as c:
     c.execute(sa.text("SET statement_timeout = '120s'"))
-    for name, sql in (("legs", Reports._CONS_LEGS), ("bundles", Reports._CONS_BUNDLES)):
-        q = sql if name == "legs" else sql
-        prm = dict(p) if name == "legs" else {"c": 99901, "lo": now - timedelta(days=14)}
-        t = time.monotonic()
-        n = len(c.execute(sa.text(q), prm).all())
-        print(f"== {name}: {n} rows in {time.monotonic() - t:.2f}s", flush=True)
-    t = time.monotonic()
-    print("public trades 24h:", c.execute(sa.text("SELECT count(*) FROM trades WHERE block_time > now() - interval '24 hours'")).scalar(), f"{time.monotonic() - t:.2f}s")
-    t = time.monotonic()
-    print("public wallets:", c.execute(sa.text("SELECT count(*) FROM wallets")).scalar(), f"{time.monotonic() - t:.2f}s")
-    plan = c.execute(sa.text("EXPLAIN (ANALYZE, BUFFERS) " + Reports._CONS_LEGS), p).all()
-    for r in plan:
-        print("PLAN|" + r[0][:220])
+    for span in (timedelta(hours=24, minutes=30), timedelta(days=7, minutes=30)):
+        p = {"c": 99901, "lo": now - span, "hi": now, "hidden": HID, "n": 3}
+        out = {}
+        for name, sql in (("new", NEW), ("old", PublicReports._CONS_LEGS)):
+            t = time.monotonic()
+            rows = [tuple(r) for r in c.execute(sa.text(sql), p).all()]
+            out[name] = rows
+            print(f"== {span.days}d{span.seconds // 3600}h {name}: {len(rows)} rows in {time.monotonic() - t:.2f}s", flush=True)
+        print("   identical:", out["new"] == out["old"], flush=True)
 PY_RUN
     chmod 644 /tmp/elysium-probe/*
     docker compose run -T --rm --no-deps -v /tmp/elysium-probe:/probe:ro --entrypoint python web /probe/run.py 2>&1 | grep -v "^ Container\|Creating\|Created" || true
