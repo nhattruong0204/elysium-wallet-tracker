@@ -699,26 +699,542 @@ PY
     tracker_alive
     ;;
   wallet-probe)
-    # Read-only: alert volume caused by launch wallets; does a stored-data launch rule match the receipt evidence?
+    # Read-only: (A) peak market cap of tokens created by tracked wallets in 7 days; (B) 30-day Consensus backtest.
     need_docker
-    psql_admin -At -F'|' <<'SQL' || true
-SET default_transaction_read_only = on; SET statement_timeout = '120s';
-WITH fac AS (SELECT DISTINCT t.wallet FROM trades t JOIN transactions x ON x.chain_id = t.chain_id AND x.tx_hash = t.tx_hash
-              WHERE t.chain_id = 99901 AND t.kind = 'BUY' AND x.to_address = '0x9c73d179b2911e89a4edc47cfd78765990bc6761' AND t.block_time > now() - interval '7 days')
-SELECT 'DATA','ob', coalesce(payload->>'type', '?'), status, count(*), count(*) FILTER (WHERE payload->>'wallet' IN (SELECT wallet FROM fac))
-  FROM notification_outbox WHERE created_at > now() - interval '7 days' GROUP BY 3, 4;
--- the launch-second rule on stored data only (what the website can compute), against the receipt-proven set
-WITH t AS (SELECT wallet, token, min(block_time) fb FROM trades WHERE chain_id = 99901 AND kind = 'BUY' AND block_time > now() - interval '7 days' GROUP BY 1, 2),
-t0 AS (SELECT token, min(block_time) t0 FROM trades WHERE chain_id = 99901 AND token IN (SELECT token FROM t) GROUP BY 1),
-r AS (SELECT t.wallet, count(*) FILTER (WHERE p.launched_at IS NOT NULL AND t.fb BETWEEN p.launched_at - interval '2 seconds' AND p.launched_at + interval '2 seconds'
-                                         AND t.fb <= t0.t0 + interval '2 seconds') n, count(*) bt
-       FROM t JOIN t0 USING (token) LEFT JOIN token_profiles p ON p.chain_id = 99901 AND p.address = t.token GROUP BY 1),
-fac AS (SELECT t.wallet, count(DISTINCT t.token) n FROM trades t JOIN transactions x ON x.chain_id = t.chain_id AND x.tx_hash = t.tx_hash
-         WHERE t.chain_id = 99901 AND t.kind = 'BUY' AND x.to_address = '0x9c73d179b2911e89a4edc47cfd78765990bc6761' AND t.block_time > now() - interval '7 days' GROUP BY 1)
-SELECT 'DATA','rule', r.wallet, r.n, r.bt, coalesce(fac.n, 0) FROM r LEFT JOIN fac USING (wallet) WHERE r.n >= 1 OR fac.n IS NOT NULL;
-SELECT 'DATA','prof', count(*), count(p.address), count(p.launched_at) FROM (SELECT DISTINCT token FROM trades WHERE chain_id = 99901 AND kind = 'BUY' AND block_time > now() - interval '7 days') q
-  LEFT JOIN token_profiles p ON p.chain_id = 99901 AND p.address = q.token;
+    rm -rf /tmp/elysium-probe && mkdir -p /tmp/elysium-probe && chmod 755 /tmp/elysium-probe
+    psql_admin -At -F'|' > /tmp/elysium-probe/launched.txt <<'SQL' || true
+SET default_transaction_read_only = on; SET statement_timeout = '300s';
+WITH c AS (
+  SELECT t.token, t.wallet, t.block_time FROM trades t JOIN transactions x ON x.chain_id = t.chain_id AND x.tx_hash = t.tx_hash
+   WHERE t.chain_id = 99901 AND t.kind = 'BUY' AND x.to_address = '0x9c73d179b2911e89a4edc47cfd78765990bc6761'
+     AND t.block_time > now() - interval '7 days'),
+f AS (SELECT DISTINCT ON (token) token, wallet, block_time FROM c ORDER BY token, block_time),
+nw AS (SELECT wallet, count(DISTINCT token) AS n FROM c GROUP BY wallet),
+pnl AS (SELECT f.token, sum(CASE WHEN t.kind = 'BUY' THEN t.hype_wei ELSE 0 END) / 1e18 AS buy,
+               sum(CASE WHEN t.kind = 'SELL' THEN t.hype_wei ELSE 0 END) / 1e18 AS sell
+          FROM f JOIN trades t ON t.chain_id = 99901 AND t.token = f.token AND t.wallet = f.wallet
+         WHERE t.kind IN ('BUY', 'SELL') AND t.hype_wei IS NOT NULL GROUP BY f.token)
+SELECT f.token, to_char(f.block_time AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"+00:00"'), f.wallet,
+       round(coalesce(p.buy, 0)::numeric, 4), round(coalesce(p.sell, 0)::numeric, 4), nw.n
+  FROM f JOIN nw USING (wallet) LEFT JOIN pnl p USING (token);
 SQL
+    psql_admin -At -F'|' > /tmp/elysium-probe/deliv.txt <<'SQL' || true
+SET default_transaction_read_only = on;
+SELECT id, token, to_char(trigger_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"+00:00"'), status,
+       coalesce(to_char(sent_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS'), '')
+  FROM consensus_alerts.deliveries ORDER BY id;
+SQL
+    echo "launched rows: $(grep -c '^0x' /tmp/elysium-probe/launched.txt || true); deliveries: $(grep -c '^[0-9]' /tmp/elysium-probe/deliv.txt || true)"
+    grep -v '^0x\|^[0-9]\|^SET$' /tmp/elysium-probe/launched.txt /tmp/elysium-probe/deliv.txt | head -5 || true
+    cat > /tmp/elysium-probe/run.py <<'PY_RUN'
+"""Read-only research, runs as dashboard_ro inside the web image (no writes anywhere).
+
+A) Tokens created by tracked wallets through the eleos create+buy contract in the last 7 days:
+   peak market cap after launch (Agora candles), current cap, against all other new tokens.
+B) 30-day Consensus backtest with the channel's settings: every card, its state when it would
+   have been posted (trigger + 60 s), decision-time features, and the outcome afterwards.
+"""
+import json
+import os
+import sys
+import threading
+import time
+from bisect import bisect_left
+from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta, timezone
+
+import requests
+import sqlalchemy as sa
+
+sys.path.insert(0, "/app")
+from agora_tracker.cohorts import load_cohorts  # noqa: E402
+from agora_tracker.config import IntelConfig  # noqa: E402
+from agora_tracker.launchintel import count_independent  # noqa: E402
+from agora_tracker.web.consensus import Leg, sweep  # noqa: E402
+
+UTC = timezone.utc
+NOW = datetime.now(UTC)
+C = 99901
+WEI = 10**18
+API = "https://api.agoradex.app"
+UA = "elysium-wallet-tracker research (+https://github.com/nhattruong0204/elysium-wallet-tracker)"
+HID = ["0xb47c4c8f73f009cc0c0d3f92b388d13e293f0b65", "0xba876237b0f021a6c6d852d6c26e107997cc5e81",
+       "0xe45a355d9e9cad2ad85f2d03e3ee3102a036acf0"]
+SMART = {"0x05f6ff40ed83b8946dfc95e133131fd7bf82d0e1", "0x91db3c4396966e0d768689cf75f31d60e0422101",
+         "0x2dc94f0db9ad9f662dc211c9486c96fff5d49d1f", "0xfd7e55a555555c2f25053a38ec744de1afea4fa4",
+         "0xfdaf199ae935753c70824f6c73d4877ddceea57b", "0xebd75100ac3e301f41b1c9be71ac4215e5c60188",
+         "0x246730c82b24ebe75c285c84b734e7415a0c8d7e", "0xddbcdf710c21219dc5e56a6e1e8576fb4aa99d96",
+         "0x8ea3b8e19221a145e180b704dbd827bf0deca4b0", "0xe17b2c7a32feee41a71663d428475f7b5be6a01e",
+         "0x775256e60f88c5e0f149db67fbcb738da75143d7", "0xf9ecd9891d670bf37c4ec72e276c563e5c988297",
+         "0x6c39d7e6d7689b7a0d81aff7cc8a346fe054ff13"}
+DAYS = 30
+WINDOW = timedelta(minutes=30)
+POST_DELAY = timedelta(seconds=60)
+
+
+def out(kind, obj):
+    print("DATA|" + kind + "|" + json.dumps(obj, default=str, separators=(",", ":")), flush=True)
+
+
+def ts(x):
+    return x.isoformat(timespec="seconds") if x else None
+
+
+# ---- Agora (polite: 3 workers, backoff, circuit breaker) ------------------------------------
+S = requests.Session()
+S.headers.update({"user-agent": UA, "accept": "application/json"})
+LOCK = threading.Lock()
+STATS = {"req": 0, "err": 0, "429": 0, "stopped": False}
+
+
+def get(path, **params):
+    for attempt in range(4):
+        if STATS["stopped"]:
+            return None
+        try:
+            r = S.get(API + path, params=params, timeout=20)
+            with LOCK:
+                STATS["req"] += 1
+            if r.status_code == 429:
+                with LOCK:
+                    STATS["429"] += 1
+                    if STATS["429"] > 40:
+                        STATS["stopped"] = True
+                time.sleep(5 * (attempt + 1))
+                continue
+            if r.status_code >= 500:
+                time.sleep(2 * (attempt + 1))
+                continue
+            r.raise_for_status()
+            time.sleep(0.15)
+            return r.json()
+        except (requests.RequestException, ValueError):
+            with LOCK:
+                STATS["err"] += 1
+            time.sleep(2 * (attempt + 1))
+    return None
+
+
+def f(v):
+    try:
+        return None if v is None else float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def candles(j):
+    """[(t datetime, o, h, l, c, vol)] from an Agora detail response."""
+    res = []
+    for row in (j or {}).get("candles") or []:
+        try:
+            t = float(row[0])
+            t = t / 1000 if t > 1e11 else t
+            res.append((datetime.fromtimestamp(t, UTC), float(row[1]), float(row[2]), float(row[3]),
+                        float(row[4]), float(row[5]) if len(row) > 5 and row[5] is not None else 0.0))
+        except (TypeError, ValueError, IndexError):
+            continue
+    res.sort()
+    return res
+
+
+def supply_of(j):
+    st = (j or {}).get("stats") or {}
+    p, m = f(st.get("price")), f(st.get("mcap"))
+    return m / p if p and m and p > 0 else None
+
+
+def created_of(j):
+    v = f((j or {}).get("createdAt"))
+    if not v:
+        return None
+    return datetime.fromtimestamp(v / 1000 if v > 1e11 else v, UTC)
+
+
+def peak_after(cs, start, end=None):
+    hs = [(h, c, t) for t, o, h, lo, c, v in cs if t >= start and (end is None or t <= end)]
+    if not hs:
+        return None, None, None
+    h, _, t = max(hs)
+    return h, max(c for _, c, _ in hs), t
+
+
+eng = sa.create_engine(os.environ["DATABASE_URL"])
+t_start = time.monotonic()
+
+# ======================================= A: launched tokens ==================================
+listing, hype_usd = {}, None
+
+
+def part_a():
+    global listing, hype_usd
+    launched = {}
+    for line in open("/probe/launched.txt"):
+        p = line.strip().split("|")
+        if len(p) >= 6 and p[0].startswith("0x"):
+            launched[p[0]] = {"at": datetime.fromisoformat(p[1]), "creator": p[2], "buy": float(p[3] or 0),
+                              "sell": float(p[4] or 0), "n_creator": int(p[5])}
+    print(f"launched tokens read: {len(launched)}")
+
+    listing, hype_usd, totals = {}, None, None
+    for page in range(120):
+        j = get("/api/tokens", sort="volume", window="7d", launchpad="all", limit=200, offset=page * 200)
+        if not j or not isinstance(j.get("tokens"), list):
+            print("list stopped at page", page, "ok" if j else "no response")
+            break
+        hype_usd = f(j.get("hypeUsd")) or hype_usd
+        totals = j.get("totals") or totals
+        items = j["tokens"]
+        for it in items:
+            if isinstance(it, dict) and isinstance(it.get("address"), str):
+                listing[it["address"].lower()] = it
+        last = f(((items[-1].get("stats") or {}).get("volume") or {}).get("7d")) if items else 0
+        if len(items) < 200 or (last is not None and last < 5):
+            break
+    print(f"listing: {len(listing)} tokens (7d volume order), totals={totals}, hypeUsd={hype_usd}")
+    out("meta", {"hype_usd": hype_usd, "totals": totals, "listed": len(listing), "now": ts(NOW)})
+
+
+    def vol7(it):
+        return f((((it or {}).get("stats") or {}).get("volume") or {}).get("7d")) or 0.0
+
+
+    def mcap_now(it):
+        return f(((it or {}).get("stats") or {}).get("mcap"))
+
+
+    VMIN = 40.0      # HYPE of 7-day volume below which a token cannot have reached $100k (checked below)
+    week = NOW - timedelta(days=7)
+    others = [a for a, it in listing.items() if a not in launched and (created_of(it) or NOW) >= week]
+
+    want_l = sorted((a for a in launched if vol7(listing.get(a)) >= VMIN), key=lambda a: -vol7(listing.get(a)))
+    want_o = sorted((a for a in others if vol7(listing.get(a)) >= VMIN), key=lambda a: -vol7(listing.get(a)))[:400]
+    print(f"detail fetch: {len(want_l)} launched + {len(want_o)} other new tokens with >= {VMIN} HYPE 7d volume")
+
+    details = {}
+
+
+    def fetch(a):
+        details[a] = get(f"/api/tokens/{a}", range="7d")
+
+
+    with ThreadPoolExecutor(3) as ex:
+        list(ex.map(fetch, want_l + want_o))
+    print(f"agora requests so far: {STATS}")
+
+
+    def summarize(addr, it, j, at):
+        cs = candles(j)
+        sup = supply_of(j) or supply_of(it)
+        h, c, pt = peak_after(cs, (at or NOW - timedelta(days=7)) - timedelta(minutes=30))
+        return {"token": addr, "vol7d": round(vol7(it), 1), "mc_now": mcap_now(it) or mcap_now(j),
+                "peak_mc": h * sup if h and sup else None, "peak_close_mc": c * sup if c and sup else None,
+                "peak_after_min": round((pt - at).total_seconds() / 60) if pt and at else None,
+                "n_candles": len(cs), "sym": (it or j or {}).get("symbol"), "pad": (it or j or {}).get("launchpad")}
+
+
+    for a, L in launched.items():
+        it, j = listing.get(a), details.get(a)
+        r = summarize(a, it, j, L["at"])
+        r.update({"at": ts(L["at"]), "creator": L["creator"], "n_creator": L["n_creator"],
+                  "creator_pnl": round(L["sell"] - L["buy"], 2), "listed": it is not None,
+                  "detail": j is not None})
+        out("lt", r)
+    for a in want_o:
+        it, j = listing.get(a), details.get(a)
+        r = summarize(a, it, j, created_of(it) or created_of(j))
+        r.update({"at": ts(created_of(it) or created_of(j)), "detail": j is not None})
+        out("ot", r)
+    for a in others:
+        if a not in want_o:
+            it = listing.get(a)
+            out("ot0", {"token": a, "vol7d": round(vol7(it), 1), "mc_now": mcap_now(it), "at": ts(created_of(it))})
+    print(f"A done in {time.monotonic() - t_start:.0f}s")
+
+
+try:
+    part_a()
+except Exception:  # noqa: BLE001
+    import traceback
+    traceback.print_exc()
+
+# ======================================= B: Consensus backtest ===============================
+since = NOW - timedelta(days=DAYS)
+LEGS = """
+SELECT t.token, t.wallet, t.kind, t.hype_wei, t.qty, t.block_time, t.block_number, t.tx_hash
+FROM trades t
+WHERE t.chain_id = :c AND t.kind IN ('BUY', 'SELL') AND t.confidence = 'high'
+  AND t.hype_wei IS NOT NULL AND t.hype_wei > 0
+  AND t.block_time >= :lo AND t.block_time < :hi
+  AND NOT (t.token = ANY(CAST(:hidden AS text[])))
+  AND t.token IN (
+    SELECT b.token FROM trades b
+    WHERE b.chain_id = :c AND b.kind = 'BUY' AND b.confidence = 'high'
+      AND b.block_time >= :lo AND b.block_time < :hi
+    GROUP BY b.token HAVING count(DISTINCT b.wallet) >= 3)
+ORDER BY t.token, t.block_time, t.id"""
+BUNDLES = """
+SELECT b.wallet FROM trades b
+JOIN (SELECT token, block_number FROM trades
+      WHERE chain_id = :c AND kind = 'BUY' AND confidence = 'high' AND block_time >= :lo AND block_time < :hi
+      GROUP BY token, block_number HAVING count(DISTINCT wallet) >= 3) g
+  ON g.token = b.token AND g.block_number = b.block_number
+WHERE b.chain_id = :c AND b.kind = 'BUY' AND b.confidence = 'high' AND b.block_time >= :lo AND b.block_time < :hi
+GROUP BY b.wallet HAVING count(DISTINCT (b.token, b.block_number)) >= 5"""
+LAUNCH = """
+WITH fb AS (SELECT wallet, token, min(block_time) AS fb FROM trades
+             WHERE chain_id = :c AND kind = 'BUY' AND block_time >= :since GROUP BY wallet, token),
+t0 AS (SELECT token, min(block_time) AS t0 FROM trades WHERE chain_id = :c AND token IN (SELECT token FROM fb) GROUP BY token)
+SELECT fb.wallet, fb.token, fb.fb FROM fb JOIN t0 ON t0.token = fb.token
+  JOIN token_profiles p ON p.chain_id = :c AND p.address = fb.token
+ WHERE p.launched_at IS NOT NULL
+   AND fb.fb BETWEEN p.launched_at - interval '2 seconds' AND p.launched_at + interval '2 seconds'
+   AND fb.fb <= t0.t0 + interval '2 seconds'"""
+
+with eng.connect() as c:
+    c.execute(sa.text("SET statement_timeout = '600s'"))
+    rows = c.execute(sa.text(LEGS), {"c": C, "lo": since - WINDOW, "hi": NOW, "hidden": HID}).mappings().all()
+    print(f"legs: {len(rows)} in {time.monotonic() - t_start:.0f}s")
+    anchors = [NOW - timedelta(days=d) for d in range(0, DAYS + 4, 3)]
+    bundle_at = {}
+    for a in anchors:
+        bundle_at[a] = {r[0] for r in c.execute(sa.text(BUNDLES), {"c": C, "lo": a - timedelta(days=14), "hi": a})}
+    print("bundles per anchor:", [len(v) for v in bundle_at.values()])
+    cohort_at = {}
+    for a in anchors:
+        try:
+            co = load_cohorts(c, table="public_api.trades", chain_id=C, ic=IntelConfig(), skip_tokens=HID, now=a)
+            cohort_at[a] = {w for k in co for w in k.wallets}
+        except Exception as e:  # noqa: BLE001
+            print("cohorts failed at", a, type(e).__name__)
+            c.rollback()
+            c.execute(sa.text("SET statement_timeout = '600s'"))
+            cohort_at[a] = set()
+    print("cohort wallets per anchor:", [len(v) for v in cohort_at.values()])
+    lrows = c.execute(sa.text(LAUNCH), {"c": C, "since": since - timedelta(days=8)}).all()
+    print(f"launch-second rows: {len(lrows)}")
+    prof = {r[0]: (r[1], r[2]) for r in c.execute(sa.text(
+        "SELECT address, launched_at, launchpad FROM token_profiles WHERE chain_id = :c"), {"c": C})}
+    fx = [(r[0], float(r[1])) for r in c.execute(sa.text(
+        "SELECT observed_at, hype_usd FROM hype_usd_rates WHERE observed_at >= :lo ORDER BY observed_at"),
+        {"lo": since - timedelta(days=2)})]
+
+launch_by_wallet = defaultdict(list)     # wallet -> [(time, token)]
+launch_by_token = defaultdict(set)       # token -> {(wallet, time)}
+for w, tok, t in lrows:
+    launch_by_wallet[w].append((t, tok))
+    launch_by_token[tok].add((w, t))
+
+
+def launches_before(w, t):
+    return sum(1 for x, _ in launch_by_wallet.get(w, ()) if t - timedelta(days=7) <= x <= t)
+
+
+def anchor_after(t):
+    ok = [a for a in anchors if a >= t]
+    return min(ok) if ok else max(anchors)
+
+
+def fx_at(t):
+    if not fx:
+        return hype_usd
+    i = bisect_left([x for x, _ in fx], t)
+    cand = [fx[j] for j in (i - 1, i) if 0 <= j < len(fx)]
+    return min(cand, key=lambda r: abs((r[0] - t).total_seconds()))[1]
+
+
+def same_size_groups(net, wallets, first, tol=0.01, min_group=3, within_s=120):
+    xs = sorted((net[w], w) for w in wallets if net.get(w, 0) > 0)
+    res, i, g = {}, 0, 0
+    while i < len(xs):
+        j = i
+        while j + 1 < len(xs) and xs[j + 1][0] <= xs[i][0] * (1 + tol):
+            j += 1
+        grp = [w for _, w in xs[i:j + 1]]
+        times = [first[w][0] for w in grp]
+        if len(grp) >= min_group and (max(times) - min(times)).total_seconds() <= within_s:
+            res.update({w: g for w in grp})
+            g += 1
+        i = j + 1
+    return res
+
+
+by_token = defaultdict(list)
+raw = defaultdict(list)
+for r in rows:
+    wei = int(r["hype_wei"])
+    sign = 1 if r["kind"] == "BUY" else -1
+    by_token[r["token"]].append(Leg(r["wallet"], sign * wei, r["block_time"], int(r["block_number"]), r["tx_hash"]))
+    raw[r["token"]].append(r)
+
+cards = []
+for tok, legs in by_token.items():
+    for ev in sweep(tok, legs, window=WINDOW, min_traders=3, min_wei=0, bundles=set(), independent=False):
+        if ev.trigger_at < since:
+            continue
+        cut = ev.trigger_at + POST_DELAY
+        pre = [x for x in legs if x.ts <= cut]
+        evs = [e for e in sweep(tok, pre, window=WINDOW, min_traders=3, min_wei=0, bundles=set(),
+                                independent=False) if e.trigger_at == ev.trigger_at]
+        if not evs:
+            continue
+        e0 = evs[-1]
+        members = e0.members(0)
+        if not members:
+            continue
+        cards.append((tok, ev, e0, members))
+print(f"cards: {len(cards)}")
+
+deliv = []
+for line in open("/probe/deliv.txt"):
+    p = line.strip().split("|")
+    if len(p) >= 5 and p[1].startswith("0x"):
+        deliv.append({"id": int(p[0]), "token": p[1], "at": datetime.fromisoformat(p[2]), "status": p[3], "sent": p[4]})
+
+# market data for card tokens: snapshots + Agora candles
+toks = sorted({k[0] for k in cards})
+snaps = defaultdict(list)
+with eng.connect() as c:
+    c.execute(sa.text("SET statement_timeout = '300s'"))
+    for r in c.execute(sa.text("""
+        SELECT token, captured_at, mcap_hype, vol_1h_hype, change_1h, buys_24h, trades_24h, last_trade_at
+          FROM token_market_snapshots WHERE chain_id = :c AND token = ANY(:t) AND captured_at >= :lo
+         ORDER BY token, captured_at"""), {"c": C, "t": toks, "lo": since - timedelta(days=1)}):
+        snaps[r[0]].append((r[1], f(r[2]), f(r[3]), f(r[4]), r[5], r[6], r[7]))
+    decs = {r[0]: int(r[1]) for r in c.execute(sa.text(
+        "SELECT address, decimals FROM token_metadata WHERE chain_id = :c AND address = ANY(:t)"), {"c": C, "t": toks})}
+cdet = {}
+
+
+def fetch_card(a):
+    cdet[(a, "all")] = get(f"/api/tokens/{a}", range="all")
+    cdet[(a, "7d")] = get(f"/api/tokens/{a}", range="7d")
+
+
+with ThreadPoolExecutor(3) as ex:
+    list(ex.map(fetch_card, toks))
+print(f"agora requests total: {STATS}")
+
+
+def snap_near(tok, t, near=1800):
+    best = None
+    for s in snaps.get(tok, ()):
+        if s[1] is None:
+            continue
+        d = abs((s[0] - t).total_seconds())
+        if d <= near and (best is None or d < best[0]):
+            best = (d, s)
+    return best[1] if best else None
+
+
+def snap_before(tok, t):
+    prev = [s for s in snaps.get(tok, ()) if s[0] <= t]
+    return prev[-1] if prev else None
+
+
+def snap_peak(tok, start, hours):
+    end = start + timedelta(hours=hours) if hours else NOW
+    v = [s[1] for s in snaps.get(tok, ()) if start <= s[0] <= end and s[1] is not None]
+    return max(v) if v else None
+
+
+def snap_min(tok, start, hours):
+    end = start + timedelta(hours=hours)
+    v = [s[1] for s in snaps.get(tok, ()) if start <= s[0] <= end and s[1] is not None]
+    return min(v) if v else None
+
+
+trig_count = defaultdict(int)
+
+
+def card_row(tok, ev, e0, members):
+    t = ev.trigger_at
+    a = anchor_after(t)
+    bundles, cohort = bundle_at[a], cohort_at[a]
+    net = dict(e0.net)
+    first = dict(e0.first)
+    buyers = [(w, first[w][1]) for w in members]
+    indep_main = count_independent(buyers, bundles)
+    sized = same_size_groups(net, members, first)
+    rest = [(w, b) for w, b in buyers if w not in sized]
+    operators = count_independent(rest, bundles) + len(set(sized.values()))
+    per_block = defaultdict(int)
+    for _, b in buyers:
+        per_block[b] += 1
+    lmem = [w for w in members if launches_before(w, t) >= 3]
+    l_tok = any(launches_before(w, t) >= 3 for w, _ in launch_by_token.get(tok, ()))
+    creators = [w for w, _ in launch_by_token.get(tok, ())]
+    launched_at, pad = prof.get(tok, (None, None))
+    # entry price: the trigger leg's execution price (HYPE per token unit, 18 decimals assumed)
+    trig = [r for r in raw[tok] if r["tx_hash"] == ev.trigger_tx and r["kind"] == "BUY"]
+    px = (int(trig[0]["hype_wei"]) / int(trig[0]["qty"]) * 10 ** (decs.get(tok, 18) - 18)) \
+        if trig and int(trig[0]["qty"]) > 0 else None
+    jall, j7 = cdet.get((tok, "all")), cdet.get((tok, "7d"))
+    sup = supply_of(jall) or supply_of(j7)
+    cs = candles(j7) if (NOW - t) < timedelta(days=6.5) and candles(j7) else candles(jall)
+    rate = fx_at(t)
+    sn = snap_near(tok, t)
+    sb = snap_before(tok, t)
+    mc_exec = px * sup if px and sup else None
+    res = {"token": tok, "sym": (jall or j7 or {}).get("symbol"), "pad": pad or (jall or {}).get("launchpad"),
+           "trigger_at": ts(t), "trigger_tx": ev.trigger_tx, "nth_trigger": trig_count[tok],
+           "delivered": [d["id"] for d in deliv if d["token"] == tok and abs((d["at"] - t).total_seconds()) < 2],
+           "traders": len(members), "traders_final": len(ev.members(0)), "indep_main": indep_main,
+           "operators": operators, "same_size": len(sized), "same_block": sum(1 for _, b in buyers if per_block[b] > 1),
+           "bundle_m": sum(1 for w in members if w in bundles), "cohort_m": sum(1 for w in members if w in cohort),
+           "launcher_m": len(lmem), "launcher_tok": l_tok, "creator_tracked": bool(creators),
+           "smart_m": sum(1 for w in members if w in SMART), "net_hype": round(sum(net[w] for w in members) / WEI, 3),
+           "nets": sorted(round(net[w] / WEI, 3) for w in members),
+           "spread_s": round((t - first[members[0]][0]).total_seconds()),
+           "age_min": round((t - launched_at).total_seconds() / 60) if launched_at else None,
+           "early_m": sum(1 for w in members if launched_at and (first[w][0] - launched_at).total_seconds() <= 120),
+           "fx": rate, "px": px, "supply": sup,
+           "mc_exec_usd": round(mc_exec * rate) if mc_exec and rate else None,
+           "mc_snap_usd": round(sn[1] * rate) if sn and rate else None,
+           "snap_vol1h": sb[2] if sb else None, "snap_ch1h": sb[3] if sb else None,
+           "snap_buys24": sb[4] if sb else None, "members": members}
+    # outcomes (look-ahead, for evaluation only)
+    for hrs in (1, 6, 24, 72, None):
+        h, cl, _ = peak_after(cs, t - timedelta(minutes=1), t + timedelta(hours=hrs) if hrs else None)
+        key = f"{hrs}h" if hrs else "all"
+        res[f"pk_{key}"] = round(h / px, 3) if h and px else None
+        res[f"pkc_{key}"] = round(cl / px, 3) if cl and px else None
+        sp = snap_peak(tok, t, hrs)
+        res[f"spk_{key}"] = round(sp / sn[1], 3) if sp and sn and sn[1] else None
+    lows = [lo for tt, o, h, lo, cl, v in cs if t <= tt <= t + timedelta(hours=24)]
+    res["min_24h"] = round(min(lows) / px, 3) if lows and px else None
+    sm = snap_min(tok, t, 24)
+    res["smin_24h"] = round(sm / sn[1], 3) if sm and sn and sn[1] else None
+    st = (jall or j7 or {}).get("stats") or {}
+    pnow = f(st.get("price"))
+    res["now_x"] = round(pnow / px, 3) if pnow and px else None
+    res["mc_now_usd"] = round(f(st.get("mcap")) * hype_usd) if f(st.get("mcap")) and hype_usd else None
+    res["last_trade"] = st.get("lastTradeAt")
+    res["n_candles"] = len(cs)
+    at_c = [cl for tt, o, h, lo, cl, v in cs if tt <= t]
+    res["px_vs_candle"] = round(px / at_c[-1], 3) if at_c and px else None
+    # how members exited: share of members whose net fell by half within 1 h / 6 h of the trigger
+    for hrs in (1, 6):
+        lim = t + timedelta(hours=hrs)
+        later = defaultdict(int)
+        for r in raw[tok]:
+            if t < r["block_time"] <= lim:
+                later[r["wallet"]] += (1 if r["kind"] == "BUY" else -1) * int(r["hype_wei"])
+        res[f"exit_{hrs}h"] = sum(1 for w in members if net[w] > 0 and (net[w] + later[w]) <= net[w] / 2)
+    return res
+
+
+for tok, ev, e0, members in sorted(cards, key=lambda k: k[1].trigger_at):
+    trig_count[tok] += 1
+    try:
+        out("card", card_row(tok, ev, e0, members))
+    except Exception as e:  # noqa: BLE001
+        print("card failed", tok, ev.trigger_at, type(e).__name__, e)
+print(f"B done in {time.monotonic() - t_start:.0f}s; agora {STATS}")
+PY_RUN
+    chmod 644 /tmp/elysium-probe/*
+    docker compose run -T --rm --no-deps -v /tmp/elysium-probe:/probe:ro --entrypoint python web /probe/run.py 2>&1 | grep -v "^ Container\|Creating\|Created" || true
+    rm -rf /tmp/elysium-probe
     ;;
   ui-smoke)
     docker compose run --rm --no-deps ui --ui-smoke

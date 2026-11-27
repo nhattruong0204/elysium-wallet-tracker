@@ -1,3 +1,1 @@
 action=wallet-probe
-commit=ops-only read-only probe
-requested=2026-11-27 launcher alert volume + rule validation (read-only)
