@@ -699,15 +699,43 @@ PY
     tracker_alive
     ;;
   wallet-probe)
-    # Read-only: why the Consensus sender is still unhealthy, table statistics, web timing.
+    # Read-only: the public_api snapshot view and the Consensus market-cap lookup plan.
     need_docker
-    echo "SENDERLOG|begin"
-    docker logs --since 20m elysium-consensus-alerts 2>&1 | grep -vE 'api\.telegram\.org' | grep -E "Error|Exception|Timeout|Cancel|timeout|consensus|WARNING|ERROR|INFO" | grep -vE "^\s+(SELECT|FROM|WHERE|AND|ORDER|UNION|LEFT|JOIN|\(|\))" | tail -40 | cut -c1-260 | sed 's/^/SENDERLOG|/' || true
-    psql_admin -At -F'|' -c "SELECT 'STAT', relname, n_live_tup, n_mod_since_analyze, last_analyze, last_autoanalyze FROM pg_stat_user_tables WHERE relname IN ('trades','token_market_snapshots','hype_usd_rates','realized_pnl','token_profiles') ORDER BY relname" || true
-    psql_admin -At -F'|' -c "SELECT 'SET', name, setting FROM pg_settings WHERE name IN ('autovacuum','autovacuum_analyze_scale_factor','autovacuum_analyze_threshold','autovacuum_naptime')" || true
-    for l in 97 98 99; do curl -s -o /dev/null -m 30 -w "WEB|activity limit=$l %{http_code} %{time_total}s\n" "http://127.0.0.1:8100/api/v1/activity?range=24h&limit=$l" || true; done
-    curl -s -o /dev/null -m 30 -w "WEB|overview %{http_code} %{time_total}s\n" "http://127.0.0.1:8100/api/v1/overview" || true
-    docker logs --since 20m elysium-web 2>&1 | grep -E "timeout|Timeout|Cancel|503|ERROR" | tail -12 | cut -c1-260 | sed 's/^/WEBLOG|/' || true
+    psql_admin <<'SQL_Q' 2>&1 | cut -c1-400 | sed 's/^/PLAN|/' || true
+\pset format unaligned
+\pset fieldsep '|'
+\pset tuples_only on
+SELECT 'VIEWDEF', pg_get_viewdef('public_api.token_market_snapshots'::regclass, true);
+SELECT 'VIEWDEF2', c.relname, pg_get_viewdef(c.oid, true) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public_api' AND c.relkind IN ('v','m') AND c.relname ILIKE '%public_token%';
+BEGIN READ ONLY;
+SET LOCAL statement_timeout = '90s';
+SET LOCAL search_path = public_api, public;
+CREATE TEMP TABLE IF NOT EXISTS _x AS SELECT 1;
+ROLLBACK;
+BEGIN READ ONLY;
+SET LOCAL statement_timeout = '90s';
+SET LOCAL search_path = public_api, public;
+EXPLAIN (ANALYZE, BUFFERS, TIMING OFF, SUMMARY ON)
+WITH k AS (SELECT token, max(block_time) AS ts FROM public.trades WHERE chain_id = 999 AND block_time > now() - interval '24 hours' GROUP BY token ORDER BY count(*) DESC LIMIT 34),
+     a AS (SELECT array_agg(row_number) AS ids, array_agg(token) AS toks, array_agg(ts) AS ts FROM (SELECT (row_number() OVER ())::bigint AS row_number, token, ts FROM k) z)
+SELECT x.id, near.captured_at, near.mcap_hype
+FROM a, unnest(a.ids, a.toks, a.ts) AS x(id, token, ts)
+LEFT JOIN LATERAL (
+    SELECT c.captured_at, c.mcap_hype FROM (
+        (SELECT s.captured_at, s.mcap_hype FROM token_market_snapshots s
+          WHERE s.chain_id = 999 AND s.token = x.token AND s.mcap_hype IS NOT NULL
+            AND s.captured_at <= x.ts AND s.captured_at > x.ts - make_interval(secs => 1800)
+          ORDER BY s.captured_at DESC LIMIT 1)
+        UNION ALL
+        (SELECT s.captured_at, s.mcap_hype FROM token_market_snapshots s
+          WHERE s.chain_id = 999 AND s.token = x.token AND s.mcap_hype IS NOT NULL
+            AND s.captured_at > x.ts AND s.captured_at < x.ts + make_interval(secs => 1800)
+          ORDER BY s.captured_at ASC LIMIT 1)
+    ) c ORDER BY abs(extract(epoch FROM c.captured_at - x.ts)) LIMIT 1
+) near ON true;
+ROLLBACK;
+SELECT 'CHAIN', chain_id, count(*) FROM public.trades WHERE block_time > now() - interval '1 hour' GROUP BY chain_id;
+SQL_Q
     ;;
   ui-smoke)
     docker compose run --rm --no-deps ui --ui-smoke
