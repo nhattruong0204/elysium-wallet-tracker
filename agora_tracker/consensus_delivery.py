@@ -38,9 +38,11 @@ PATTERN = re.compile(r"0x[0-9a-f]{40}\Z")
 LOCK_ID = 0x434F4E53   # 'CONS', separate from the tracker and Stage C locks
 POLL_SECONDS = 45
 MAX_EVENTS = 10
-# Quality gate (review of 2026-11-17..26: of 14 cards posted, the 4 driven by one coordinated
-# group and the one at a $4k market cap all died; the 7 with 3 independent wallets at $20k+
-# went 1.9x-8x, SMOOR fell 45%). Env overrides on the consensus-alerts service.
+# Quality gate. 30-day replay with the channel's settings (wiki: Launcher tokens and a 30-day
+# Consensus replay, 2026-11-27): 439 judged cards, 22% reached 2x within 24 h and 45% were trash.
+# With this gate 212 are kept: 30% winners, 33% trash, two thirds of the winners kept. Cards
+# under $10k market cap were 76% trash and those with 0-1 independent operator 55%.
+# Env overrides on the consensus-alerts service.
 MIN_INDEPENDENT = int(os.environ.get("CONSENSUS_MIN_INDEPENDENT", "2"))
 MIN_MCAP_USD = float(os.environ.get("CONSENSUS_MIN_MCAP_USD", "10000"))
 UNKNOWN_MCAP_MIN_INDEPENDENT = 3   # no market data at all: only a clearly broad consensus
