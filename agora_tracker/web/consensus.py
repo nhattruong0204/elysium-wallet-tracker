@@ -195,19 +195,41 @@ def sweep(token: str, legs: list[Leg], *, window: timedelta, min_traders: int, m
     return out
 
 
+def legs_by_token(rows: list[dict[str, Any]]) -> dict[str, list[Leg]]:
+    """Verified BUY/SELL rows (ordered by token, then time) -> signed legs per token."""
+    by_token: dict[str, list[Leg]] = defaultdict(list)
+    for r in rows:
+        wei = int(r["hype_wei"])
+        by_token[r["token"]].append(Leg(r["wallet"], wei if r["kind"] == "BUY" else -wei,
+                                        r["block_time"], int(r["block_number"]), r["tx_hash"]))
+    return by_token
+
+
+def count_prior_events(cards: list[dict[str, Any]], rows: list[dict[str, Any]],
+                       p: ConsensusParams, bundles: set[str], *, days: float) -> None:
+    """Set card["prior_events"]: how many earlier consensus events (same thresholds) the token
+    had in the `days` before this card's trigger. `rows`: the card tokens' legs over at least
+    that span. 30-day replay (2026-11-27): a token's 3rd+ consensus within 7 days went 2x once
+    in 22 cards that passed the quality gate. Pure; changes the cards in place."""
+    window = timedelta(minutes=p.window_min)
+    span = timedelta(days=days)
+    triggers = {token: [ev.trigger_at for ev in sweep(
+        token, legs, window=window, min_traders=p.min_traders, min_wei=int(p.min_net_hype * WEI),
+        bundles=bundles, independent=p.independent)]
+        for token, legs in legs_by_token(rows).items()}
+    for k in cards:
+        at = k["trigger_at"]
+        k["prior_events"] = sum(1 for t in triggers.get(k["token"], ()) if at - span <= t < at)
+
+
 def build_cards(rows: list[dict[str, Any]], p: ConsensusParams, since: datetime,
                 bundles: set[str]) -> list[dict[str, Any]]:
     """rows: verified BUY/SELL legs (token, wallet, kind, hype_wei, block_time, block_number,
     tx_hash) ordered by token then time. Returns cards newest first (trigger inside range)."""
     window = timedelta(minutes=p.window_min)
     min_wei = int(p.min_net_hype * WEI)
-    by_token: dict[str, list[Leg]] = defaultdict(list)
-    for r in rows:
-        wei = int(r["hype_wei"])
-        by_token[r["token"]].append(Leg(r["wallet"], wei if r["kind"] == "BUY" else -wei,
-                                        r["block_time"], int(r["block_number"]), r["tx_hash"]))
     cards: list[dict[str, Any]] = []
-    for token, legs in by_token.items():
+    for token, legs in legs_by_token(rows).items():
         for ev in sweep(token, legs, window=window, min_traders=p.min_traders, min_wei=min_wei,
                         bundles=bundles, independent=p.independent):
             if ev.trigger_at < since:

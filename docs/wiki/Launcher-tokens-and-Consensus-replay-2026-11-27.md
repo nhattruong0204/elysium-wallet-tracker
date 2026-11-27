@@ -99,7 +99,7 @@ The mean multiple uses a simple plan: sell at 2x if it is reached within 24 h, o
 | **PR #138** (no launcher token, ≤1 cohort wallet, 2+ independent after launchers, MC ≥ $10k, or 3+ independent when MC is unknown) | 212 | 30% | 33% | 66% | 1.02 | 11 / 7 / 1 |
 | #138 + skip 3rd+ card on a token + skip falling 1h price | 169 | 36% | 33% | 62% | 1.10 | 9 / 6 / 1 |
 
-The second refinement was found on the same data it is scored on, so it should run in shadow mode (logged, not enforced) for 1-2 weeks before it is switched on.
+The second refinement was found on the same data it is scored on, so it ships in **log-only mode** with PR #138 (`CONSENSUS_EXTRA_RULES=log`). The sender still posts those cards and logs `consensus: shadow rule would skip …`. After 1-2 weeks, compare those cards' outcomes with the rest, then switch to `enforce` or drop the rules.
 
 Since 11-17, PR #138 would have:
 

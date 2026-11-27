@@ -107,6 +107,7 @@ def test_consensus_page_and_api_show_public_wallets_only(seeded, make_live):  # 
     card = j["cards"][0]
     assert card["token"] == TOK_PUB and card["traders"] == 2
     assert {m["wallet"] for m in card["members"]} == {PUB1, PUB2}      # PRIV's 50 HYPE is invisible
+    assert card["prior_events"] == 0 and "change_1h" in card       # inputs of the log-only rules
     body = web.get("/api/v1/consensus", params=q).text
     assert PRIV not in body and PRIVATE_LABEL not in body
 
