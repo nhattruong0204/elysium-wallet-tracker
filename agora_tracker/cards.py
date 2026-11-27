@@ -310,7 +310,8 @@ def _pnl_usd(hype_v: float, rate: float | None, approx: bool = False) -> str:
 
 
 def supply(info: TokenInfo | None) -> float | None:
-    """Token supply implied by Agora's market cap / price (both in HYPE)."""
+    """Token supply implied by market cap / price (both in HYPE); for Montra tokens that is
+    supply less burned, Montra's own definition."""
     if info is None or not info.mcap_hype or not info.price_hype:
         return None
     return info.mcap_hype / info.price_hype

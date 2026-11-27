@@ -125,7 +125,7 @@ class Collector:
     def _row(self, x: TokenInfo, now: datetime, synced_at: datetime | None,
              head: int | None) -> dict[str, Any]:
         return {"chain_id": self.store.chain_id, "token": x.address, "captured_at": now,
-                "source": "agora", "source_synced_at": synced_at, "source_head": head,
+                "source": x.source, "source_synced_at": synced_at, "source_head": head,
                 "price_hype": _dec(x.price_hype), "mcap_hype": _dec(x.mcap_hype),
                 "vol_1h_hype": _dec(x.vol_1h_hype), "vol_24h_hype": _dec(x.vol_24h_hype),
                 "change_1h": _dec(x.change_1h), "change_24h": _dec(x.change_24h),
