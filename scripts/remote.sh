@@ -699,8 +699,8 @@ PY
     tracker_alive
     ;;
   wallet-probe)
-    # Read-only: Agora quote fields (base, kntqHype) vs Montra for KNTQ- and HYPE-quoted tokens.
-    cat > /tmp/probe_a.py <<'PY_RUN'
+    # Read-only: how Agora labels tokens quoted in MONTRA or other assets.
+    cat > /tmp/probe_b.py <<'PY_RUN'
 import json, time, urllib.request
 UA = {"user-agent": "elysium-wallet-tracker research", "accept": "application/json"}
 def get(url):
@@ -708,28 +708,23 @@ def get(url):
         out = json.loads(r.read())
     time.sleep(0.6)
     return out
-A = "https://api.agoradex.app"
-M = "https://api.montramarkets.xyz"
-for tok in ("0x56e1e08fe536de0f18dcee008f57068788d61d33", "0xe2b8bcb648a842127efe2a5a773b2628c11f0a2b", "0x547a2a9c5af6e4372ead794e80eaf3f42dbbaaac"):
+A, M = "https://api.agoradex.app", "https://api.montramarkets.xyz"
+for tok in ("0x345d1e58ea14d2bfeeaadcb9d5c13aa74d30c590", "0xb0b3ac8801f6b3904f51a0ed2e2953d0d540280c", "0x2c41ff518f0a9ea28fab7047055545c5ff3552d3", "0x063f7cc5339f92a5fd7baf3d22233044fda1f327"):
     g = get(A + "/api/tokens/" + tok + "?range=1h")
     st = g.get("stats") or {}
-    print("DETAIL|%s|%s|base=%s|kntqHype=%s|price=%s|mcap=%s|volume=%s|liq=%s|tax=%s|venues=%s" % (
-        tok[:10], g.get("symbol"), json.dumps(g.get("base")), g.get("kntqHype"), st.get("price"), st.get("mcap"),
-        json.dumps(st.get("volume")), st.get("liquidity"), json.dumps(g.get("tax"))[:80], json.dumps(g.get("venues"))[:200]))
-    print("STATKEYS|" + ",".join(sorted(st.keys())))
+    extra = {k: g.get(k) for k in g if k.lower().endswith("hype") or k.lower().endswith("usd") or k in ("base", "quote", "pair")}
     m = get(M + "/api/tokens/" + tok)
     q = m.get("quote") or {}
-    print("MONTRA|%s|quote=%s|price=%s|mc=%s|mcUsd=%s|vol24hUsd=%s|vol24h=%s" % (tok[:10], q.get("symbol"), m.get("price"), m.get("marketCap"), m.get("marketCapUsd"), m.get("volume24hUsd"), m.get("volume24h")))
-lst = get(A + "/api/tokens?sort=volume&window=24h&launchpad=all&limit=50")
-print("LISTTOP|" + ",".join(sorted(lst.keys())) + "|hypeUsd=%s|kntqHype=%s" % (lst.get("hypeUsd"), lst.get("kntqHype")))
-items = lst.get("tokens") or []
-print("ITEMKEYS|" + ",".join(sorted(items[0].keys())))
+    print("Q|%s|%s|agora base=%s extra=%s price=%s mcap=%s|montra quote=%s price=%s mc=%s mcUsd=%s quoteUsd=%s" % (
+        tok[:10], g.get("symbol"), json.dumps(g.get("base")), json.dumps(extra), st.get("price"), st.get("mcap"),
+        q.get("symbol"), m.get("price"), m.get("marketCap"), m.get("marketCapUsd"), q.get("usd")))
+lst = get(A + "/api/tokens?sort=new&window=24h&launchpad=montra&limit=200")
 from collections import Counter
-print("BASES|" + json.dumps(Counter(json.dumps(i.get("base"), sort_keys=True) for i in items).most_common(6)))
-print("PADS_KNTQ|" + json.dumps(Counter((i.get("launchpad"), json.dumps(i.get("base"), sort_keys=True)) for i in items).most_common(12)))
+print("BASES_MONTRA_NEW|" + json.dumps(Counter(str(i.get("base")) for i in lst.get("tokens") or []).most_common()))
+print("TOPKEYS|" + ",".join(sorted(lst.keys())))
 PY_RUN
-    python3 /tmp/probe_a.py 2>&1 | cut -c1-1200 || true
-    rm -f /tmp/probe_a.py
+    python3 /tmp/probe_b.py 2>&1 | cut -c1-900 || true
+    rm -f /tmp/probe_b.py
     ;;
   ui-smoke)
     docker compose run --rm --no-deps ui --ui-smoke
