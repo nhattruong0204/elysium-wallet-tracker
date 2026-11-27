@@ -698,22 +698,6 @@ PY
     consensus_state
     tracker_alive
     ;;
-  wallet-probe)
-    # Read-only check after the PR #139 deploy: Telegram cards by kind, Activity API kinds.
-    need_docker
-    psql_admin -At -F'|' <<'SQL' || true
-SET default_transaction_read_only = on;
-SELECT 'DATA','since', coalesce(payload->>'type','?'), coalesce(payload->>'kind',''), status, count(*) FROM notification_outbox
- WHERE created_at > '2026-11-27 05:22:00+00' GROUP BY 3, 4, 5 ORDER BY 6 DESC;
-SELECT 'DATA','legs', kind, count(*) FROM trades WHERE chain_id = 99901 AND created_at > '2026-11-27 05:22:00+00' GROUP BY 3 ORDER BY 4 DESC;
-SQL
-    docker inspect elysium-wallet-tracker --format '{{range .Config.Env}}{{println .}}{{end}}' | grep -E '^ALERTS_KINDS' || echo "  ALERTS_KINDS not set: code default (BUY, SELL)"
-    for q in "range=1h&limit=100" "range=24h&limit=100&action=transfer_in"; do
-      curl -s -m 40 "http://127.0.0.1:8100/api/v1/activity?$q" | python3 -c 'import json,sys,collections; j=json.load(sys.stdin); print("  activity '"$q"':", dict(collections.Counter(i["kind"] for i in j.get("items", []))))' || true
-    done
-    curl -s -m 40 -o /dev/null -w '  /activity -> %{http_code} %{time_total}s\n' http://127.0.0.1:8100/activity || true
-    curl -s -m 40 http://127.0.0.1:8100/activity | grep -o '<option value="[a-z_]*"[^>]*>[^<]*' | head -5 || true
-    ;;
   ui-smoke)
     docker compose run --rm --no-deps ui --ui-smoke
     ;;

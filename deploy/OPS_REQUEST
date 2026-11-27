@@ -1,2 +1,2 @@
-action=wallet-probe
-# post-deploy check PR #139 2026-11-27T05:33Z
+action=tracker
+# deploy PR #140 (merge dd46623) 2026-11-27T06:37Z

@@ -117,6 +117,10 @@ class Links:
         # Independent Fomo button off-switch, without changing Maestro or the scanner.
         self.fomo_on = os.environ.get("FOMO_BUTTON", "on").strip().lower() not in (
             "off", "0", "false", "no")
+        # Buttons under alert cards: "fomo" (default, owner 2026-11-27: only "Open in Fomo")
+        # or "all" (the full set: Maestro, wallets, venues, explorer). ALERT_BUTTONS (tracker).
+        mode = os.environ.get("ALERT_BUTTONS", "fomo").strip().lower()
+        self.alert_buttons = mode if mode in ("fomo", "all") else "fomo"
 
     def maestro_token(self, t: object) -> str | None:
         """Open official @Maestro with a token start payload (or generic chat fallback).
@@ -771,6 +775,16 @@ def wants_dd(payload: dict | None) -> bool:
     return t_ in ("cluster", "launch") or (
         t_ == "trade" and payload.get("kind") == "BUY"
         and (payload.get("is_new") or "🆕 new position" in (payload.get("notes") or [])))
+
+
+def alert_keyboard(L: Links, payload: dict | None, full: dict | None) -> dict | None:
+    """The buttons actually sent under an alert card. By default only "Open in Fomo" for the
+    card's token (none when the card has no single valid token); ALERT_BUTTONS=all keeps
+    the card's full keyboard (`full`)."""
+    if L.alert_buttons == "all":
+        return full
+    row = L.fomo_row((payload or {}).get("token"))
+    return {"inline_keyboard": [row]} if row else None
 
 
 def render(payload: dict | None, L: Links, info: TokenInfo | None = None,

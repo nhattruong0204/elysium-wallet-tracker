@@ -345,7 +345,13 @@ parameters are passed.
 - `MAESTRO_BUTTON=off` removes the external-trade button altogether after recreating tracker.
   Existing already-delivered Telegram messages keep their old BasedBot buttons; no sent
   message is retroactively edited.
-- The **second row** on the same token alerts is **📱 Open in Fomo**. It uses the public Fomo
+- **Since 2026-11-27 alert cards carry only 📱 Open in Fomo** (owner). This covers trade,
+  cluster, burst and DEX-pool cards in the trade bot, and the Consensus group. A card with
+  no single valid token (a new launchpad) gets no button.
+  `ALERT_BUTTONS=all` on the tracker service brings the full set back after recreating the
+  tracker: Maestro, wallet apps, venues, explorer and paper-trading controls. The Consensus
+  group always gets the Fomo button only. The Maestro notes above apply to `all` mode.
+- In `all` mode the **second row** on the same token alerts is **📱 Open in Fomo**. It uses the public Fomo
   share-link shape `https://fomo.family/coin?address=<lowercase_CA>&chainId=99901`
   (no referral or other parameters). Fomo's official docs confirm Elysium support and
   describe opening shared coin links in the iOS app. The precise Elysium token-address link

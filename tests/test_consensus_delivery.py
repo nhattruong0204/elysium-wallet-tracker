@@ -75,10 +75,9 @@ def test_render_html_escape_and_exact_elysium_token_links():
     assert "&lt;img src=evil&gt;" in text
     assert "<img" not in text
     assert "4.50 HYPE" in text and "14.80K" in text
-    assert any("fomo.family/coin?" in b["url"] for row in buttons["inline_keyboard"]
-               for b in row)
-    assert any("t.me/Maestro?start=" in b["url"] for row in buttons["inline_keyboard"]
-               for b in row)
+    # one button only (owner, 2026-11-27): open the token in Fomo
+    assert buttons == {"inline_keyboard": [[{
+        "text": "📱 Open in Fomo", "url": f"https://fomo.family/coin?address={TOKEN}&chainId=99901"}]]}
     with pytest.raises(ValueError):
         render_card({**c, "token": "USDC"}, Links(LinksConfig()))
 
