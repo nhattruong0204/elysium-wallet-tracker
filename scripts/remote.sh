@@ -699,53 +699,47 @@ PY
     tracker_alive
     ;;
   wallet-probe)
-    # Read-only: old vs new Consensus legs query (time, identical rows).
-    need_docker
-    rm -rf /tmp/elysium-probe && mkdir -p /tmp/elysium-probe && chmod 755 /tmp/elysium-probe
-    cat > /tmp/elysium-probe/run.py <<'PY_RUN'
-"""Read-only: old vs new Consensus legs query (dashboard_ro, web image): time and identical rows."""
-import os
-import sys
-import time
-from datetime import datetime, timedelta, timezone
-
-import sqlalchemy as sa
-
-sys.path.insert(0, "/app")
-from agora_tracker.web.reports import PublicReports  # noqa: E402
-
-NEW = """
-    WITH legs AS MATERIALIZED (
-        SELECT t.id, t.token, t.wallet, t.kind, t.hype_wei, t.block_time, t.block_number, t.tx_hash
-        FROM trades t
-        WHERE t.chain_id = :c AND t.kind IN ('BUY', 'SELL') AND t.confidence = 'high'
-          AND t.block_time >= :lo AND t.block_time < :hi)
-    SELECT l.token, l.wallet, l.kind, l.hype_wei, l.block_time, l.block_number, l.tx_hash
-    FROM legs l
-    WHERE l.hype_wei IS NOT NULL AND l.hype_wei > 0
-      AND NOT (l.token = ANY(CAST(:hidden AS text[])))
-      AND l.token IN (SELECT b.token FROM legs b WHERE b.kind = 'BUY'
-                      GROUP BY b.token HAVING count(DISTINCT b.wallet) >= :n)
-    ORDER BY l.token, l.block_time, l.id"""
-HID = ["0xb47c4c8f73f009cc0c0d3f92b388d13e293f0b65", "0xba876237b0f021a6c6d852d6c26e107997cc5e81",
-       "0xe45a355d9e9cad2ad85f2d03e3ee3102a036acf0"]
-eng = sa.create_engine(os.environ["DATABASE_URL"])
-now = datetime.now(timezone.utc)
-with eng.connect() as c:
-    c.execute(sa.text("SET statement_timeout = '120s'"))
-    for span in (timedelta(hours=24, minutes=30), timedelta(days=7, minutes=30)):
-        p = {"c": 99901, "lo": now - span, "hi": now, "hidden": HID, "n": 3}
-        out = {}
-        for name, sql in (("new", NEW), ("old", PublicReports._CONS_LEGS)):
-            t = time.monotonic()
-            rows = [tuple(r) for r in c.execute(sa.text(sql), p).all()]
-            out[name] = rows
-            print(f"== {span.days}d{span.seconds // 3600}h {name}: {len(rows)} rows in {time.monotonic() - t:.2f}s", flush=True)
-        print("   identical:", out["new"] == out["old"], flush=True)
+    # Read-only: Montra API vs Agora market cap (SENDU and the 40 busiest Montra tokens).
+    cat > /tmp/probe_m.py <<'PY_RUN'
+import json, time, urllib.request
+UA = {"user-agent": "elysium-wallet-tracker research", "accept": "application/json"}
+def get(url):
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=20) as r:
+            return json.loads(r.read())
+    except Exception as e:
+        return {"_error": str(e)[:150]}
+    finally:
+        time.sleep(0.6)
+M = "https://api.montramarkets.xyz"
+A = "https://api.agoradex.app"
+cfg = get(M + "/api/config")
+print("CONFIG|" + json.dumps(cfg)[:1500])
+tok = "0x56e1e08fe536de0f18dcee008f57068788d61d33"
+t = get(M + "/api/tokens/" + tok)
+keep = {k: t.get(k) for k in ("symbol", "name", "price", "priceUsd", "supply", "burned", "marketCap", "marketCapUsd", "poolId", "quote", "volume24hUsd", "createdAt", "stage", "graduated")}
+print("MONTRA|" + json.dumps(keep))
+print("MONTRA_KEYS|" + ",".join(sorted(t.keys())))
+for k in ("pool", "live", "config"):
+    print("MONTRA_" + k.upper() + "|" + json.dumps(t.get(k))[:900])
+ag = get(A + "/api/tokens/" + tok + "?range=1h")
+print("AGORA|" + json.dumps({"symbol": ag.get("symbol"), "launchpad": ag.get("launchpad"), "stats": {k: (ag.get("stats") or {}).get(k) for k in ("price", "mcap", "liquidity")}, "hypeUsd": ag.get("hypeUsd"), "keys": sorted(ag.keys())})[:900])
+lst = get(M + "/api/tokens?sort=volume&limit=40")
+rows = lst.get("tokens") or lst.get("items") or lst.get("data") or []
+print("LIST|n=%d keys=%s" % (len(rows), ",".join(sorted(rows[0].keys())) if rows else lst.get("_error") or list(lst.keys())))
+for r in rows[:40]:
+    a = r.get("address") or r.get("token")
+    g = get(A + "/api/tokens/" + a + "?range=1h")
+    st = g.get("stats") or {}
+    hu = g.get("hypeUsd")
+    amc = float(st["mcap"]) * float(hu) if st.get("mcap") and hu else None
+    q = r.get("quote") or {}
+    print("CMP|%s|%s|quote=%s/%s usd=%s|montra_mc_usd=%s|agora_mc_usd=%s|ratio=%s" % (
+        a, r.get("symbol"), q.get("symbol"), (q.get("address") or "")[:10], q.get("usd"), r.get("marketCapUsd"),
+        round(amc, 2) if amc else None, round(amc / float(r["marketCapUsd"]), 3) if amc and r.get("marketCapUsd") else None))
 PY_RUN
-    chmod 644 /tmp/elysium-probe/*
-    docker compose run -T --rm --no-deps -v /tmp/elysium-probe:/probe:ro --entrypoint python web /probe/run.py 2>&1 | grep -v "^ Container\|Creating\|Created" || true
-    rm -rf /tmp/elysium-probe
+    python3 /tmp/probe_m.py 2>&1 | cut -c1-1500 || true
+    rm -f /tmp/probe_m.py
     ;;
   ui-smoke)
     docker compose run --rm --no-deps ui --ui-smoke
