@@ -698,6 +698,32 @@ PY
     consensus_state
     tracker_alive
     ;;
+  wallet-probe)
+    # Read-only check after the PR #140 deploy: the buttons each running bot would attach.
+    need_docker
+    T=0x0d442948a8748f0296af853c85ec054d875c010f
+    echo "  tracker ALERT_BUTTONS: $(docker inspect elysium-wallet-tracker --format '{{range .Config.Env}}{{println .}}{{end}}' | grep -c '^ALERT_BUTTONS=' || true) set (0 = default fomo)"
+    docker exec elysium-wallet-tracker python -c "
+from agora_tracker import cards
+from agora_tracker.config import load_config
+import glob
+cfg = load_config(sorted(glob.glob('/config/config.yaml'))[0])
+L = cards.Links(cfg.links, cfg.chain.chain_id)
+p = {'type': 'trade', 'kind': 'BUY', 'token': '$T', 'symbol': 'LEASH', 'tx': '0x' + '1' * 64, 'wallet': '0x' + '2' * 40, 'qty': '1', 'hype_wei': '1', 'confidence': 'high', 'hype_method': 'balance_diff', 'notes': [], 'block': 1, 'ts': 1, 'decimals': 18}
+full = cards.render(p, L)[1]
+print('  trade card buttons sent:', cards.alert_keyboard(L, p, full))
+print('  (full keyboard would have', sum(len(r) for r in full['inline_keyboard']), 'buttons)')
+" 2>&1 | grep -v api.telegram.org | cut -c1-300 || true
+    docker exec elysium-consensus-alerts python -c "
+from agora_tracker.consensus_delivery import render_card
+from agora_tracker.config import load_config
+from agora_tracker.web.format import Links
+cfg = load_config('/config/config.yaml')
+c = {'token': '$T', 'symbol': 'LEASH', 'traders': 3, 'independent': 3, 'bundled': False, 'first_n': 3, 'net_hype': 6.0, 'net_usd': 380.0, 'mcap_at_usd': 66964, 'mcap_now': {'market_cap_usd': 196471}, 'members': [], 'trigger_tx': '0x' + '1' * 64}
+print('  consensus card buttons:', render_card(c, Links(cfg.links))[1])
+" 2>&1 | cut -c1-300 || true
+    psql_admin -At -F'|' -c "SELECT 'DATA', count(*), max(sent_at) FROM notification_outbox WHERE sent_at > '2026-11-27 06:37:00+00' AND status = 'sent'" || true
+    ;;
   ui-smoke)
     docker compose run --rm --no-deps ui --ui-smoke
     ;;
