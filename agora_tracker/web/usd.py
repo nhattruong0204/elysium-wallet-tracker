@@ -1,7 +1,9 @@
 """USD market capitalisation from the provider's HYPE figures and a stored HYPE/USD rate.
 
-Units, confirmed against the provider (market.py): Agora quotes `mcap`, `price` and volumes
-in HYPE and attaches the HYPE/USD rate it uses (`hypeUsd`) to its responses. The tracker
+Units (market.py): snapshots store `mcap`, `price` and volumes in HYPE. The collector converts
+Agora's figures from the pool's quote asset (HYPE or KNTQ) and, for Montra tokens, stores
+Montra's own figures (`source = 'montra'`; rows before 2026-11-27 took KNTQ amounts as HYPE).
+Agora attaches the HYPE/USD rate it uses (`hypeUsd`) to its responses. The tracker
 persists that rate every ~5 minutes (`hype_usd_rates`, migration 0005). A snapshot's USD
 market cap is therefore
 
