@@ -16,7 +16,7 @@ from test_tracker import E18, TOKEN, W1, W2, W3, build, chain, get_pos, run_all 
 
 from agora_tracker.chain import ScanResult
 from agora_tracker.classify import TradeEvent
-from agora_tracker.config import AlertConfig, ChainConfig, TelegramConfig, load_config
+from agora_tracker.config import ALERT_KINDS, AlertConfig, ChainConfig, TelegramConfig, load_config
 from agora_tracker.engine import Engine
 from agora_tracker.notify import Notifier
 
@@ -118,7 +118,8 @@ def apply(store, engine, events, cursor=10):
 
 @pytest.fixture
 def eng(store):
-    acfg = AlertConfig(min_trade_hype=0.1, telegram_mute_tokens=[USDC])
+    acfg = AlertConfig(min_trade_hype=0.1, telegram_mute_tokens=[USDC],
+                       alert_kinds=list(ALERT_KINDS))
     from agora_tracker.chain import TokenCache
 
     class FakeRpc:

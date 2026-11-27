@@ -67,39 +67,41 @@ def items(web, **q):
 
 
 # --- classification and the supported kinds --------------------------------------------------
-def test_every_stored_kind_is_listed_with_its_own_action(kinds, make_live):
+def test_the_tab_lists_buys_and_sells_only(kinds, make_live):
+    """Owner, 2026-11-27: sends/receives (and the rare swap/multi legs) stay stored but are
+    not listed on the Activity tab."""
     lv = make_live()
     rows = items(lv, range="all", limit=100)
-    by_kind = {}
-    for r in rows:
-        by_kind.setdefault(r["kind"], []).append(r)
-    assert {"BUY", "SELL", "SWAP", "TRANSFER_IN", "TRANSFER_OUT", "MULTI"} <= set(by_kind)
-    for kind, action in (("BUY", "buy"), ("SELL", "sell"), ("SWAP", "swap"),
-                         ("TRANSFER_IN", "transfer_in"), ("TRANSFER_OUT", "transfer_out"),
-                         ("MULTI", "other")):
-        assert {r["action"] for r in by_kind[kind]} == {action}
-
-
-def test_transfers_are_never_buys_or_sells(kinds, make_live):
-    lv = make_live()
-    for action in ("transfer_in", "transfer_out"):
-        rows = items(lv, range="all", action=action)
-        assert rows and all(r["kind"].startswith("TRANSFER") for r in rows)
-        assert all(r["amount_hype"] is None for r in rows)
+    assert rows and {r["kind"] for r in rows} == {"BUY", "SELL"}
+    assert {(r["kind"], r["action"]) for r in rows} == {("BUY", "buy"), ("SELL", "sell")}
     buys = items(lv, range="all", action="buy")
     assert buys and all(r["kind"] == "BUY" for r in buys)
-    html = lv.get("/activity?range=all&action=transfer_in").text
-    assert "no HYPE leg" in html and "act-transfer_in" in html and "act-buy" not in html
+    assert {r["kind"] for r in items(lv, range="all", action="sell")} == {"SELL"}
+    html = lv.get("/activity?range=all").text
+    assert "act-buy" in html and "act-transfer_in" not in html and "act-swap" not in html
+    assert ">Transfer in<" not in html and "Buys and sells" in html
+
+
+def test_old_transfer_filters_still_open_and_show_buys_and_sells(kinds, make_live):
+    lv = make_live()
+    everything = {r["id"] for r in items(lv, range="all", limit=100)}
+    for action in ("transfer_in", "transfer_out", "swap", "other", "multi", "transfers"):
+        r = get(lv, range="all", limit=100, action=action)
+        assert r.status_code == 200, action
+        assert {i["id"] for i in r.json()["items"]} == everything
+    assert lv.get("/activity?range=all&action=transfer_in").status_code == 200
+    assert get(lv, range="all", action="nonsense").status_code == 400
+    assert A.KIND_TO_ACTION["TRANSFER_IN"] == "transfer_in"     # other pages still label them
 
 
 def test_verified_estimated_unknown_stay_distinct(kinds, make_live):
     lv = make_live()
     basis = {r["tx_hash"][:4]: r["basis"] for r in items(lv, range="all", limit=100)}
     assert basis["0xa1"] == "verified" and basis["0xa7"] == "estimated"
-    assert basis["0xa5"] == "unknown"
+    assert "0xa5" not in basis                     # the unknown leg is a transfer: not listed
     assert {r["basis"] for r in items(lv, range="all", basis="estimated")} == {"estimated"}
     assert {r["basis"] for r in items(lv, range="all", basis="verified")} == {"verified"}
-    assert {r["basis"] for r in items(lv, range="all", basis="unknown")} == {"unknown"}
+    assert all(r["basis"] == "unknown" for r in items(lv, range="all", basis="unknown"))
 
 
 def test_multiple_legs_of_one_tx_are_distinct_records(kinds, make_live):
@@ -120,13 +122,13 @@ def test_item_contract(kinds, make_live):
 # --- filters ----------------------------------------------------------------------------------
 def test_time_ranges_and_custom_half_open(kinds, make_live):
     lv = make_live()
-    assert len(items(lv, range="15m", limit=100)) >= 9
+    assert len(items(lv, range="15m", limit=100)) >= 5       # the fixture's buys and sells
     # the seeded fixture has legs up to 2 h old: 15m excludes them, 4h includes them
     assert len(items(lv, range="4h", limit=100)) > len(items(lv, range="15m", limit=100))
     start = (NOW - timedelta(seconds=50)).strftime("%Y-%m-%d %H:%M:%S")
     end = (NOW - timedelta(seconds=47)).strftime("%Y-%m-%d %H:%M:%S")      # excludes the 47s-old leg
     got = items(lv, range="custom", start=start, end=end, limit=100)
-    assert {r["tx_hash"][:4] for r in got} == {"0xa1", "0xa2", "0xa3"}
+    assert {r["tx_hash"][:4] for r in got} == {"0xa1", "0xa2"}       # 0xa3 is a swap: not listed
     for rng in ("15m", "1h", "4h", "12h", "24h", "7d", "30d", "all"):
         assert get(lv, range=rng).status_code == 200
 
@@ -427,7 +429,7 @@ def test_activity_page_renders_filters_pager_and_status(kinds, make_live):
     html = lv.get("/activity?range=24h").text
     assert 'aria-current="page">Activity</a>' in html
     for needle in ("Auto-refresh:", "Last indexed block", "Heartbeat", "Last observed transaction",
-                   'id="act-body"', "/static/activity.js", 'name="q"', "Transfer in", "Multi / other",
+                   'id="act-body"', "/static/activity.js", 'name="q"', "Buys and sells",
                    "Largest verified buy", "All history"):
         assert needle in html, needle
     assert 'data-live="1"' in html
@@ -553,8 +555,6 @@ def test_market_cap_is_valued_at_the_rows_block_time(kinds, make_live):
     assert Decimal(str(bee["market_cap_usd"])) == Decimal("10000")
     assert bee["market_cap_source"] == "trade_price"
     assert bee["launchpad"] == "boxa" and bee["launchpad_label"] == "BOXA"
-    transfer = next(r for r in rows if r["kind"] == "TRANSFER_IN")
-    assert transfer["market_cap_source"] == "snapshot"          # TOK_PUB snapshot is near
     page = make_live().get("/activity", params={"range": "all"}).text
     assert "MC (USD)" in page and "Launchpad" in page and ">Tx<" not in page
     assert "BOXA" in page and 'class="txl"' in page

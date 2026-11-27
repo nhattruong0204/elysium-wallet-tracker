@@ -313,7 +313,7 @@ class Engine:
         return out
 
     def _should_alert(self, ev: TradeEvent, min_wei: int) -> bool:
-        if ev.token in self._muted:
+        if ev.token in self._muted or ev.kind not in self.cfg.alert_kinds:
             return False
         if ev.kind in ("BUY", "SELL"):
             return ev.hype_wei is not None and ev.hype_wei >= min_wei

@@ -140,7 +140,9 @@ def test_combines_with_action_search_and_range(amounts, make_live):  # noqa: F81
     lv = make_live()
     sells = items(lv, range="all", limit=100, min_hype="1", action="sell")
     assert sells and all(r["kind"] == "SELL" for r in sells)
-    assert items(lv, range="all", min_hype="1", action="transfer_in") == []   # transfers have no amount
+    # old transfer filter: now buys and sells (transfers have no amount and are not listed)
+    assert all(r["kind"] in ("BUY", "SELL")
+               for r in items(lv, range="all", min_hype="1", action="transfer_in"))
     # the only BEE leg is 0.25 HYPE: it matches min 0.1 and 0.2 but not 0.3
     assert {r["token"] for r in items(lv, range="all", q="bee", min_hype="0.1")} == {TOK_B}
     assert {r["token"] for r in items(lv, range="all", q="bee", min_hype="0.2")} == {TOK_B}
