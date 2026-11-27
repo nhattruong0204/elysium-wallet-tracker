@@ -562,6 +562,30 @@ Every trade card shows how the wallet has done lately, so a reader can decide in
 - `ALERTS_PERF_BADGES=off` (tracker env) removes it. `alerts.perf_*` in `config.yaml` tunes the window, minimums, snipe seconds and refresh time.
 - The log line `trader ranking: N ranked wallet(s) …` appears whenever the count changes.
 
+## Market cap and price: quote assets and Montra's own figures (2026-11-27)
+
+Card market caps, prices, volumes and uPnL are in HYPE internally and shown in dollars at the HYPE rate the card uses. Two sources disagreed with what Montra shows:
+
+- **Agora prices each token in its pool's quote asset** (`base`: HYPE or KNTQ), not always HYPE. KNTQ amounts read as HYPE overstated KNTQ-quoted tokens about 320x (SENDU: $4.89M on our card, $13.7K on Montra). Agora's figures are now converted at its own `kntqHype` rate. An unknown quote leaves the value unknown rather than wrong.
+- **For Montra tokens, Agora is not Montra's figure.** Montra defines market cap as the pool price after the last trade x (supply - burned), in the quote asset ([docs](https://montramarkets.xyz/docs/api)). Agora ignores burns (HYPE pools up to 16% high on 11-27; MONTRA itself has burned 77% of its supply), and its numbers for pools quoted in MONTRA were 10-20x off.
+
+So for every token Agora tags `launchpad: montra`, the tracker reads Montra's public API (`api.montramarkets.xyz/api/tokens/<token>` for a card; for list views the 200 busiest tokens by volume plus up to 25 single cards for the rest) and uses Montra's price, market cap, 1h/24h volume, 24h change and holder count:
+
+- For a HYPE pool these are Montra's native HYPE figures.
+- For other quotes (KNTQ, MONTRA, xyz:NVDA3L, …) it uses Montra's dollar figure divided by the card's HYPE rate, so the card shows Montra's dollar value.
+- Agora's other figures (1h/6h/7d change, 6h/7d volume, buys/trades) are kept only when Agora's market cap is within 25% of Montra's.
+
+Snapshots taken this way are stored with `source = 'montra'`.
+
+Failure handling:
+
+- If Montra is down, unknown or rate limited, the card keeps Agora's (converted) figures.
+- A 429 pauses all Montra calls for the server's `Retry-After`, bounded to 5-600 s (default 60 s).
+- Cards are cached for `market.cache_s` (60 s), and an unknown token is cached for an hour.
+- `market.montra: false` turns this off.
+
+Snapshot rows stored before this change took KNTQ amounts as HYPE. Those rows are not rewritten; correcting them needs a reviewed data migration.
+
 ## Buys and sells only (Telegram cards and the Activity tab; 2026-11-27)
 
 **Telegram:** only `alerts.alert_kinds` become trade cards. The default is `[BUY, SELL]`; `ALERTS_KINDS` (tracker env, e.g. `BUY,SELL,TRANSFER_OUT`) overrides it. Cluster buys, leaderboard and health alerts are not affected. Transfer bursts are built from TRANSFER_OUT cards, so they stop too.

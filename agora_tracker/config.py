@@ -140,11 +140,16 @@ class LinksConfig:
 
 @dataclass
 class MarketConfig:
-    """Token market data shown in alerts, from Agora's public API (values in HYPE)."""
+    """Token market data for alerts and snapshots, in HYPE: Agora's public API, with Montra's
+    own figures for Montra tokens (market.py)."""
     enabled: bool = True
     api: str = "https://api.agoradex.app"
     cache_s: float = 60.0
     timeout_s: float = 6.0
+    montra: bool = True                                  # Montra's figures for Montra tokens
+    montra_api: str = "https://api.montramarkets.xyz"
+    montra_list_pages: int = 2                           # 100 busiest per page, for list views
+    montra_list_lookups: int = 25                        # list tokens not on those pages
 
 
 @dataclass
