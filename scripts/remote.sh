@@ -699,7 +699,7 @@ PY
     tracker_alive
     ;;
   wallet-probe)
-    # Read-only event study: snapshots (READ ONLY session) + Montra fee/quote + Agora candles (1.5 s apart).
+    # Read-only: the dip events one by one, -20% sensitivity (READ ONLY session, 1.5 s apart on Agora).
     need_docker
     rm -rf /tmp/elysium-probe && mkdir -p /tmp/elysium-probe && chmod 755 /tmp/elysium-probe
     cat > /tmp/elysium-probe/run.py <<'PY_RUN'
@@ -738,7 +738,7 @@ for r in rows:
     if r[0] not in L.tokens:
         series[r[0]].append(r[1:])
 print("EV|snapshot rows=%d montra tokens=%d (launcher tokens excluded: %d)" % (len(rows), len(series), len(L.tokens)))
-cand = [t for t, v in series.items() if max(x[2] for x in v) >= 300]
+cand = [t for t, v in series.items() if max(x[2] for x in v) >= 1600]
 cand.sort(key=lambda t: -max(x[2] for x in series[t]))
 cand = cand[:420]
 meta = {}
@@ -760,13 +760,13 @@ for t, (quote, fee, sym) in meta.items():
     for ts, px, mc, ch24, buys, la in series[t]:
         age = ts - la
         mct = mc * k
-        if not e1 and age >= 6 * 3600 and mct >= 800:
+        if False:
             events.append(("E1 breakout: >=$50k after 6h", t, ts, px, fee, sym)); e1 = True
-        if age >= 48 * 3600 and mct >= 1600 and ch24 is not None and ch24 <= -0.30:
+        if age >= 48 * 3600 and mct >= 1600 and ch24 is not None and ch24 <= -0.20:
             day = int(ts // 86400)
             if day not in e2_days:
-                events.append(("E2 dip: >=$100k, 2d+ old, -30% in 24h", t, ts, px, fee, sym)); e2_days.add(day)
-        if not e3 and 3600 <= age < 6 * 3600 and mct >= 300 and (buys or 0) >= 100:
+                events.append(("E2b dip: >=$100k, 2d+ old, -20% in 24h", t, ts, px, fee, sym)); e2_days.add(day)
+        if False:
             events.append(("E3 momentum: >=$19k at 1-6h, 100+ buys", t, ts, px, fee, sym)); e3 = True
 print("EV|events=%s" % dict(Counter(e[0] for e in events)))
 need = sorted({e[1] for e in events})[:200]
@@ -808,6 +808,9 @@ for name, t, ts, px, fee, sym in events:
         c72 = next((x[3] for x in after if x[0] >= ts + 72 * 3600), after[-1][3])
         out = ("time", c72 / px * cost - 1)
     tier = "fee<=2%" if fee <= 20000 else "fee>2%"
+    if name.startswith("E2"):  # sensitivity run
+        print("E2ROW|%s|%s|%s|fee=%.0f%%|24h=%+.0f%%|bracket=%s %+.0f%%" % (
+            sym, t[:10], time.strftime("%m-%d %H:%M", time.gmtime(ts)), fee / 1e4, 100 * r24, out[0], 100 * out[1]))
     res[(name, "all")].append((r24, out))
     res[(name, tier)].append((r24, out))
 for key in sorted(res):
