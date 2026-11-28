@@ -699,42 +699,92 @@ PY
     tracker_alive
     ;;
   wallet-probe)
-    # Read-only: Montra fee docs, fee fields and indexer health.
-    cat > /tmp/probe_f.py <<'PY_RUN'
-import json, re, time, urllib.request, html
-UA = {"user-agent": "elysium-wallet-tracker research", "accept": "text/html,application/json"}
-def get(url, raw=False):
-    with urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=25) as r:
-        b = r.read()
-    time.sleep(0.8)
-    return b.decode("utf-8", "replace") if raw else json.loads(b)
-def text(h):
-    h = re.sub(r"(?is)<(script|style)[^>]*>.*?</\1>", " ", h)
-    h = re.sub(r"(?s)<[^>]+>", " ", h)
-    return re.sub(r"\s+", " ", html.unescape(h)).strip()
-for page in ("fees", "anti-snipe"):
-    t = text(get("https://montramarkets.xyz/docs/" + page, raw=True))
-    i = t.find("Fees") if page == "fees" else t.find("nti-snipe")
-    body = t[max(0, i - 50):]
-    for k in range(0, min(len(body), 6000), 1000):
-        print("DOC|%s|%s" % (page, body[k:k + 1000]))
-M = "https://api.montramarkets.xyz"
-lst = get(M + "/api/tokens?sort=volume&limit=8")
-for c in lst["tokens"]:
-    print("FEE|%s|quote=%s|totalFeePips=%s|launchedAt=%s|lastTradeAt=%s|mcUsd=%s" % (
-        c.get("symbol"), (c.get("quote") or {}).get("symbol"), c.get("totalFeePips"), c.get("launchedAt"),
-        c.get("lastTradeAt"), round(c.get("marketCapUsd") or 0)))
-new = get(M + "/api/tokens?sort=new&limit=3")
-for c in new["tokens"]:
-    d = get(M + "/api/tokens/" + c["address"])
-    print("NEW|%s|age_s=%.0f|totalFeePips=%s|config=%s" % (c.get("symbol"), time.time() - (c.get("launchedAt") or 0) / 1000,
-          c.get("totalFeePips"), json.dumps(d.get("config"))[:500]))
-    print("NEWPOOL|%s|pool=%s|live=%s" % (c.get("symbol"), json.dumps(d.get("pool"))[:400], json.dumps(d.get("live"))[:300]))
-h = get(M + "/health")
-print("HEALTH|" + json.dumps(h)[:300])
+    # Read-only: paper-book signal frequency and live candidates (READ ONLY session).
+    need_docker
+    rm -rf /tmp/elysium-probe && mkdir -p /tmp/elysium-probe && chmod 755 /tmp/elysium-probe
+    cat > /tmp/elysium-probe/run.py <<'PY_RUN'
+"""Read-only: paper-book signal frequency (24 h) and live candidates, tracker role, READ ONLY."""
+import json, os, sys, time, urllib.request
+from collections import Counter
+from datetime import datetime, timedelta, timezone
+sys.path.insert(0, "/app")
+import sqlalchemy as sa
+from agora_tracker.launchers import load_launchers
+from agora_tracker.performance import Rules, load_board
+UTC = timezone.utc
+eng = sa.create_engine(os.environ["DATABASE_URL"], connect_args={
+    "options": "-c default_transaction_read_only=on -c statement_timeout=60000"})
+C = 99901
+now = datetime.now(UTC)
+with eng.connect() as c:
+    L = load_launchers(c, chain_id=C, lookback_days=7, window_s=2, min_launches=3)
+    lw = {w for w, k in L.wallets.items() if k >= 3}
+    board = load_board(c, chain_id=C, rules=Rules(), skip_wallets=lw, skip_tokens=L.tokens)
+    ranked = {w: v["rank"] for w, v in board.items() if v.get("rank") and v["rank"] <= 30}
+    print("BOARD|ranked_total=%d top30=%d launchers=%d launcher_tokens=%d" % (
+        sum(1 for v in board.values() if v.get("rank")), len(ranked), len(lw), len(L.tokens)))
+    rows = c.execute(sa.text("""
+        SELECT t.wallet, t.token, t.hype_wei, t.qty, t.block_time, p.launchpad, p.symbol, p.launched_at
+          FROM trades t LEFT JOIN token_profiles p ON p.chain_id = t.chain_id AND p.address = t.token
+         WHERE t.chain_id = :c AND t.kind = 'BUY' AND t.confidence = 'high'
+           AND t.block_time >= :since AND t.wallet = ANY(:w) AND t.hype_wei >= :min
+         ORDER BY t.block_time"""), {"c": C, "since": now - timedelta(hours=24),
+                                     "w": sorted(ranked), "min": 10**18}).all()
+sig = [r for r in rows if r.token not in L.tokens]
+pads = Counter((r.launchpad or "unknown") for r in sig)
+print("SIG24|buys>=1HYPE by top30=%d after launcher filter=%d by_pad=%s" % (len(rows), len(sig), dict(pads.most_common(6))))
+mon = [r for r in sig if (r.launchpad or "") == "montra"]
+print("SIG24|montra=%d distinct_tokens=%d" % (len(mon), len({r.token for r in mon})))
+UA = {"user-agent": "elysium-wallet-tracker research", "accept": "application/json"}
+def card(tok):
+    try:
+        with urllib.request.urlopen(urllib.request.Request(
+                "https://api.montramarkets.xyz/api/tokens/" + tok, headers=UA), timeout=20) as r:
+            return json.loads(r.read())
+    except Exception as e:
+        return {"_err": type(e).__name__}
+    finally:
+        time.sleep(0.4)
+cards = {}
+for tok in list(dict.fromkeys(r.token for r in reversed(mon)))[:45]:
+    cards[tok] = card(tok)
+why = Counter(); ok = []
+for r in mon:
+    d = cards.get(r.token)
+    if d is None:
+        why["not fetched (cap 45 tokens)"] += 1; continue
+    if "_err" in d or d.get("priceUsd") is None:
+        why["no Montra card"] += 1; continue
+    fee = float(d.get("totalFeePips") or 0) / 1e6
+    mc_now = float(d.get("marketCapUsd") or 0)
+    la = (d.get("launchedAt") or 0) / 1000
+    age = r.block_time.timestamp() - la if la else None
+    if fee > 0.02 + 1e-9:
+        why["pool fee > 2%"] += 1; continue
+    if age is not None and age < 180:
+        why["token < 3 min at signal"] += 1; continue
+    ok.append((r, d, fee, mc_now, age))
+print("FILTER|montra_signals=%d pass_fee_age=%d reasons=%s" % (len(mon), len(ok), dict(why)))
+# market cap at signal time from the nearest snapshot (Agora/Montra snapshots, +-30 min)
+with eng.connect() as c:
+    for r, d, fee, mc_now, age in ok[-25:]:
+        snap = c.execute(sa.text("""SELECT mcap_hype, source, captured_at FROM token_market_snapshots
+            WHERE chain_id = :c AND token = :t AND captured_at BETWEEN :a AND :b AND mcap_hype IS NOT NULL
+            ORDER BY abs(extract(epoch FROM captured_at - :ts)) LIMIT 1"""),
+            {"c": C, "t": r.token, "a": r.block_time - timedelta(minutes=30),
+             "b": r.block_time + timedelta(minutes=30), "ts": r.block_time}).first()
+        hype = int(r.hype_wei) / 1e18
+        print("CAND|%s|%s|rank=%d|%.1f HYPE|%s ago|fee=%.0f%%|age=%s|mc_now=$%.0f|snap_mcap_hype=%s(%s)|quote=%s" % (
+            r.block_time.strftime("%H:%M:%S"), (r.symbol or r.token[:8])[:12], ranked[r.wallet], hype,
+            str(now - r.block_time).split(".")[0], fee * 100, ("%.0fm" % (age / 60)) if age else "?",
+            mc_now, ("%.1f" % float(snap[0])) if snap else "-", snap[1] if snap else "-",
+            (d.get("quote") or {}).get("symbol")))
+live = [x for x in ok if (now - x[0].block_time).total_seconds() <= 300]
+print("LIVE|signals in the last 5 min passing fee/age: %d" % len(live))
 PY_RUN
-    python3 /tmp/probe_f.py 2>&1 | cut -c1-1100 || true
-    rm -f /tmp/probe_f.py
+    chmod 644 /tmp/elysium-probe/*.py
+    docker compose run -T --rm --no-deps -v /tmp/elysium-probe:/probe:ro --entrypoint python tracker /probe/run.py 2>&1 | grep -v "^ Container\|Creating\|Created" | cut -c1-320 || true
+    rm -rf /tmp/elysium-probe
     ;;
   ui-smoke)
     docker compose run --rm --no-deps ui --ui-smoke
