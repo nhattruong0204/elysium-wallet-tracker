@@ -698,6 +698,25 @@ PY
     consensus_state
     tracker_alive
     ;;
+  wallet-probe)
+    # Read-only: paper book state, its cards, tracker paper log lines, collector snapshots.
+    need_docker
+    psql_admin -At -c "SELECT 'BOOK|' || (value->>'v') FROM service_state WHERE key = 'paper:life-1'" | python3 -c "
+import json, sys
+for line in sys.stdin:
+    if not line.startswith('BOOK|'): continue
+    b = json.loads(line[5:])
+    st = b['stats']
+    print('BOOK|status=%s cash=%.2f open=%d trades=%d W/L=%d/%d realized=%.2f fees=%.2f seq=%s skipped=%s' % (b['status'], b['cash'], len(b['open']), st['trades'], st['wins'], st['losses'], st['realized'], st['fees'], b['seq'], json.dumps(st.get('skipped'))))
+    for t, p in b['open'].items():
+        print('POS|#%s %s leader=%s rank=%s cost=%.2f entry=%.10g last=%.10g opened=%s' % (p['id'], p['symbol'], p['leader'][:10], p['rank'], p['cost'], p['entry_px'], p['last_px'], p['opened_at']))
+" || true
+    psql_admin -At -F'|' -c "SELECT 'CARD', id, dedup_key, status, created_at, sent_at FROM notification_outbox WHERE dedup_key LIKE 'paper:%' ORDER BY id DESC LIMIT 8" || true
+    docker logs --since 15m elysium-wallet-tracker 2>&1 | grep -iE "paper" | tail -25 | cut -c1-230 | sed 's/^/TLOG|/' || true
+    psql_admin -At -F'|' -c "SELECT 'SNAP', source, count(*), max(captured_at) FROM token_market_snapshots WHERE captured_at > now() - interval '20 minutes' GROUP BY source ORDER BY source" || true
+    psql_admin -At -F'|' -c "SELECT 'ETHEL', s.captured_at, s.source, round(s.mcap_hype, 1) FROM token_market_snapshots s JOIN token_profiles p ON p.chain_id = s.chain_id AND p.address = s.token WHERE p.symbol = 'ETHEL' ORDER BY s.captured_at DESC LIMIT 3" || true
+    docker logs --since 15m elysium-ui 2>&1 | grep -iE "collector|montra|error" | tail -6 | cut -c1-200 | sed 's/^/ULOG|/' || true
+    ;;
   ui-smoke)
     docker compose run --rm --no-deps ui --ui-smoke
     ;;
