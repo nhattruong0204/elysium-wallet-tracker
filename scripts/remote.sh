@@ -699,23 +699,33 @@ PY
     tracker_alive
     ;;
   wallet-probe)
-    # Read-only: paper book state, its cards, tracker paper log lines, collector snapshots.
+    # Read-only: health of the three Telegram senders (alerts, menu bot, Consensus) and the paper book.
     need_docker
+    docker ps --format '{{.Names}}|{{.Status}}' | grep -E "elysium-(wallet-tracker|ui|consensus-alerts|web|postgres)" | sed 's/^/PS|/'
+    docker exec elysium-wallet-tracker python -m agora_tracker --health 2>&1 | tail -1 | sed 's/^/HEALTH|tracker|/' || true
+    docker exec elysium-ui python -m agora_tracker --health-ui 2>&1 | tail -1 | sed 's/^/HEALTH|ui|/' || true
+    psql_admin -At -F'|' -c "SELECT 'OUTBOX', status, count(*), max(sent_at), max(attempts) FROM notification_outbox WHERE created_at > now() - interval '3 hours' GROUP BY status ORDER BY status" || true
+    psql_admin -At -F'|' -c "SELECT 'PENDING', count(*), coalesce(round(extract(epoch FROM now() - min(created_at)))::text, '-') FROM notification_outbox WHERE status = 'pending'" || true
+    psql_admin -At -F'|' -c "SELECT 'ERR', id, status, attempts, left(coalesce(last_error, ''), 120), created_at FROM notification_outbox WHERE created_at > now() - interval '24 hours' AND (status NOT IN ('sent', 'pending') OR attempts > 1) ORDER BY id DESC LIMIT 6" || true
+    psql_admin -At -F'|' -c "SELECT 'LASTSENT', max(sent_at), round(extract(epoch FROM now() - max(sent_at))) FROM notification_outbox WHERE status = 'sent'" || true
+    psql_admin -At -F'|' -c "SELECT 'BYHOUR', date_trunc('hour', sent_at), count(*) FROM notification_outbox WHERE status = 'sent' AND sent_at > now() - interval '6 hours' GROUP BY 2 ORDER BY 2" || true
+    psql_admin -At -F'|' -c "SELECT 'RANKED', count(*) FILTER (WHERE payload->>'kind' = 'BUY'), count(*) FILTER (WHERE payload->>'kind' = 'BUY' AND (payload->'perf'->>'rank')::int <= 30), count(*) FILTER (WHERE payload->>'kind' = 'BUY' AND (payload->'perf'->>'rank')::int <= 30 AND (payload->>'hype_wei')::numeric >= 1e18), count(*) FILTER (WHERE payload->>'kind' = 'BUY' AND (payload->'perf'->>'rank')::int <= 30 AND (payload->>'hype_wei')::numeric >= 1e18 AND p.launchpad = 'montra') FROM notification_outbox o LEFT JOIN token_profiles p ON p.chain_id = 99901 AND p.address = o.payload->>'token' WHERE o.created_at > now() - interval '3 hours' AND o.payload->>'type' = 'trade'" || true
+    psql_admin -At -F'|' -c "SELECT 'RANKBUY', o.created_at, coalesce(p.symbol, left(o.payload->>'token', 10)), p.launchpad, (o.payload->'perf'->>'rank'), round((o.payload->>'hype_wei')::numeric / 1e18, 2) FROM notification_outbox o LEFT JOIN token_profiles p ON p.chain_id = 99901 AND p.address = o.payload->>'token' WHERE o.created_at > now() - interval '3 hours' AND o.payload->>'type' = 'trade' AND o.payload->>'kind' = 'BUY' AND (o.payload->'perf'->>'rank')::int <= 30 ORDER BY o.id DESC LIMIT 15" || true
+    docker logs --since 3h elysium-wallet-tracker 2>&1 | grep -iE "telegram|429|forbidden|notifier|Traceback|ERROR|paper" | grep -v "api.telegram.org/bot" | tail -15 | cut -c1-220 | sed 's/^/TLOG|/' || true
+    docker logs --since 3h elysium-ui 2>&1 | grep -iE "getupdates|conflict|Traceback|ERROR|telegram" | tail -8 | cut -c1-220 | sed 's/^/ULOG|/' || true
+    echo "UCOL|collector rounds in 3h: $(docker logs --since 3h elysium-ui 2>&1 | grep -c 'collector: ')"
+    C=$(docker logs --since 3h elysium-consensus-alerts 2>&1 | grep -vE 'api\.telegram\.org')
+    echo "CONS|cycles_failed_3h=$(echo "$C" | grep -c 'Consensus cycle failed closed') queued_lines=$(echo "$C" | grep -c 'Consensus: queued=') shadow=$(echo "$C" | grep -c 'shadow rule')"
+    docker exec elysium-consensus-alerts python -m agora_tracker.consensus_delivery --health 2>&1 | tail -1 | sed 's/^/HEALTH|consensus|/' || true
+    psql_admin -At -F'|' -c "SELECT 'CDLV', status, count(*), max(created_at), max(sent_at) FROM consensus_alerts.deliveries WHERE created_at > now() - interval '24 hours' GROUP BY status" || true
+    psql_admin -At -F'|' -c "SELECT 'CLAST', id, status, created_at, sent_at FROM consensus_alerts.deliveries ORDER BY id DESC LIMIT 3" || true
     psql_admin -At -c "SELECT 'BOOK|' || (value->>'v') FROM service_state WHERE key = 'paper:life-1'" | python3 -c "
 import json, sys
 for line in sys.stdin:
     if not line.startswith('BOOK|'): continue
-    b = json.loads(line[5:])
-    st = b['stats']
-    print('BOOK|status=%s cash=%.2f open=%d trades=%d W/L=%d/%d realized=%.2f fees=%.2f seq=%s skipped=%s' % (b['status'], b['cash'], len(b['open']), st['trades'], st['wins'], st['losses'], st['realized'], st['fees'], b['seq'], json.dumps(st.get('skipped'))))
-    for t, p in b['open'].items():
-        print('POS|#%s %s leader=%s rank=%s cost=%.2f entry=%.10g last=%.10g opened=%s' % (p['id'], p['symbol'], p['leader'][:10], p['rank'], p['cost'], p['entry_px'], p['last_px'], p['opened_at']))
+    b = json.loads(line[5:]); st = b['stats']
+    print('BOOK|status=%s cash=%.2f open=%d trades=%d skipped=%s day=%s' % (b['status'], b['cash'], len(b['open']), st['trades'], json.dumps(st.get('skipped')), json.dumps(b.get('day'))))
 " || true
-    psql_admin -At -F'|' -c "SELECT 'CARD', id, dedup_key, status, created_at, sent_at FROM notification_outbox WHERE dedup_key LIKE 'paper:%' ORDER BY id DESC LIMIT 8" || true
-    docker logs --since 15m elysium-wallet-tracker 2>&1 | grep -iE "paper" | tail -25 | cut -c1-230 | sed 's/^/TLOG|/' || true
-    psql_admin -At -F'|' -c "SELECT 'SNAP', source, count(*), max(captured_at) FROM token_market_snapshots WHERE captured_at > now() - interval '20 minutes' GROUP BY source ORDER BY source" || true
-    psql_admin -At -F'|' -c "SELECT 'ETHEL', s.captured_at, s.source, round(s.mcap_hype, 1) FROM token_market_snapshots s JOIN token_profiles p ON p.chain_id = s.chain_id AND p.address = s.token WHERE p.symbol = 'ETHEL' ORDER BY s.captured_at DESC LIMIT 3" || true
-    docker logs --since 15m elysium-ui 2>&1 | grep -iE "collector|montra|error" | tail -6 | cut -c1-200 | sed 's/^/ULOG|/' || true
     ;;
   ui-smoke)
     docker compose run --rm --no-deps ui --ui-smoke
