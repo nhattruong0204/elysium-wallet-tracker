@@ -108,6 +108,16 @@ market:                        # token stats in alerts and snapshots, in HYPE (m
   montra_list_pages: 2           # Montra's 200 busiest tokens, applied to list views
   montra_list_lookups: 25        # Montra tokens on a list page outside those: one card each
 
+paper:                         # PAPER copy-trading book (agora_tracker/paperbook.py); PAPER_BOOK=on
+  enabled: false
+  book: life-1                   # a new name starts a new book (state: service_state "paper:<book>")
+  bankroll_usd: 100
+  max_rank: 30                   # copy ELITE (1-10) and PRO (11-30) wallets only
+  min_mcap_usd: 10000
+  max_fee_pips: 20000            # pools charging at most 2% per swap
+  stop_loss: 0.35
+  death_equity_usd: 50
+
 telegram:
   bot_token_env: TG_BOT_TOKEN
   chat_id_env: TG_CHAT_ID

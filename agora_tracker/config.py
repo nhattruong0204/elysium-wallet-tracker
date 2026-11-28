@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -413,6 +414,56 @@ class TradingConfig:
 
 
 @dataclass
+class PaperBookConfig:
+    """PAPER copy-trading book run inside the tracker (paperbook.py). Simulated fills from
+    Montra's public pool price only: no keys, no signing, no RPC, no router. Off unless
+    `paper.enabled` or PAPER_BOOK=on (tracker env); PAPER_BOOK_NAME starts a new book."""
+    enabled: bool = False
+    book: str = "life-1"
+    bankroll_usd: float = 100.0
+    position_pct: float = 0.10          # of equity per entry
+    min_position_usd: float = 5.0
+    max_open: int = 5
+    max_per_leader: int = 2             # one wallet made most of the signals on 11-28
+    max_rank: int = 30                  # performance.py board: ELITE 1-10 and PRO 11-30
+    min_leader_hype: float = 1.0        # a test-size buy is not a conviction signal
+    max_signal_age_s: float = 120.0
+    min_mcap_usd: float = 10_000.0
+    min_token_age_s: float = 180.0
+    max_fee_pips: int = 20_000          # 2% per swap (Montra tiers: 1/2/3/5/10%)
+    max_chase: float = 0.15             # pool price above the leader's own fill
+    stop_loss: float = 0.35
+    take_profit: float = 1.0            # +100%: sell take_profit_fraction, trail the rest
+    take_profit_fraction: float = 0.5
+    trail: float = 0.30
+    time_stop_h: float = 72.0
+    cooldown_h: float = 24.0
+    daily_loss_limit: float = 0.20      # of the day's starting equity: no new entries
+    death_equity_usd: float = 50.0      # at or below: close everything, stop for good
+    slippage: float = 0.005             # per side, on top of the pool fee
+    gas_usd: float = 0.02               # per swap
+    poll_s: float = 60.0                # mark-to-market, stops, leader position check
+    quote_cache_s: float = 5.0
+    life_days: float = 30.0             # renewal check: equity >= bankroll after this
+
+    def __post_init__(self) -> None:
+        if not (isinstance(self.book, str) and re.fullmatch(r"[a-z0-9][a-z0-9-]{0,31}", self.book)):
+            raise ValueError("paper.book: 1-32 lowercase letters, digits or dashes")
+        for name in ("position_pct", "stop_loss", "take_profit_fraction", "trail",
+                     "daily_loss_limit", "slippage", "max_chase"):
+            v = getattr(self, name)
+            if not (isinstance(v, (int, float)) and 0 <= v < 1):
+                raise ValueError(f"paper.{name} must be in [0, 1)")
+        if not (0 < self.death_equity_usd < self.bankroll_usd):
+            raise ValueError("paper.death_equity_usd must be between 0 and the bankroll")
+        if not (0 < self.min_position_usd <= self.bankroll_usd):
+            raise ValueError("paper.min_position_usd must be between 0 and the bankroll")
+        if (self.max_open < 1 or self.max_per_leader < 1 or self.max_rank < 1
+                or not (0 < self.max_fee_pips <= 100_000)):
+            raise ValueError("paper.max_open, max_rank and max_fee_pips (<= 10%) must be positive")
+
+
+@dataclass
 class Config:
     chain: ChainConfig
     leaderboard: LeaderboardConfig
@@ -427,6 +478,7 @@ class Config:
     tracking: TrackingConfig = field(default_factory=TrackingConfig)
     scoring: ScoringConfig = field(default_factory=ScoringConfig)
     trading: TradingConfig = field(default_factory=TradingConfig)
+    paper: PaperBookConfig = field(default_factory=PaperBookConfig)
     db_path: str = "tracker.db"
     watchlist_file: str | None = None
     exclude_contracts: bool = True
@@ -525,10 +577,20 @@ def load_config(path: str | Path) -> Config:
     intel.wrapped_native = _norm_addr(intel.wrapped_native)
     intel.dd_factories = [_norm_addr(a) for a in intel.dd_factories]
     intel.launch_factories = [_norm_addr(a) for a in intel.launch_factories]
+    paper_raw = dict(raw.get("paper") or {})
+    env_paper = os.environ.get("PAPER_BOOK", "").strip().lower()
+    if env_paper in ("on", "1", "true", "yes"):
+        paper_raw["enabled"] = True
+    elif env_paper in ("off", "0", "false", "no"):
+        paper_raw["enabled"] = False
+    if os.environ.get("PAPER_BOOK_NAME", "").strip():
+        paper_raw["book"] = os.environ["PAPER_BOOK_NAME"].strip().lower()
+    paper = PaperBookConfig(**paper_raw)
     return Config(chain=chain, leaderboard=lb, alerts=alerts, telegram=tg, links=links,
                   market=market, ui=ui, collector=collector, web=web, intel=intel,
                   tracking=tracking, scoring=scoring,
-                  trading=TradingConfig(**(raw.get("trading") or {})), db_path=db_path,
+                  trading=TradingConfig(**(raw.get("trading") or {})), paper=paper,
+                  db_path=db_path,
                   watchlist_file=wl,
                   exclude_contracts=raw.get("exclude_contracts", True))
 

@@ -562,6 +562,50 @@ Every trade card shows how the wallet has done lately, so a reader can decide in
 - `ALERTS_PERF_BADGES=off` (tracker env) removes it. `alerts.perf_*` in `config.yaml` tunes the window, minimums, snipe seconds and refresh time.
 - The log line `trader ranking: N ranked wallet(s) …` appears whenever the count changes.
 
+## PAPER book: $100 copy-trading test (2026-11-28)
+
+The tracker runs a **simulated** portfolio (`agora_tracker/paperbook.py`). It never trades: no keys, no signing, no RPC calls, no router calldata, and it does not import the `trading` package. It answers one question: does copying our ranked wallets make money after Montra's fees? The backtest in the wiki (How tracked wallets made money, 2026-11-28) could not settle it, because a third of the exits had no later trade to price.
+
+**Entry:** a buy alert qualifies when all of these hold.
+- The wallet is ranked 1-30 on the trader board (Trader badges, above).
+- The buy is at least 1 HYPE.
+- The alert is less than 2 minutes old.
+- The token is not launcher-made and has no launch-cohort wallets on it.
+
+Montra's token detail (`api.montramarkets.xyz/api/tokens/<token>`) must also show:
+- a market cap of at least $10k;
+- a token at least 3 minutes old;
+- a pool fee of at most 2% (pools charge 1-10% on every buy *and* sell);
+- no active anti-snipe fee;
+- a price no more than 15% above the leader's own fill.
+
+**Fill:**
+- Size is 10% of equity (at least $5), with at most 5 open positions, one per token and at most 2 copied from the same wallet. On 11-28 one wallet made most of the qualifying buys.
+- Simulated at Montra's pool price, with the pool's fee, 0.5% slippage and $0.02 gas per side.
+
+**Exit:**
+- The leader sells. This is also caught when their position halves without a sell alert, for example a sell under the 0.5 HYPE alert minimum.
+- Stop at -35%.
+- Sell half at +100%, then trail the rest 30% from its peak.
+- Time stop at 72 h. After an exit the token has a 24 h cooldown.
+
+**Risk:**
+- Equity down 20% in a UTC day stops new entries until 00:00 UTC.
+- Equity at or below **$50 is death**: every position is closed at its last price, and the book stops for good.
+- After 30 days the daily card shows whether equity still covers the $100. Cash between trades counts in dollars, so HYPE's own price moves don't count.
+
+**Cards in the alert chat:** each card carries the token's Fomo button.
+- `🧪 PAPER BUY` and `PAPER SELL`.
+- A daily book at local midnight (`ui.timezone`), with equity, record, fees, the top skip reasons and open positions.
+- The daily-limit and death notices.
+
+**Operation:**
+- `PAPER_BOOK=on` in the tracker's environment (compose) turns it on; `off` stops it.
+- State is one JSON document in `service_state` (`paper:<book>`). It survives restarts and redeploys, and open positions are re-marked on start.
+- `PAPER_BOOK_NAME=life-2` starts a new book. The old one stays readable under its own key.
+- Rules live in `paper.*` in `config.yaml`. Defaults are in `PaperBookConfig`, each with the evidence behind it in the module docstring.
+- The work runs on its own thread. The engine only hands it committed alert payloads, so a slow Montra answer never delays indexing, and a failing book never blocks an alert.
+
 ## Market cap and price: quote assets and Montra's own figures (2026-11-27)
 
 Card market caps, prices, volumes and uPnL are in HYPE internally and shown in dollars at the HYPE rate the card uses. Two sources disagreed with what Montra shows:

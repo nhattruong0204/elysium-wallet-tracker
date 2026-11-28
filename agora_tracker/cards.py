@@ -858,4 +858,6 @@ def render(payload: dict | None, L: Links, info: TokenInfo | None = None,
         return render_launch(payload, L, info, hype_usd, dd=dd)
     if payload.get("type") == "burst":
         return render_burst(payload, L, info, hype_usd)
+    if payload.get("type") == "paper" and isinstance(payload.get("text"), str):
+        return payload["text"], {}          # paperbook.py renders its own cards
     return None
