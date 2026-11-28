@@ -699,30 +699,42 @@ PY
     tracker_alive
     ;;
   wallet-probe)
-    # Read-only: Agora leaderboard units and Montra platform totals.
-    cat > /tmp/probe_u.py <<'PY_RUN'
-import json, time, urllib.request
-UA = {"user-agent": "elysium-wallet-tracker research", "accept": "application/json"}
-def get(url):
+    # Read-only: Montra fee docs, fee fields and indexer health.
+    cat > /tmp/probe_f.py <<'PY_RUN'
+import json, re, time, urllib.request, html
+UA = {"user-agent": "elysium-wallet-tracker research", "accept": "text/html,application/json"}
+def get(url, raw=False):
     with urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=25) as r:
-        out = json.loads(r.read())
-    time.sleep(1.0)
-    return out
-tr = get("https://api.agoradex.app/api/traders?limit=3")
-print("AG|top keys=" + ",".join(sorted(tr.keys())) + " hypeUsd=%s" % tr.get("hypeUsd"))
-items = tr.get("traders") or tr.get("items") or tr.get("data") or []
-for it in items[:3]:
-    print("AG|item " + json.dumps({k: v for k, v in it.items() if k not in ("address", "wallet")})[:600])
-s = get("https://api.montramarkets.xyz/api/stats")
-print("MS|" + json.dumps(s)[:1500])
-d = get("https://api.montramarkets.xyz/api/stats/daily")
-rows = d if isinstance(d, list) else (d.get("days") or d.get("rows") or d.get("daily") or [])
-print("MD|keys=" + (",".join(sorted(d.keys())) if isinstance(d, dict) else "list") + " n=%d" % len(rows))
-for r in rows[-10:]:
-    print("MD|" + json.dumps(r)[:400])
+        b = r.read()
+    time.sleep(0.8)
+    return b.decode("utf-8", "replace") if raw else json.loads(b)
+def text(h):
+    h = re.sub(r"(?is)<(script|style)[^>]*>.*?</\1>", " ", h)
+    h = re.sub(r"(?s)<[^>]+>", " ", h)
+    return re.sub(r"\s+", " ", html.unescape(h)).strip()
+for page in ("fees", "anti-snipe"):
+    t = text(get("https://montramarkets.xyz/docs/" + page, raw=True))
+    i = t.find("Fees") if page == "fees" else t.find("nti-snipe")
+    body = t[max(0, i - 50):]
+    for k in range(0, min(len(body), 6000), 1000):
+        print("DOC|%s|%s" % (page, body[k:k + 1000]))
+M = "https://api.montramarkets.xyz"
+lst = get(M + "/api/tokens?sort=volume&limit=8")
+for c in lst["tokens"]:
+    print("FEE|%s|quote=%s|totalFeePips=%s|launchedAt=%s|lastTradeAt=%s|mcUsd=%s" % (
+        c.get("symbol"), (c.get("quote") or {}).get("symbol"), c.get("totalFeePips"), c.get("launchedAt"),
+        c.get("lastTradeAt"), round(c.get("marketCapUsd") or 0)))
+new = get(M + "/api/tokens?sort=new&limit=3")
+for c in new["tokens"]:
+    d = get(M + "/api/tokens/" + c["address"])
+    print("NEW|%s|age_s=%.0f|totalFeePips=%s|config=%s" % (c.get("symbol"), time.time() - (c.get("launchedAt") or 0) / 1000,
+          c.get("totalFeePips"), json.dumps(d.get("config"))[:500]))
+    print("NEWPOOL|%s|pool=%s|live=%s" % (c.get("symbol"), json.dumps(d.get("pool"))[:400], json.dumps(d.get("live"))[:300]))
+h = get(M + "/health")
+print("HEALTH|" + json.dumps(h)[:300])
 PY_RUN
-    python3 /tmp/probe_u.py 2>&1 | cut -c1-1600 || true
-    rm -f /tmp/probe_u.py
+    python3 /tmp/probe_f.py 2>&1 | cut -c1-1100 || true
+    rm -f /tmp/probe_f.py
     ;;
   ui-smoke)
     docker compose run --rm --no-deps ui --ui-smoke
