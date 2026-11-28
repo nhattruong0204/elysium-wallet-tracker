@@ -10,6 +10,7 @@ import os
 import shutil
 import signal
 import sys
+import threading
 import time
 from datetime import datetime, timezone
 from urllib.parse import urlsplit
@@ -70,6 +71,13 @@ class Tracker:
         self._next_launch = 0.0
         self.notifier = Notifier(self.store, cfg.telegram, dry_run, renderer=self.render_alert,
                                  suppress_tokens=cfg.alerts.telegram_mute_tokens)
+        self.paper = None
+        self._paper_stop = threading.Event()
+        if cfg.paper.enabled and not dry_run:
+            from .paperbook import PaperBook
+            self.paper = PaperBook(self.store, cfg.paper, cfg.market, self.market.hype_usd,
+                                   tz=cfg.ui.timezone)
+            self.engine.trade_listeners.append(self.paper.on_trade)
         lb = cfg.leaderboard
         self.leaderboard = HttpLeaderboard(lb) if lb.enabled and lb.url else None
         self.tracked: set[str] = set()
@@ -134,6 +142,7 @@ class Tracker:
     def stop(self, *_):
         log.info("shutdown requested")
         self._stop = True
+        self._paper_stop.set()
 
     def check_chain(self) -> None:
         """Verify every configured endpoint's chain id; quarantine mismatches. Refuse to run
@@ -391,6 +400,9 @@ class Tracker:
         self.refresh_leaderboard()
         if not self.tracked:
             log.warning("no wallets tracked: configure leaderboard.url or watchlist_file")
+        if self.paper is not None and not once:
+            threading.Thread(target=self.paper.run, args=(self._paper_stop,), name="paper-book",
+                             daemon=True).start()
         if not once:
             source = "leaderboard + watchlist" if self.leaderboard else "watchlist only"
             self.store.enqueue_now(
