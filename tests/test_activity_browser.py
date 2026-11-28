@@ -253,10 +253,14 @@ def test_requests_never_overlap(kinds, make_live, ctx):
         state["open"] -= 1
     page.on("request", lambda r: None)
     page.route(re.compile(r".*/api/v1/activity\?.*since_id.*"), handler)
-    # a slow response: keep the request open far longer than the poll interval
+    # a slow response: keep the request open far longer than the poll interval. A request the
+    # page aborts (its 10 s timeout, on the fake clock: a slow real response in CI) is no longer
+    # in flight either, so it is counted down on rejection too. Counting only successes made
+    # the next poll look like an overlap (2026-11-27/28 failures on main).
     page.evaluate("""() => { const f = window.fetch; window.__inflight = 0; window.__max = 0;
         window.fetch = (...a) => { window.__inflight++; window.__max = Math.max(window.__max, window.__inflight);
-          return f(...a).then(r => new Promise(res => setTimeout(() => { window.__inflight--; res(r); }, 8000))); }; }""")
+          return f(...a).then(r => new Promise(res => setTimeout(() => { window.__inflight--; res(r); }, 8000)),
+                              e => { window.__inflight--; throw e; }); }; }""")
     for _ in range(60):
         advance(page, 1000)
     assert page.evaluate("window.__max") == 1
