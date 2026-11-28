@@ -775,14 +775,20 @@ for t in need:
     j = get("https://api.agoradex.app/api/tokens/%s?range=7d" % t, 1.5)
     cs = j.get("candles") if isinstance(j, dict) else None
     if cs:
-        cd[t] = [(x[0] / 1000, float(x[2]), float(x[3]), float(x[4])) for x in cs if x and x[4]]
+        if not cd:
+            print("EV|sample candle=%s first_t=%s last_t=%s" % (json.dumps(cs[0])[:120], cs[0][0], cs[-1][0]))
+        cd[t] = [((x[0] / 1000 if x[0] > 1e11 else float(x[0])), float(x[2]), float(x[3]), float(x[4]))
+                 for x in cs if x and x[4]]
 print("EV|tokens with candles=%d of %d" % (len(cd), len(need)))
+skip = Counter()
 SL = 0.005
 res = defaultdict(list)
 for name, t, ts, px, fee, sym in events:
     cs = cd.get(t)
-    if not cs or cs[-1][0] < ts:
-        continue
+    if not cs:
+        skip["no candles"] += 1; continue
+    if cs[-1][0] < ts or cs[0][0] > ts + 3600:
+        skip["candles do not cover the event"] += 1; continue
     f = fee / 1e6
     cost = (1 - f) ** 2 * (1 - SL) ** 2
     after = [x for x in cs if x[0] >= ts]
@@ -810,6 +816,7 @@ for key in sorted(res):
     print("RES|%s|%s|n=%d|24h: median=%+.0f%% mean=%+.0f%% win=%.0f%%|bracket: tp=%d stop=%d time=%d EV=%+.1f%%/trade" % (
         key[0], key[1], len(v), 100 * st.median(r24), 100 * st.mean(r24), 100 * sum(x > 0 for x in r24) / len(r24),
         kinds["tp"], kinds["stop"], kinds["time"], 100 * st.mean(br)))
+print("EV|skipped=%s" % dict(skip))
 PY_RUN
     chmod 644 /tmp/elysium-probe/*.py
     docker compose run -T --rm --no-deps -v /tmp/elysium-probe:/probe:ro --entrypoint python tracker /probe/run.py 2>&1 | grep -v "^ Container\|Creating\|Created" | cut -c1-320 || true
