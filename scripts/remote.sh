@@ -699,120 +699,121 @@ PY
     tracker_alive
     ;;
   wallet-probe)
-    # Read-only research: Montra API surface and base rates, Agora trader universe, alert latency.
+    # Read-only event study: snapshots (READ ONLY session) + Montra fee/quote + Agora candles (1.5 s apart).
     need_docker
-    cat > /tmp/probe_m.py <<'PY_RUN'
-"""Read-only research: Montra API surface, token base rates, fee tiers, rewards; Agora trader universe."""
-import json, re, statistics as st, time, urllib.request, urllib.parse
-from collections import Counter
-UA = {"user-agent": "elysium-wallet-tracker research", "accept": "application/json,text/html"}
-def get(url, raw=False, pause=0.6):
+    rm -rf /tmp/elysium-probe && mkdir -p /tmp/elysium-probe && chmod 755 /tmp/elysium-probe
+    cat > /tmp/elysium-probe/run.py <<'PY_RUN'
+"""Read-only event study on our market snapshots (tracker role, READ ONLY) + Montra fee/quote + Agora candles."""
+import json, os, sys, time, urllib.request, statistics as st
+from collections import defaultdict, Counter
+sys.path.insert(0, "/app")
+import sqlalchemy as sa
+from agora_tracker.launchers import load_launchers
+C = 99901
+UA = {"user-agent": "elysium-wallet-tracker research", "accept": "application/json"}
+def get(url, pause):
     try:
-        with urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=30) as r:
-            b = r.read()
-        return b.decode("utf-8", "replace") if raw else json.loads(b)
+        with urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=25) as r:
+            return json.loads(r.read())
     except Exception as e:
         return {"_err": "%s %s" % (type(e).__name__, getattr(e, "code", ""))}
     finally:
         time.sleep(pause)
-M, A = "https://api.montramarkets.xyz", "https://api.agoradex.app"
-# 1. endpoint list from the docs
-h = get("https://montramarkets.xyz/docs/api", raw=True)
-paths = sorted(set(re.findall(r"(?:GET|POST)?\s*(/api/[A-Za-z0-9_{}<>:/\-\.]+(?:\?[A-Za-z0-9_=&{}<>\-|,]+)?)", h if isinstance(h, str) else "")))
-print("API|" + " ".join(paths)[:1400])
-# 2. card keys (list) and detail keys
-lst = get(M + "/api/tokens?sort=volume&limit=100&page=1")
-toks = lst.get("tokens") or []
-print("LISTMETA|" + json.dumps({k: lst.get(k) for k in lst if k != "tokens"}))
-if toks:
-    print("CARDKEYS|" + ",".join(sorted(toks[0].keys())))
-    d = get(M + "/api/tokens/" + toks[0]["address"])
-    print("DETAILKEYS|" + ",".join(sorted(d.keys())))
-    for k in ("rewards", "stats", "splitter", "config", "liquidity"):
-        print("DETAIL_%s|%s" % (k, json.dumps(d.get(k))[:700]))
-# 3. fee tiers by volume (top 100)
-tier = Counter(); vol = Counter()
-for c in toks:
-    f = int(c.get("totalFeePips") or 0)
-    tier[f] += 1; vol[f] += float(c.get("volume24hUsd") or 0)
-tv = sum(vol.values()) or 1
-print("FEETIER|" + " ".join("%s%%:n=%d,vol=%.0f%%" % (k / 1e4, tier[k], 100 * vol[k] / tv) for k in sorted(tier)))
-# 4. base rates: sample list pages of sort=new at increasing depth (older tokens)
-pages = lst.get("pages") or 1
-newm = get(M + "/api/tokens?sort=new&limit=100&page=1")
-npages = newm.get("pages") or 1
-print("NEWMETA|pages=%s total=%s" % (npages, newm.get("total")))
+eng = sa.create_engine(os.environ["DATABASE_URL"], connect_args={
+    "options": "-c default_transaction_read_only=on -c statement_timeout=120000"})
 now = time.time()
-rows = []
-for pg in (1, 3, 8, 15, 25, 40, 60, 80, 110, 150, 200, 260, 330, 420, 520, 650, 800):
-    if pg > npages: break
-    j = newm if pg == 1 else get(M + "/api/tokens?sort=new&limit=100&page=%d" % pg)
-    for c in (j.get("tokens") or []):
-        la = (c.get("launchedAt") or 0) / 1000
-        rows.append((now - la, float(c.get("marketCapUsd") or 0), int(c.get("holders") or 0),
-                     float(c.get("volume24hUsd") or 0), int(c.get("totalFeePips") or 0),
-                     (c.get("quote") or {}).get("symbol"), c.get("athMarketCapUsd") or c.get("athMcapUsd") or c.get("maxMarketCapUsd")))
-def bucket(age):
-    for lim, name in ((3600, "<1h"), (6 * 3600, "1-6h"), (24 * 3600, "6-24h"), (3 * 86400, "1-3d"), (7 * 86400, "3-7d"), (30 * 86400, "7-30d")):
-        if age < lim: return name
-    return ">30d"
-groups = {}
+with eng.connect() as c:
+    L = load_launchers(c, chain_id=C, lookback_days=30, window_s=2, min_launches=3)
+    rows = c.execute(sa.text("""
+      SELECT s.token, extract(epoch FROM s.captured_at)::float, s.price_hype::float, s.mcap_hype::float,
+             s.change_24h::float, s.buys_24h, extract(epoch FROM p.launched_at)::float
+        FROM token_market_snapshots s
+        JOIN token_profiles p ON p.chain_id = s.chain_id AND p.address = s.token
+       WHERE s.chain_id = :c AND s.source = 'agora' AND p.launchpad = 'montra'
+         AND s.captured_at >= now() - interval '8 days' AND s.captured_at < now() - interval '24 hours'
+         AND s.price_hype > 0 AND s.mcap_hype > 0 AND p.launched_at IS NOT NULL
+       ORDER BY s.token, s.captured_at""")).all()
+series = defaultdict(list)
 for r in rows:
-    groups.setdefault(bucket(r[0]), []).append(r)
-for name in ("<1h", "1-6h", "6-24h", "1-3d", "3-7d", "7-30d", ">30d"):
-    g = groups.get(name) or []
-    if not g: continue
-    mc = sorted(x[1] for x in g)
-    print("BASE|%s|n=%d|median_mc=$%.0f|p90=$%.0f|>=$10k=%.1f%%|>=$50k=%.1f%%|>=$100k=%.1f%%|holders_med=%d|vol24_med=$%.0f|has_ath=%s" % (
-        name, len(g), st.median(mc), mc[int(0.9 * (len(mc) - 1))], 100 * sum(x >= 1e4 for x in mc) / len(g),
-        100 * sum(x >= 5e4 for x in mc) / len(g), 100 * sum(x >= 1e5 for x in mc) / len(g),
-        st.median(x[2] for x in g), st.median(x[3] for x in g), any(x[6] for x in g)))
-print("BASEQ|" + json.dumps(Counter(r[5] for r in rows).most_common(5)) + "|fee:" + json.dumps(Counter(r[4] for r in rows).most_common(6)))
-# 5. platform stats
-s = get(M + "/api/stats")
-print("STATS|" + json.dumps(s)[:900])
-# 6. Agora trader universe beyond the top 100
-seen, rowsA = set(), []
-for off in (0, 100, 200, 300, 400, 500, 700, 900):
-    j = get(A + "/api/traders?limit=100&offset=%d" % off, pause=1.4)
-    it = j.get("traders") if isinstance(j, dict) else None
-    if not it: print("AGORA|offset=%d -> %s" % (off, json.dumps(j)[:200] if isinstance(j, dict) else "?")); break
-    for t in it:
-        a = (t.get("address") or t.get("wallet") or "").lower()
-        if a in seen: continue
-        seen.add(a); rowsA.append(t)
-print("AGORA|traders=%d keys=%s" % (len(rowsA), ",".join(sorted(rowsA[0].keys())) if rowsA else "-"))
-if rowsA:
-    pn = [float(t.get("pnlHype") or 0) for t in rowsA]
-    re_ = [float(t.get("realizedHype") or 0) for t in rowsA]
-    print("AGORA|pnl>0=%d realized>0=%d realized>=10=%d realized>=100=%d median_pnl=%.1f rank100_pnl=%.1f rank500_pnl=%s" % (
-        sum(x > 0 for x in pn), sum(x > 0 for x in re_), sum(x >= 10 for x in re_), sum(x >= 100 for x in re_),
-        st.median(pn), pn[99] if len(pn) > 99 else float("nan"), "%.1f" % pn[499] if len(pn) > 499 else "-"))
-    json.dump([(t.get("address") or t.get("wallet"), t.get("pnlHype"), t.get("realizedHype"), t.get("volumeHype"), t.get("trades") or t.get("tradeCount")) for t in rowsA], open("/tmp/agora_traders.json", "w"))
+    if r[0] not in L.tokens:
+        series[r[0]].append(r[1:])
+print("EV|snapshot rows=%d montra tokens=%d (launcher tokens excluded: %d)" % (len(rows), len(series), len(L.tokens)))
+cand = [t for t, v in series.items() if max(x[2] for x in v) >= 300]
+cand.sort(key=lambda t: -max(x[2] for x in series[t]))
+cand = cand[:420]
+meta = {}
+for t in cand:
+    d = get("https://api.montramarkets.xyz/api/tokens/" + t, 0.45)
+    if "_err" in d:
+        continue
+    meta[t] = (str((d.get("quote") or {}).get("symbol") or ""), int(d.get("totalFeePips") or 0), d.get("symbol"))
+q = Counter(m[0] for m in meta.values())
+print("EV|candidates=%d with Montra card=%d quotes=%s" % (len(cand), len(meta), dict(q)))
+K = 0.0031     # HYPE per KNTQ (Agora, late Nov); Agora reported KNTQ pools in KNTQ
+events = []
+for t, (quote, fee, sym) in meta.items():
+    if quote not in ("HYPE", "KNTQ"):
+        continue                      # MONTRA-quoted pools: Agora's figures are not usable
+    k = 1.0 if quote == "HYPE" else K
+    e1 = e3 = False
+    e2_days = set()
+    for ts, px, mc, ch24, buys, la in series[t]:
+        age = ts - la
+        mct = mc * k
+        if not e1 and age >= 6 * 3600 and mct >= 800:
+            events.append(("E1 breakout: >=$50k after 6h", t, ts, px, fee, sym)); e1 = True
+        if age >= 48 * 3600 and mct >= 1600 and ch24 is not None and ch24 <= -0.30:
+            day = int(ts // 86400)
+            if day not in e2_days:
+                events.append(("E2 dip: >=$100k, 2d+ old, -30% in 24h", t, ts, px, fee, sym)); e2_days.add(day)
+        if not e3 and 3600 <= age < 6 * 3600 and mct >= 300 and (buys or 0) >= 100:
+            events.append(("E3 momentum: >=$19k at 1-6h, 100+ buys", t, ts, px, fee, sym)); e3 = True
+print("EV|events=%s" % dict(Counter(e[0] for e in events)))
+need = sorted({e[1] for e in events})[:200]
+cd = {}
+for t in need:
+    j = get("https://api.agoradex.app/api/tokens/%s?range=7d" % t, 1.5)
+    cs = j.get("candles") if isinstance(j, dict) else None
+    if cs:
+        cd[t] = [(x[0] / 1000, float(x[2]), float(x[3]), float(x[4])) for x in cs if x and x[4]]
+print("EV|tokens with candles=%d of %d" % (len(cd), len(need)))
+SL = 0.005
+res = defaultdict(list)
+for name, t, ts, px, fee, sym in events:
+    cs = cd.get(t)
+    if not cs or cs[-1][0] < ts:
+        continue
+    f = fee / 1e6
+    cost = (1 - f) ** 2 * (1 - SL) ** 2
+    after = [x for x in cs if x[0] >= ts]
+    if not after:
+        continue
+    # 24h close
+    c24 = next((x[3] for x in after if x[0] >= ts + 86400), after[-1][3])
+    r24 = c24 / px * cost - 1
+    # bracket within 72h: +100% take profit vs -35% stop; same-bucket ambiguity counts as stop
+    out = None
+    for tt, h, l, c in after:
+        if tt > ts + 72 * 3600: break
+        hit_sl, hit_tp = l <= px * 0.65, h >= px * 2.0
+        if hit_sl: out = ("stop", 0.65 * cost - 1); break
+        if hit_tp: out = ("tp", 2.0 * cost - 1); break
+    if out is None:
+        c72 = next((x[3] for x in after if x[0] >= ts + 72 * 3600), after[-1][3])
+        out = ("time", c72 / px * cost - 1)
+    tier = "fee<=2%" if fee <= 20000 else "fee>2%"
+    res[(name, "all")].append((r24, out))
+    res[(name, tier)].append((r24, out))
+for key in sorted(res):
+    v = res[key]
+    r24 = [x[0] for x in v]; br = [x[1][1] for x in v]; kinds = Counter(x[1][0] for x in v)
+    print("RES|%s|%s|n=%d|24h: median=%+.0f%% mean=%+.0f%% win=%.0f%%|bracket: tp=%d stop=%d time=%d EV=%+.1f%%/trade" % (
+        key[0], key[1], len(v), 100 * st.median(r24), 100 * st.mean(r24), 100 * sum(x > 0 for x in r24) / len(r24),
+        kinds["tp"], kinds["stop"], kinds["time"], 100 * st.mean(br)))
 PY_RUN
-    python3 /tmp/probe_m.py 2>&1 | cut -c1-1500 | sed 's/^/R|/' || true
-    rm -f /tmp/probe_m.py
-    psql_admin -At -F'|' -c "SELECT 'LAT', round(percentile_cont(0.5) WITHIN GROUP (ORDER BY extract(epoch FROM created_at - to_timestamp((payload->>'ts')::numeric)))::numeric, 1), round(percentile_cont(0.9) WITHIN GROUP (ORDER BY extract(epoch FROM created_at - to_timestamp((payload->>'ts')::numeric)))::numeric, 1), round(percentile_cont(0.99) WITHIN GROUP (ORDER BY extract(epoch FROM created_at - to_timestamp((payload->>'ts')::numeric)))::numeric, 1), round(percentile_cont(0.5) WITHIN GROUP (ORDER BY extract(epoch FROM sent_at - created_at))::numeric, 1), round(percentile_cont(0.9) WITHIN GROUP (ORDER BY extract(epoch FROM sent_at - created_at))::numeric, 1), count(*) FROM notification_outbox WHERE payload->>'type' = 'trade' AND created_at > now() - interval '3 days' AND sent_at IS NOT NULL AND payload->>'ts' IS NOT NULL" | sed 's/^/R|/' || true
-    psql_admin -At -F'|' -c "SELECT 'WATCH', source, status, count(*) FROM wallet_watchlist GROUP BY 2, 3 ORDER BY 4 DESC" | sed 's/^/R|/' || true
-    psql_admin -At -F'|' -c "SELECT 'ACTIVE7D', count(DISTINCT wallet) FROM trades WHERE chain_id = 99901 AND block_time > now() - interval '7 days' AND kind IN ('BUY', 'SELL')" | sed 's/^/R|/' || true
-    psql_admin -At -F'|' -c "SELECT 'SIGDAY', date_trunc('day', o.created_at)::date, count(*) FILTER (WHERE o.payload->>'kind' = 'BUY'), count(*) FILTER (WHERE o.payload->>'kind' = 'BUY' AND (o.payload->'perf'->>'rank')::int <= 30), count(*) FILTER (WHERE o.payload->>'kind' = 'BUY' AND (o.payload->'perf'->>'rank')::int <= 30 AND (o.payload->>'hype_wei')::numeric >= 1e18 AND p.launchpad = 'montra'), count(DISTINCT o.payload->>'token') FILTER (WHERE o.payload->>'kind' = 'BUY' AND (o.payload->'perf'->>'rank')::int <= 30 AND p.launchpad = 'montra') FROM notification_outbox o LEFT JOIN token_profiles p ON p.chain_id = 99901 AND p.address = o.payload->>'token' WHERE o.payload->>'type' = 'trade' AND o.created_at > now() - interval '4 days' GROUP BY 2 ORDER BY 2" | sed 's/^/R|/' || true
-    if [ -s /tmp/agora_traders.json ]; then
-      psql_admin -At -c "SELECT address FROM wallet_watchlist" > /tmp/watch_addrs.txt || true
-      python3 - <<'PY_CMP' | sed 's/^/R|/'
-import json
-rows = json.load(open("/tmp/agora_traders.json"))
-watch = {l.strip().lower() for l in open("/tmp/watch_addrs.txt") if l.strip()}
-def f(x):
-    try: return float(x)
-    except Exception: return 0.0
-un = [r for r in rows if (r[0] or "").lower() not in watch]
-print("CMP|agora_listed=%d tracked=%d untracked=%d untracked_realized>=10=%d untracked_realized>=50=%d" % (
-    len(rows), len(rows) - len(un), len(un), sum(f(r[2]) >= 10 for r in un), sum(f(r[2]) >= 50 for r in un)))
-for i, r in enumerate(rows[:5]):
-    print("CMPROW|%d|%s|pnl=%s|realized=%s|vol=%s|tracked=%s" % (i + 1, (r[0] or "")[:10], r[1], r[2], r[3], (r[0] or "").lower() in watch))
-PY_CMP
-      rm -f /tmp/agora_traders.json /tmp/watch_addrs.txt
-    fi
+    chmod 644 /tmp/elysium-probe/*.py
+    docker compose run -T --rm --no-deps -v /tmp/elysium-probe:/probe:ro --entrypoint python tracker /probe/run.py 2>&1 | grep -v "^ Container\|Creating\|Created" | cut -c1-320 || true
+    rm -rf /tmp/elysium-probe
     ;;
   ui-smoke)
     docker compose run --rm --no-deps ui --ui-smoke
