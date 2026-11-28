@@ -699,33 +699,120 @@ PY
     tracker_alive
     ;;
   wallet-probe)
-    # Read-only: health of the three Telegram senders (alerts, menu bot, Consensus) and the paper book.
+    # Read-only research: Montra API surface and base rates, Agora trader universe, alert latency.
     need_docker
-    docker ps --format '{{.Names}}|{{.Status}}' | grep -E "elysium-(wallet-tracker|ui|consensus-alerts|web|postgres)" | sed 's/^/PS|/'
-    docker exec elysium-wallet-tracker python -m agora_tracker --health 2>&1 | tail -1 | sed 's/^/HEALTH|tracker|/' || true
-    docker exec elysium-ui python -m agora_tracker --health-ui 2>&1 | tail -1 | sed 's/^/HEALTH|ui|/' || true
-    psql_admin -At -F'|' -c "SELECT 'OUTBOX', status, count(*), max(sent_at), max(attempts) FROM notification_outbox WHERE created_at > now() - interval '3 hours' GROUP BY status ORDER BY status" || true
-    psql_admin -At -F'|' -c "SELECT 'PENDING', count(*), coalesce(round(extract(epoch FROM now() - min(created_at)))::text, '-') FROM notification_outbox WHERE status = 'pending'" || true
-    psql_admin -At -F'|' -c "SELECT 'ERR', id, status, attempts, left(coalesce(last_error, ''), 120), created_at FROM notification_outbox WHERE created_at > now() - interval '24 hours' AND (status NOT IN ('sent', 'pending') OR attempts > 1) ORDER BY id DESC LIMIT 6" || true
-    psql_admin -At -F'|' -c "SELECT 'LASTSENT', max(sent_at), round(extract(epoch FROM now() - max(sent_at))) FROM notification_outbox WHERE status = 'sent'" || true
-    psql_admin -At -F'|' -c "SELECT 'BYHOUR', date_trunc('hour', sent_at), count(*) FROM notification_outbox WHERE status = 'sent' AND sent_at > now() - interval '6 hours' GROUP BY 2 ORDER BY 2" || true
-    psql_admin -At -F'|' -c "SELECT 'RANKED', count(*) FILTER (WHERE payload->>'kind' = 'BUY'), count(*) FILTER (WHERE payload->>'kind' = 'BUY' AND (payload->'perf'->>'rank')::int <= 30), count(*) FILTER (WHERE payload->>'kind' = 'BUY' AND (payload->'perf'->>'rank')::int <= 30 AND (payload->>'hype_wei')::numeric >= 1e18), count(*) FILTER (WHERE payload->>'kind' = 'BUY' AND (payload->'perf'->>'rank')::int <= 30 AND (payload->>'hype_wei')::numeric >= 1e18 AND p.launchpad = 'montra') FROM notification_outbox o LEFT JOIN token_profiles p ON p.chain_id = 99901 AND p.address = o.payload->>'token' WHERE o.created_at > now() - interval '3 hours' AND o.payload->>'type' = 'trade'" || true
-    psql_admin -At -F'|' -c "SELECT 'RANKBUY', o.created_at, coalesce(p.symbol, left(o.payload->>'token', 10)), p.launchpad, (o.payload->'perf'->>'rank'), round((o.payload->>'hype_wei')::numeric / 1e18, 2) FROM notification_outbox o LEFT JOIN token_profiles p ON p.chain_id = 99901 AND p.address = o.payload->>'token' WHERE o.created_at > now() - interval '3 hours' AND o.payload->>'type' = 'trade' AND o.payload->>'kind' = 'BUY' AND (o.payload->'perf'->>'rank')::int <= 30 ORDER BY o.id DESC LIMIT 15" || true
-    docker logs --since 3h elysium-wallet-tracker 2>&1 | grep -iE "telegram|429|forbidden|notifier|Traceback|ERROR|paper" | grep -v "api.telegram.org/bot" | tail -15 | cut -c1-220 | sed 's/^/TLOG|/' || true
-    docker logs --since 3h elysium-ui 2>&1 | grep -iE "getupdates|conflict|Traceback|ERROR|telegram" | tail -8 | cut -c1-220 | sed 's/^/ULOG|/' || true
-    echo "UCOL|collector rounds in 3h: $(docker logs --since 3h elysium-ui 2>&1 | grep -c 'collector: ')"
-    C=$(docker logs --since 3h elysium-consensus-alerts 2>&1 | grep -vE 'api\.telegram\.org')
-    echo "CONS|cycles_failed_3h=$(echo "$C" | grep -c 'Consensus cycle failed closed') queued_lines=$(echo "$C" | grep -c 'Consensus: queued=') shadow=$(echo "$C" | grep -c 'shadow rule')"
-    docker exec elysium-consensus-alerts python -m agora_tracker.consensus_delivery --health 2>&1 | tail -1 | sed 's/^/HEALTH|consensus|/' || true
-    psql_admin -At -F'|' -c "SELECT 'CDLV', status, count(*), max(created_at), max(sent_at) FROM consensus_alerts.deliveries WHERE created_at > now() - interval '24 hours' GROUP BY status" || true
-    psql_admin -At -F'|' -c "SELECT 'CLAST', id, status, created_at, sent_at FROM consensus_alerts.deliveries ORDER BY id DESC LIMIT 3" || true
-    psql_admin -At -c "SELECT 'BOOK|' || (value->>'v') FROM service_state WHERE key = 'paper:life-1'" | python3 -c "
-import json, sys
-for line in sys.stdin:
-    if not line.startswith('BOOK|'): continue
-    b = json.loads(line[5:]); st = b['stats']
-    print('BOOK|status=%s cash=%.2f open=%d trades=%d skipped=%s day=%s' % (b['status'], b['cash'], len(b['open']), st['trades'], json.dumps(st.get('skipped')), json.dumps(b.get('day'))))
-" || true
+    cat > /tmp/probe_m.py <<'PY_RUN'
+"""Read-only research: Montra API surface, token base rates, fee tiers, rewards; Agora trader universe."""
+import json, re, statistics as st, time, urllib.request, urllib.parse
+from collections import Counter
+UA = {"user-agent": "elysium-wallet-tracker research", "accept": "application/json,text/html"}
+def get(url, raw=False, pause=0.6):
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=30) as r:
+            b = r.read()
+        return b.decode("utf-8", "replace") if raw else json.loads(b)
+    except Exception as e:
+        return {"_err": "%s %s" % (type(e).__name__, getattr(e, "code", ""))}
+    finally:
+        time.sleep(pause)
+M, A = "https://api.montramarkets.xyz", "https://api.agoradex.app"
+# 1. endpoint list from the docs
+h = get("https://montramarkets.xyz/docs/api", raw=True)
+paths = sorted(set(re.findall(r"(?:GET|POST)?\s*(/api/[A-Za-z0-9_{}<>:/\-\.]+(?:\?[A-Za-z0-9_=&{}<>\-|,]+)?)", h if isinstance(h, str) else "")))
+print("API|" + " ".join(paths)[:1400])
+# 2. card keys (list) and detail keys
+lst = get(M + "/api/tokens?sort=volume&limit=100&page=1")
+toks = lst.get("tokens") or []
+print("LISTMETA|" + json.dumps({k: lst.get(k) for k in lst if k != "tokens"}))
+if toks:
+    print("CARDKEYS|" + ",".join(sorted(toks[0].keys())))
+    d = get(M + "/api/tokens/" + toks[0]["address"])
+    print("DETAILKEYS|" + ",".join(sorted(d.keys())))
+    for k in ("rewards", "stats", "splitter", "config", "liquidity"):
+        print("DETAIL_%s|%s" % (k, json.dumps(d.get(k))[:700]))
+# 3. fee tiers by volume (top 100)
+tier = Counter(); vol = Counter()
+for c in toks:
+    f = int(c.get("totalFeePips") or 0)
+    tier[f] += 1; vol[f] += float(c.get("volume24hUsd") or 0)
+tv = sum(vol.values()) or 1
+print("FEETIER|" + " ".join("%s%%:n=%d,vol=%.0f%%" % (k / 1e4, tier[k], 100 * vol[k] / tv) for k in sorted(tier)))
+# 4. base rates: sample list pages of sort=new at increasing depth (older tokens)
+pages = lst.get("pages") or 1
+newm = get(M + "/api/tokens?sort=new&limit=100&page=1")
+npages = newm.get("pages") or 1
+print("NEWMETA|pages=%s total=%s" % (npages, newm.get("total")))
+now = time.time()
+rows = []
+for pg in (1, 3, 8, 15, 25, 40, 60, 80, 110, 150, 200, 260, 330, 420, 520, 650, 800):
+    if pg > npages: break
+    j = newm if pg == 1 else get(M + "/api/tokens?sort=new&limit=100&page=%d" % pg)
+    for c in (j.get("tokens") or []):
+        la = (c.get("launchedAt") or 0) / 1000
+        rows.append((now - la, float(c.get("marketCapUsd") or 0), int(c.get("holders") or 0),
+                     float(c.get("volume24hUsd") or 0), int(c.get("totalFeePips") or 0),
+                     (c.get("quote") or {}).get("symbol"), c.get("athMarketCapUsd") or c.get("athMcapUsd") or c.get("maxMarketCapUsd")))
+def bucket(age):
+    for lim, name in ((3600, "<1h"), (6 * 3600, "1-6h"), (24 * 3600, "6-24h"), (3 * 86400, "1-3d"), (7 * 86400, "3-7d"), (30 * 86400, "7-30d")):
+        if age < lim: return name
+    return ">30d"
+groups = {}
+for r in rows:
+    groups.setdefault(bucket(r[0]), []).append(r)
+for name in ("<1h", "1-6h", "6-24h", "1-3d", "3-7d", "7-30d", ">30d"):
+    g = groups.get(name) or []
+    if not g: continue
+    mc = sorted(x[1] for x in g)
+    print("BASE|%s|n=%d|median_mc=$%.0f|p90=$%.0f|>=$10k=%.1f%%|>=$50k=%.1f%%|>=$100k=%.1f%%|holders_med=%d|vol24_med=$%.0f|has_ath=%s" % (
+        name, len(g), st.median(mc), mc[int(0.9 * (len(mc) - 1))], 100 * sum(x >= 1e4 for x in mc) / len(g),
+        100 * sum(x >= 5e4 for x in mc) / len(g), 100 * sum(x >= 1e5 for x in mc) / len(g),
+        st.median(x[2] for x in g), st.median(x[3] for x in g), any(x[6] for x in g)))
+print("BASEQ|" + json.dumps(Counter(r[5] for r in rows).most_common(5)) + "|fee:" + json.dumps(Counter(r[4] for r in rows).most_common(6)))
+# 5. platform stats
+s = get(M + "/api/stats")
+print("STATS|" + json.dumps(s)[:900])
+# 6. Agora trader universe beyond the top 100
+seen, rowsA = set(), []
+for off in (0, 100, 200, 300, 400, 500, 700, 900):
+    j = get(A + "/api/traders?limit=100&offset=%d" % off, pause=1.4)
+    it = j.get("traders") if isinstance(j, dict) else None
+    if not it: print("AGORA|offset=%d -> %s" % (off, json.dumps(j)[:200] if isinstance(j, dict) else "?")); break
+    for t in it:
+        a = (t.get("address") or t.get("wallet") or "").lower()
+        if a in seen: continue
+        seen.add(a); rowsA.append(t)
+print("AGORA|traders=%d keys=%s" % (len(rowsA), ",".join(sorted(rowsA[0].keys())) if rowsA else "-"))
+if rowsA:
+    pn = [float(t.get("pnlHype") or 0) for t in rowsA]
+    re_ = [float(t.get("realizedHype") or 0) for t in rowsA]
+    print("AGORA|pnl>0=%d realized>0=%d realized>=10=%d realized>=100=%d median_pnl=%.1f rank100_pnl=%.1f rank500_pnl=%s" % (
+        sum(x > 0 for x in pn), sum(x > 0 for x in re_), sum(x >= 10 for x in re_), sum(x >= 100 for x in re_),
+        st.median(pn), pn[99] if len(pn) > 99 else float("nan"), "%.1f" % pn[499] if len(pn) > 499 else "-"))
+    json.dump([(t.get("address") or t.get("wallet"), t.get("pnlHype"), t.get("realizedHype"), t.get("volumeHype"), t.get("trades") or t.get("tradeCount")) for t in rowsA], open("/tmp/agora_traders.json", "w"))
+PY_RUN
+    python3 /tmp/probe_m.py 2>&1 | cut -c1-1500 | sed 's/^/R|/' || true
+    rm -f /tmp/probe_m.py
+    psql_admin -At -F'|' -c "SELECT 'LAT', round(percentile_cont(0.5) WITHIN GROUP (ORDER BY extract(epoch FROM created_at - to_timestamp((payload->>'ts')::numeric)))::numeric, 1), round(percentile_cont(0.9) WITHIN GROUP (ORDER BY extract(epoch FROM created_at - to_timestamp((payload->>'ts')::numeric)))::numeric, 1), round(percentile_cont(0.99) WITHIN GROUP (ORDER BY extract(epoch FROM created_at - to_timestamp((payload->>'ts')::numeric)))::numeric, 1), round(percentile_cont(0.5) WITHIN GROUP (ORDER BY extract(epoch FROM sent_at - created_at))::numeric, 1), round(percentile_cont(0.9) WITHIN GROUP (ORDER BY extract(epoch FROM sent_at - created_at))::numeric, 1), count(*) FROM notification_outbox WHERE payload->>'type' = 'trade' AND created_at > now() - interval '3 days' AND sent_at IS NOT NULL AND payload->>'ts' IS NOT NULL" | sed 's/^/R|/' || true
+    psql_admin -At -F'|' -c "SELECT 'WATCH', source, status, count(*) FROM wallet_watchlist GROUP BY 2, 3 ORDER BY 4 DESC" | sed 's/^/R|/' || true
+    psql_admin -At -F'|' -c "SELECT 'ACTIVE7D', count(DISTINCT wallet) FROM trades WHERE chain_id = 99901 AND block_time > now() - interval '7 days' AND kind IN ('BUY', 'SELL')" | sed 's/^/R|/' || true
+    psql_admin -At -F'|' -c "SELECT 'SIGDAY', date_trunc('day', o.created_at)::date, count(*) FILTER (WHERE o.payload->>'kind' = 'BUY'), count(*) FILTER (WHERE o.payload->>'kind' = 'BUY' AND (o.payload->'perf'->>'rank')::int <= 30), count(*) FILTER (WHERE o.payload->>'kind' = 'BUY' AND (o.payload->'perf'->>'rank')::int <= 30 AND (o.payload->>'hype_wei')::numeric >= 1e18 AND p.launchpad = 'montra'), count(DISTINCT o.payload->>'token') FILTER (WHERE o.payload->>'kind' = 'BUY' AND (o.payload->'perf'->>'rank')::int <= 30 AND p.launchpad = 'montra') FROM notification_outbox o LEFT JOIN token_profiles p ON p.chain_id = 99901 AND p.address = o.payload->>'token' WHERE o.payload->>'type' = 'trade' AND o.created_at > now() - interval '4 days' GROUP BY 2 ORDER BY 2" | sed 's/^/R|/' || true
+    if [ -s /tmp/agora_traders.json ]; then
+      psql_admin -At -c "SELECT address FROM wallet_watchlist" > /tmp/watch_addrs.txt || true
+      python3 - <<'PY_CMP' | sed 's/^/R|/'
+import json
+rows = json.load(open("/tmp/agora_traders.json"))
+watch = {l.strip().lower() for l in open("/tmp/watch_addrs.txt") if l.strip()}
+def f(x):
+    try: return float(x)
+    except Exception: return 0.0
+un = [r for r in rows if (r[0] or "").lower() not in watch]
+print("CMP|agora_listed=%d tracked=%d untracked=%d untracked_realized>=10=%d untracked_realized>=50=%d" % (
+    len(rows), len(rows) - len(un), len(un), sum(f(r[2]) >= 10 for r in un), sum(f(r[2]) >= 50 for r in un)))
+for i, r in enumerate(rows[:5]):
+    print("CMPROW|%d|%s|pnl=%s|realized=%s|vol=%s|tracked=%s" % (i + 1, (r[0] or "")[:10], r[1], r[2], r[3], (r[0] or "").lower() in watch))
+PY_CMP
+      rm -f /tmp/agora_traders.json /tmp/watch_addrs.txt
+    fi
     ;;
   ui-smoke)
     docker compose run --rm --no-deps ui --ui-smoke
