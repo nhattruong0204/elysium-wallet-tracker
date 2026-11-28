@@ -699,24 +699,219 @@ PY
     tracker_alive
     ;;
   wallet-probe)
-    # Read-only: row estimate vs actual for the home page launchpad query (EXPLAIN only).
+    # Read-only: how tracked wallets made money (all history), analysed on the host.
     need_docker
-    psql_admin <<'SQL_Q' 2>&1 | cut -c1-260 | sed 's/^/EX|/' || true
-\pset format unaligned
-\pset tuples_only on
-BEGIN READ ONLY;
-SET LOCAL search_path = public_api;
-SET LOCAL statement_timeout = '30s';
-SELECT 'ACTUAL_24H', count(*) FROM public.trades WHERE chain_id = 99901 AND block_time >= now() - interval '24 hours';
-SELECT 'HIST_MAX', (histogram_bounds::text::timestamptz[])[array_upper(histogram_bounds::text::timestamptz[], 1)] FROM pg_stats WHERE schemaname = 'public' AND tablename = 'trades' AND attname = 'block_time';
-EXPLAIN SELECT coalesce(p.launchpad, 'unknown') AS launchpad,
-       count(*) AS legs, count(DISTINCT t.token) AS tokens,
-       coalesce(sum(t.hype_wei) FILTER (WHERE t.confidence = 'high' AND t.kind IN ('BUY','SELL')), 0) AS vol_wei
-FROM trades t LEFT JOIN token_profiles p ON p.chain_id = t.chain_id AND p.address = t.token
-WHERE t.chain_id = 99901 AND t.block_time >= now() - interval '24 hours' AND t.block_time < now()
-GROUP BY 1 ORDER BY vol_wei DESC, legs DESC LIMIT 8;
-ROLLBACK;
-SQL_Q
+    rm -rf /tmp/elysium-probe && mkdir -p /tmp/elysium-probe && chmod 700 /tmp/elysium-probe
+    psql_admin -At -c "COPY (SELECT id, wallet, token, kind, confidence, coalesce(hype_wei::text,''), qty::text, extract(epoch from block_time)::bigint, block_number, chain_id FROM trades WHERE block_time IS NOT NULL AND kind IN ('BUY','SELL')) TO STDOUT WITH CSV" > /tmp/elysium-probe/trades.csv 2> /tmp/elysium-probe/trades.err || true
+    echo "ROWS|trades|$(wc -l < /tmp/elysium-probe/trades.csv)|$(head -c 200 /tmp/elysium-probe/trades.err)"
+    psql_admin -At -c "COPY (SELECT trade_id, coalesce(pnl_wei::text,''), coalesce(cost_basis_wei::text,''), proceeds_wei::text, status FROM realized_pnl) TO STDOUT WITH CSV" > /tmp/elysium-probe/realized.csv 2> /tmp/elysium-probe/realized.err || true
+    echo "ROWS|realized|$(wc -l < /tmp/elysium-probe/realized.csv)|$(head -c 200 /tmp/elysium-probe/realized.err)"
+    psql_admin -At -c "COPY (SELECT address, coalesce(symbol,''), coalesce(launchpad,''), coalesce(extract(epoch from launched_at)::bigint::text,'') FROM token_profiles) TO STDOUT WITH CSV" > /tmp/elysium-probe/profiles.csv 2> /tmp/elysium-probe/profiles.err || true
+    echo "ROWS|profiles|$(wc -l < /tmp/elysium-probe/profiles.csv)|$(head -c 200 /tmp/elysium-probe/profiles.err)"
+    psql_admin -At -c "COPY (SELECT date_trunc('day', observed_at)::date, avg(hype_usd) FROM hype_usd_rates GROUP BY 1 ORDER BY 1) TO STDOUT WITH CSV" > /tmp/elysium-probe/rates.csv 2> /tmp/elysium-probe/rates.err || true
+    echo "ROWS|rates|$(wc -l < /tmp/elysium-probe/rates.csv)|$(head -c 200 /tmp/elysium-probe/rates.err)"
+    psql_admin -At -c "COPY (SELECT c.chain_id, c.name, count(t.id), min(t.block_time), max(t.block_time) FROM chains c LEFT JOIN trades t ON t.chain_id = c.chain_id GROUP BY 1, 2) TO STDOUT WITH CSV" > /tmp/elysium-probe/chains.csv 2> /tmp/elysium-probe/chains.err || true
+    echo "ROWS|chains|$(wc -l < /tmp/elysium-probe/chains.csv)|$(head -c 200 /tmp/elysium-probe/chains.err)"
+    psql_admin -At -c "COPY (SELECT source, status, count(*) FROM wallet_watchlist WHERE removed_at IS NULL GROUP BY 1, 2 ORDER BY 3 DESC) TO STDOUT WITH CSV" > /tmp/elysium-probe/sources.csv 2> /tmp/elysium-probe/sources.err || true
+    echo "ROWS|sources|$(wc -l < /tmp/elysium-probe/sources.csv)|$(head -c 200 /tmp/elysium-probe/sources.err)"
+    psql_admin -At -c "COPY (SELECT e.address, e.rank, coalesce(e.pnl_usd::text,''), coalesce(e.volume_usd::text,'') FROM leaderboard_snapshot_entries e WHERE e.snapshot_id = (SELECT id FROM leaderboard_snapshots WHERE status IN ('ok','imported') ORDER BY captured_at DESC LIMIT 1)) TO STDOUT WITH CSV" > /tmp/elysium-probe/leaderboard.csv 2> /tmp/elysium-probe/leaderboard.err || true
+    echo "ROWS|leaderboard|$(wc -l < /tmp/elysium-probe/leaderboard.csv)|$(head -c 200 /tmp/elysium-probe/leaderboard.err)"
+    psql_admin -At -c "COPY (WITH g AS (SELECT tt.chain_id, tt.from_address, tt.token, count(*) AS n, count(DISTINCT tt.to_address) AS w, sum(tt.amount) AS amt FROM token_transfers tt JOIN trades t ON t.chain_id = tt.chain_id AND t.tx_hash = tt.tx_hash AND t.wallet = tt.to_address AND t.token = tt.token AND t.kind = 'TRANSFER_IN' GROUP BY 1, 2, 3 ORDER BY 4 DESC LIMIT 15) SELECT g.from_address, coalesce(p.symbol, ''), g.n, g.w, round(g.amt / 1e18, 2), coalesce(round(g.amt / 1e18 * ls.price_hype, 2)::text, '') FROM g LEFT JOIN token_profiles p ON p.chain_id = g.chain_id AND p.address = g.token LEFT JOIN LATERAL (SELECT s.price_hype FROM token_market_snapshots s WHERE s.chain_id = g.chain_id AND s.token = g.token AND s.price_hype IS NOT NULL ORDER BY s.captured_at DESC LIMIT 1) ls ON true ORDER BY g.n DESC) TO STDOUT WITH CSV" > /tmp/elysium-probe/rewards.csv 2> /tmp/elysium-probe/rewards.err || true
+    echo "ROWS|rewards|$(wc -l < /tmp/elysium-probe/rewards.csv)|$(head -c 200 /tmp/elysium-probe/rewards.err)"
+    cat > /tmp/elysium-probe/an.py <<'PY_AN'
+"""Read-only: how tracked wallets made money on Elysium (all history). Reads CSV extracts."""
+import csv, sys, statistics as st, bisect
+from collections import defaultdict, Counter
+D = sys.argv[1]
+WEI = 1e18
+def rows(name):
+    with open(f"{D}/{name}.csv", newline="") as f:
+        return list(csv.reader(f))
+def fz(x):
+    try: return float(x)
+    except Exception: return None
+def s8(a): return a[:10]
+# ---- load
+prof = {}
+for a, sym, lp, la in rows("profiles"):
+    prof[a] = (sym or a[:8], lp or "unknown", int(la) if la else None)
+T = []       # BUY/SELL high-confidence with hype
+for i, w, tok, k, conf, hw, q, ts, blk, cid in rows("trades"):
+    if k in ("BUY", "SELL") and conf == "high" and hw and fz(hw) and fz(q):
+        T.append((int(i), w, tok, k, float(hw) / WEI, float(q), int(ts), int(blk), cid))
+T.sort(key=lambda r: (r[6], r[0]))
+byid = {r[0]: r for r in T}
+R = {}
+for tid, pnl, cost, proc, stt in rows("realized"):
+    R[int(tid)] = (stt, fz(pnl), fz(cost), fz(proc))
+rate = {d: float(v) for d, v in rows("rates")}
+avg_rate = st.mean(rate.values()) if rate else None
+print("META|trades_bs_high=%d tokens=%d wallets=%d first=%s last=%s avg_hype_usd=%.2f" % (
+    len(T), len({r[2] for r in T}), len({r[1] for r in T}),
+    __import__("datetime").datetime.utcfromtimestamp(T[0][6]).isoformat()[:16],
+    __import__("datetime").datetime.utcfromtimestamp(T[-1][6]).isoformat()[:16], avg_rate or 0))
+for r in rows("chains"):
+    print("CHAIN|" + "|".join(r))
+for r in rows("sources"):
+    print("SRC|" + "|".join(r))
+sells = [r for r in T if r[3] == "SELL"]
+meas = [r for r in sells if r[0] in R and R[r[0]][0] == "measured" and R[r[0]][1] is not None]
+print("COVER|sells=%d measured=%d (%.0f%%)" % (len(sells), len(meas), 100 * len(meas) / max(1, len(sells))))
+# ---- token first trade, per (wallet, token) positions
+t0 = {}
+for r in T:
+    t0.setdefault(r[2], r[6])
+pos = defaultdict(lambda: {"fb": None, "ls": None, "pnl": 0.0, "cost": 0.0, "proc": 0.0, "n": 0, "buy": 0.0})
+for r in T:
+    p = pos[(r[1], r[2])]
+    if r[3] == "BUY":
+        if p["fb"] is None: p["fb"] = r[6]
+        p["buy"] += r[4]
+    elif r[0] in R and R[r[0]][0] == "measured" and R[r[0]][1] is not None:
+        st_, pnl, cost, proc = R[r[0]]
+        p["pnl"] += pnl / WEI; p["cost"] += (cost or 0) / WEI; p["proc"] += (proc or 0) / WEI
+        p["n"] += 1; p["ls"] = r[6]
+def creator(w, tok, fb):
+    la = prof.get(tok, (None, None, None))[2]
+    return la is not None and fb is not None and abs(fb - la) <= 2 and fb <= t0[tok] + 2
+launches = Counter()
+for (w, tok), p in pos.items():
+    if creator(w, tok, p["fb"]):
+        launches[w] += 1
+serial = {w for w, n in launches.items() if n >= 3}
+def klass(w, tok, p):
+    la = prof.get(tok, (None, None, None))[2]
+    if p["fb"] is None: return "no buy seen"
+    if creator(w, tok, p["fb"]): return "1 launch own token"
+    if la is None: return "6 no launch time"
+    age = p["fb"] - la
+    if age < 60: return "2 snipe <60s"
+    if age < 600: return "3 early 1-10m"
+    if age < 6 * 3600: return "4 momentum 10m-6h"
+    return "5 late >6h"
+def hold(p):
+    if p["fb"] is None or p["ls"] is None: return "?"
+    h = p["ls"] - p["fb"]
+    return "a <2m" if h < 120 else "b 2-15m" if h < 900 else "c 15m-2h" if h < 7200 else "d 2h-1d" if h < 86400 else "e >1d"
+closed = {k: p for k, p in pos.items() if p["n"] > 0}
+tot = sum(p["pnl"] for p in closed.values())
+print("TOTAL|positions=%d pnl=%.0f HYPE (+%.0f / %.0f) win=%.0f%% wallets=%d" % (
+    len(closed), tot, sum(p["pnl"] for p in closed.values() if p["pnl"] > 0),
+    sum(p["pnl"] for p in closed.values() if p["pnl"] < 0),
+    100 * sum(p["pnl"] > 0 for p in closed.values()) / max(1, len(closed)), len({k[0] for k in closed})))
+def table(tag, keyf):
+    g = defaultdict(list)
+    for k, p in closed.items():
+        g[keyf(k, p)].append((k, p))
+    for name in sorted(g):
+        v = g[name]; ps = [p["pnl"] for _, p in v]
+        cost = sum(p["cost"] for _, p in v)
+        print("%s|%s|pos=%d wallets=%d pnl=%.0f +%.0f %.0f win=%.0f%% med=%.2f roi=%.0f%%" % (
+            tag, name, len(v), len({k[0] for k, _ in v}), sum(ps), sum(x for x in ps if x > 0),
+            sum(x for x in ps if x < 0), 100 * sum(x > 0 for x in ps) / len(ps), st.median(ps),
+            100 * sum(ps) / cost if cost else 0))
+table("CLASS", lambda k, p: klass(k[0], k[1], p))
+table("CLASS_NOSERIAL", lambda k, p: ("serial launcher wallet" if k[0] in serial else klass(k[0], k[1], p)))
+table("HOLD", lambda k, p: hold(p) if klass(k[0], k[1], p) != "1 launch own token" else "launch (any)")
+table("PAD", lambda k, p: prof.get(k[1], (0, "unknown", 0))[1])
+import datetime as dt
+table("WEEK", lambda k, p: dt.datetime.utcfromtimestamp(p["ls"]).strftime("%G-W%V") + " " + ("launch" if klass(k[0], k[1], p).startswith("1") else "snipe" if klass(k[0], k[1], p).startswith("2") else "other"))
+# ---- wallets
+wp = defaultdict(float); wcls = defaultdict(lambda: defaultdict(float)); wn = Counter(); wt = defaultdict(set)
+for (w, tok), p in closed.items():
+    wp[w] += p["pnl"]; wcls[w][klass(w, tok, p)[:1]] += p["pnl"]; wn[w] += p["n"]; wt[w].add(tok)
+pos_w = sorted((v for v in wp.values() if v > 0), reverse=True)
+print("WALLETS|n=%d up=%d down=%d top1=%.0f%% top10=%.0f%% top50=%.0f%% of gains; serial_launchers=%d (pnl %.0f)" % (
+    len(wp), len(pos_w), sum(v < 0 for v in wp.values()),
+    100 * sum(pos_w[:1]) / sum(pos_w), 100 * sum(pos_w[:10]) / sum(pos_w), 100 * sum(pos_w[:50]) / sum(pos_w),
+    len(serial), sum(wp[w] for w in serial)))
+lb = {a: (int(r), fz(p)) for a, r, p, v in rows("leaderboard")}
+for w, v in sorted(wp.items(), key=lambda kv: -kv[1])[:25]:
+    c = wcls[w]; tt = sum(abs(x) for x in c.values()) or 1
+    mix = " ".join("%s:%.0f" % (k, c[k]) for k in sorted(c) if abs(c[k]) / tt > 0.05)
+    print("TOPW|%s|pnl=%.0f|closes=%d|tokens=%d|serial=%s|agora_rank=%s agora_pnl_usd=%s|mix %s" % (
+        s8(w), v, wn[w], len(wt[w]), w in serial, (lb.get(w) or ("-",))[0],
+        "%.0f" % lb[w][1] if w in lb and lb[w][1] is not None else "-", mix))
+# ---- best positions (not own launches)
+best = sorted(((p["pnl"], k, p) for k, p in closed.items() if not klass(k[0], k[1], p).startswith("1")), key=lambda x: -x[0])[:15]
+for pnl, (w, tok), p in best:
+    la = prof.get(tok, (None, None, None))[2]
+    print("BESTPOS|%s|%s|%s|entry_age=%s|hold=%s|cost=%.1f|proc=%.1f|x%.1f|pnl=%.0f" % (
+        s8(w), prof.get(tok, (tok[:8],))[0], klass(w, tok, p)[2:], "%.0fm" % ((p["fb"] - la) / 60) if la and p["fb"] else "?",
+        "%.0fm" % (((p["ls"] or 0) - (p["fb"] or 0)) / 60) if p["fb"] and p["ls"] else "?", p["cost"], p["proc"],
+        p["proc"] / p["cost"] if p["cost"] else 0, pnl))
+# tokens where tracked wallets made the most (non-creator)
+tk = defaultdict(lambda: [0.0, 0, 0])
+for (w, tok), p in closed.items():
+    if klass(w, tok, p).startswith("1"): continue
+    tk[tok][0] += p["pnl"]; tk[tok][1] += p["pnl"] > 0; tk[tok][2] += 1
+for tok, (v, up, n) in sorted(tk.items(), key=lambda kv: -kv[1][0])[:12]:
+    print("BESTTOK|%s|%s|pnl=%.0f|winners=%d of %d" % (prof.get(tok, (tok[:8],))[0], prof.get(tok, (0, "?"))[1], v, up, n))
+# ---- walk-forward copy-trading backtest
+by_tok = defaultdict(list)
+for r in T:
+    by_tok[r[2]].append(r)
+tok_ts = {k: [r[6] for r in v] for k, v in by_tok.items()}
+def px(r): return r[4] / r[5]
+def first_after(tok, ts, kind, within):
+    L = by_tok[tok]; i = bisect.bisect_left(tok_ts[tok], ts)
+    while i < len(L) and L[i][6] <= ts + within:
+        if kind is None or L[i][3] == kind: return L[i]
+        i += 1
+    return None
+DAY = 86400
+first_day = T[0][6] // DAY * DAY
+# daily trailing rank (14d), excluding own launches and snipes and serial launchers
+pnl_events = []   # (ts, wallet, token, pnl)
+for r in meas:
+    w, tok = r[1], r[2]
+    k = klass(w, tok, pos[(w, tok)])
+    if k[0] in "12" or w in serial: continue
+    pnl_events.append((r[6], w, tok, R[r[0]][1] / WEI))
+def board(day):
+    agg = defaultdict(lambda: [0.0, 0, set()])
+    for ts, w, tok, v in pnl_events:
+        if day - 14 * DAY <= ts < day:
+            a = agg[w]; a[0] += v; a[1] += 1; a[2].add(tok)
+    ranked = sorted((w for w, a in agg.items() if a[1] >= 5 and len(a[2]) >= 2 and a[0] > 0), key=lambda w: -agg[w][0])
+    return {w: i + 1 for i, w in enumerate(ranked)}
+boards = {}
+last_day = T[-1][6] // DAY * DAY
+d = first_day + 14 * DAY
+while d <= last_day:
+    boards[d] = board(d); d += DAY
+FEE = 0.01
+for TOPN in (10, 30):
+    for DELAY in (15, 60):
+        res = []; lead = []; opened = Counter()
+        for (w, tok), p in pos.items():
+            if p["fb"] is None: continue
+            day = p["fb"] // DAY * DAY
+            rk = boards.get(day, {}).get(w)
+            if not rk or rk > TOPN: continue
+            k = klass(w, tok, p)
+            if k[0] in "12": continue
+            lb_buy = next(r for r in by_tok[tok] if r[1] == w and r[3] == "BUY")
+            ent = first_after(tok, p["fb"] + DELAY, "BUY", 600)
+            if ent is None: opened["no entry"] += 1; continue
+            ls = next((r for r in by_tok[tok] if r[1] == w and r[3] == "SELL" and r[6] > p["fb"]), None)
+            if ls is None:
+                ex = by_tok[tok][-1]; opened["leader still holds"] += 1
+            else:
+                ex = first_after(tok, ls[6] + DELAY, "SELL", 600) or first_after(tok, ls[6] + DELAY, None, 3600)
+                if ex is None: opened["no exit price"] += 1; continue
+                lead.append(px(ls) / px(lb_buy) - 1)
+            res.append(px(ex) / px(ent) * (1 - FEE) ** 2 - 1)
+        if res:
+            print("COPY|top%d delay=%ds|trades=%d win=%.0f%% mean=%+.1f%% median=%+.1f%% p90=%+.0f%% sum_per_unit=%+.1f|leader_mean=%+.1f%% (n=%d)|%s" % (
+                TOPN, DELAY, len(res), 100 * sum(x > 0 for x in res) / len(res), 100 * st.mean(res), 100 * st.median(res),
+                100 * sorted(res)[int(0.9 * (len(res) - 1))], sum(res), 100 * st.mean(lead) if lead else 0, len(lead), dict(opened)))
+# ---- transfer-ins (rewards / airdrops)
+for r in rows("rewards")[:15]:
+    print("RECV|" + "|".join(x[:12] if x.startswith("0x") else x for x in r))
+PY_AN
+    python3 /tmp/elysium-probe/an.py /tmp/elysium-probe 2>&1 | cut -c1-320 | sed 's/^/AN|/' || true
+    rm -rf /tmp/elysium-probe
     ;;
   ui-smoke)
     docker compose run --rm --no-deps ui --ui-smoke
