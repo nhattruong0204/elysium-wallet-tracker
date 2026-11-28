@@ -596,6 +596,15 @@ class Store:
             return load_board(c, chain_id=self.chain_id, rules=rules,
                               skip_wallets=set(skip_wallets), skip_tokens=set(skip_tokens))
 
+    def position_qty(self, wallet: str, token: str) -> int | None:
+        """The wallet's current quantity of the token (wallet_positions), None if unknown."""
+        wp = t.wallet_positions
+        with self.engine.connect() as c:
+            v = c.execute(sa.select(wp.c.qty).where(
+                wp.c.chain_id == self.chain_id, wp.c.wallet == wallet.lower(),
+                wp.c.token == token.lower())).scalar()
+        return None if v is None else int(v)
+
     def wallets_on_tokens(self, tokens: Iterable[str], wallets: Iterable[str],
                           since_days: int) -> dict[str, set[str]]:
         """Per token: which of `wallets` traded it in the last `since_days` (committed rows)."""

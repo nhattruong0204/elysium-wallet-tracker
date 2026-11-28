@@ -9,7 +9,7 @@ from __future__ import annotations
 import html
 import logging
 import time
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from decimal import Decimal
 from typing import Any
 
@@ -63,6 +63,8 @@ class Engine:
         self._muted_wallets: dict[str, str] = {w: "muted" for w in muted_wallets}
         self._perf: dict[str, dict] = {}       # trader ranking (performance.py)
         self._perf_at = float("-inf")
+        # called with each committed BUY/SELL alert payload (the paper book, paperbook.py)
+        self.trade_listeners: list[Callable[[dict], None]] = []
         self.intel = intel or IntelConfig()
         self._muted = set(alert_cfg.mute_tokens)
         self._tg_muted = set(alert_cfg.telegram_mute_tokens)   # Telegram-only (signals kept)
@@ -241,6 +243,7 @@ class Engine:
                 if amt >= counter.get(key, (-1, ""))[0]:
                     counter[key] = (amt, other)
         stale = 0
+        fired: list[dict] = []          # BUY/SELL alerts, for listeners once committed
         with self.store.tx() as c:
             self.store.insert_evidence(c, result.transactions, result.transfers)
             self.store.record_blocks(c, result.block_times, result.block_hashes)
@@ -292,6 +295,8 @@ class Engine:
                         payload = self._trade_payload(ev, notes, bts, extra)
                         text, _ = cards.render_trade(payload, self.links)
                         self.store.enqueue(c, f"ev:{ev.key}", text, payload=payload)
+                        if ev.kind in ("BUY", "SELL"):
+                            fired.append(payload)
                     elif summary is not None:
                         self._enqueue_burst(c, summary)
                 if (ev.kind == "BUY" and ev.confidence == "high" and bts is not None
@@ -312,6 +317,12 @@ class Engine:
             for summary in self._bursts.finished(ref):
                 self._enqueue_burst(c, summary)
             self.store.set_cursor(c, cursor)
+        for payload in fired:           # committed: listeners see only what was stored
+            for listener in self.trade_listeners:
+                try:
+                    listener(payload)
+                except Exception:  # noqa: BLE001 - a listener must never block indexing
+                    log.exception("trade listener failed")
         return new
 
     def _enqueue_burst(self, c: Any, s: dict) -> None:
