@@ -16,6 +16,7 @@ Findings about tracked wallets, kept out of the issue tracker so they stay reada
 ## Scans
 - [Weekly review 2026-11-19 to 11-26: smart money, launchers, inactive wallets, Consensus](Weekly-review-2026-11-26)
 - [Launcher tokens and a 30-day Consensus replay (2026-11-27)](Launcher-tokens-and-Consensus-replay-2026-11-27)
+- [Elysium market structure and strategy research (2026-11-28)](Market-structure-and-strategy-research-2026-11-28)
 - [Transfer-only scan (2026-11-12)](Transfer-only-scan)
 
 ## Policy (owner, 2026-11-12)
