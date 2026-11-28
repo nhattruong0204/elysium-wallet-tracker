@@ -732,7 +732,7 @@ with eng.connect() as c:
        WHERE s.chain_id = :c AND s.source = 'agora' AND p.launchpad = 'montra'
          AND s.captured_at >= now() - interval '8 days' AND s.captured_at < now() - interval '24 hours'
          AND s.price_hype > 0 AND s.mcap_hype > 0 AND p.launched_at IS NOT NULL
-       ORDER BY s.token, s.captured_at""")).all()
+       ORDER BY s.token, s.captured_at"""), {"c": C}).all()
 series = defaultdict(list)
 for r in rows:
     if r[0] not in L.tokens:
